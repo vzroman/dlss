@@ -21,7 +21,10 @@
 
 -behaviour(application).
 
--export([start/2, stop/1]).
+-export([
+    start/2,
+    stop/1
+]).
 
 start(_StartType, _StartArgs) ->
     dlss_sup:start_link().
@@ -29,4 +32,3 @@ start(_StartType, _StartArgs) ->
 stop(_State) ->
     ok.
 
-%% internal functions
