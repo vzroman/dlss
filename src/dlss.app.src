@@ -1,0 +1,15 @@
+{application, dlss,
+ [{description, "Distributed Log Structured Data Storage"},
+  {vsn, "0.0.1"},
+  {registered, []},
+  {mod, {dlss_app, []}},
+  {applications,
+   [kernel,
+    stdlib
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {licenses, ["Apache 2.0"]},
+  {links, []}
+ ]}.
