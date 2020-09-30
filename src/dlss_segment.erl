@@ -27,7 +27,8 @@
 %%=================================================================
 -export([
   dirty_next/2,
-  dirty_write/2,dirty_write/3
+  dirty_write/2,dirty_write/3,
+  dirty_delete/2
 ]).
 %%=================================================================
 %%	API
@@ -61,6 +62,9 @@ dirty_write(Segment,{Key,Value})->
   dirty_write(Segment,Key,Value).
 dirty_write(Segment,Key,Value)->
   mnesia:dirty_write(Segment,#kv{key = Key,value = Value}).
+
+dirty_delete(Segment,Key)->
+  mnesia:dirty_delete(Segment,Key).
 
 %%=================================================================
 %%	API
