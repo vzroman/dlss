@@ -24,7 +24,9 @@
 -export([
   %-----Service API-------
   get_storages/0,
-  get_segments/0,get_segments/1
+  get_segments/0,get_segments/1,
+  add_storage/2,add_storage/3,
+  remove_storage/1
 ]).
 
 %-----------------------------------------------------------------
@@ -37,6 +39,14 @@ get_storages()->
 %-----------------------------------------------------------------
 get_segments()->
   dlss_storage:get_segments().
+
+add_storage(Name,Type)->
+  dlss_storage:add(Name,Type).
+add_storage(Name,Type,Options)->
+  dlss_storage:add(Name,Type,Options).
+
+remove_storage(Name)->
+  dlss_storage:remove(Name).
 
 %-----------------------------------------------------------------
 %	Get list of dlss segments for the Storage
