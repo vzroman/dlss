@@ -44,17 +44,17 @@
 -define(DEFAULT_START_TIMEOUT, 600000). % 10 min.
 -define(WAIT_SCHEMA_TIMEOUT,5000).
 -define(ATTACH_TIMEOUT,600000). %10 min.
+-define(DEFAULT_MASTER_CYCLE, 1000).
 
 -record(state,{
-  cycle,
-  processes
+  cycle
 }).
 
 %%=================================================================
 %%	API
 %%=================================================================
 start_link()->
-  gen_server:start_link({local,?MODULE}, [], []).
+  gen_server:start_link({local,?MODULE},?MODULE, [], []).
 
 %%=================================================================
 %%	OTP
@@ -65,7 +65,14 @@ init([])->
 
   init_backend(),
 
-  {ok,undefined}.
+  dlss_node:set_status(node(),ready),
+
+  Cycle=?ENV(master_node_cycle,?DEFAULT_MASTER_CYCLE),
+
+  % Enter the loop
+  self()!loop,
+
+  {ok,#state{cycle = Cycle}}.
 
 handle_call(Request, From, State) ->
   ?LOGWARNING("backend got an unexpected call resquest ~p from ~p",[Request,From]),
@@ -91,107 +98,138 @@ code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
 
 %%=================================================================
-%%	Storage initialization
+%%	Backend initialization
 %%=================================================================
 init_backend()->
-  case {is_defined(),?ENV("FORCE",force,"false")} of
-    % Backend exists, no forced init, just wait it is up
-    {true,"false"}->
-      ?LOGINFO("waiting backend to init"),
-      ok=start(),
-      ?LOGINFO("backend started");
-    % Starting the storage in the forced mode
-    {true,"true"}->
-      ?LOGWARNING("starting backend in the forced mode"),
+  % Create mnesia schema
+  IsFirstStart=
+    case mnesia:create_schema([node()]) of
+      ok->
+        true;
+      {error,{_,{already_exists,_}}}->
+        false;
+      {error,Error}->
+        ?LOGERROR("FATAL! Unable to create the schema ~p",[Error]),
+        ?ERROR(Error)
+    end,
 
-      % Prepare mnesia
-      mnesia:create_schema([node()]),
-      ok=mnesia:start(),
-
-      % Forcing the local copy loading from the disk
-      forced_start(),
-
-      wiat_segments(?ENV(start_timeout,?DEFAULT_START_TIMEOUT)),
-
-      ?LOGINFO("backend started");
-    % Backend is not defined yet
-    {false,_}->
-      case ?ENV("AS_NODE",as_node,"false") of
-        % Starting as master. Create system objects
-        "false"->
-          ?LOGINFO("the schema is not defined yet, create a new one"),
-          mnesia:create_schema([node()]),
-          ok=start(),
-
-          ?LOGINFO("backend started");
-        % Starting as node. Waiting the master to attach backend
-        "true"->
-          ?LOGINFO("the schema is not defined yet, the node is starting AS_NODE"),
-          ok=mnesia:start(),
-
-          ?LOGINFO("waiting for the master node to copy the schema"),
-          wait_schema(),
-
-          ?LOGINFO("waiting for the segments avaiability"),
-          wiat_segments(?ENV(start_timeout,?DEFAULT_START_TIMEOUT)),
-
-          ?LOGINFO("backend started")
-      end
-  end.
-
-%% Check if the schema is already defined for the node
-is_defined()->
-  % TODO. What is the better way to define if the schema is already created
-  case mnesia:create_schema([node()]) of
-    ok->
-      mnesia:delete_schema([node()]),
-      false;
-    {error,{_,{already_exists,_}}}->
-      true
-  end.
-
-start()->
-
+  %% Next steps need the mnesia started
+  ?LOGINFO("starting mnesia"),
+  % We want to see in the console what's happening
+  mnesia:set_debug_level(debug),
   ok=mnesia:start(),
-
   % Register leveldb backend. !!! Many thanks to Klarna and Basho developers
   mnesia_eleveldb:register(),
 
-  % Wait tables to recover
-  wiat_segments(?ENV(start_timeout,?DEFAULT_START_TIMEOUT)).
+  ?LOGINFO("dlss initalization"),
+  if
+    IsFirstStart ->
+      ?LOGINFO("schema is not defined yet"),
+
+      AsNode=?ENV("AS_NODE",as_node,"false"),
+      if
+        AsNode=:="true";AsNode=:=true ->
+          ?LOGINFO("node is starting as slave"),
+
+          ?LOGINFO("restarting mnesia"),
+          mnesia:stop(),
+          ok=mnesia:delete_schema([node()]),
+          ok=mnesia:start(),
+          mnesia_eleveldb:register(),
+
+          ?LOGINFO("waiting for the schema from the master node..."),
+          wait_for_schema(),
+
+          ?LOGINFO("waiting for segemnts availability..."),
+          wiat_segments(?ENV(start_timeout,?DEFAULT_START_TIMEOUT));
+        true ->
+          ?LOGINFO("node is starting as master"),
+          create_schema()
+      end;
+    true ->
+      IsForced=?ENV("FORCE",force,"false"),
+      if
+        IsForced=:="true";IsForced=:=true ->
+          ?LOGWARNING("starting in FORCED mode"),
+          set_forced_mode(),
+
+          ?LOGWARNING("restarting mnesia"),
+          mnesia:stop(),
+          ok=mnesia:start(),
+          mnesia_eleveldb:register(),
+
+          ?LOGINFO("waiting for schema availability..."),
+          mnesia:wait_for_tables([schema,dlss_schema],?WAIT_SCHEMA_TIMEOUT),
+
+          ?LOGINFO("waiting for segemnts availability..."),
+          wiat_segments(?ENV(start_timeout,?DEFAULT_START_TIMEOUT));
+        true ->
+          ?LOGINFO("node is starting in normal mode"),
+
+          ?LOGINFO("waiting for schema availability..."),
+          mnesia:wait_for_tables([schema,dlss_schema],?WAIT_SCHEMA_TIMEOUT),
+
+          ?LOGINFO("waiting for segemnts availability..."),
+          wiat_segments(?ENV(start_timeout,?DEFAULT_START_TIMEOUT))
+      end
+  end,
+
+  mnesia:set_debug_level(none),
+  ?LOGINFO("dlss is ready").
+
+create_schema()->
+  mnesia:create_table(dlss_schema,[
+    {attributes, record_info(fields, kv)},
+    {record_name, kv},
+    {type,ordered_set},
+    {disc_copies,[node()]},
+    {ram_copies,[]}
+  ]).
+
 
 wiat_segments(Timeout)->
-  Segments=
-    [T||T<-mnesia:system_info(tables),
-      case ?A2B(T) of
-        <<"dlss_",_/binary>>->true;
-        _->false
-      end],
+  Segments=dlss:get_segments(),
   mnesia:wait_for_tables(Segments,Timeout).
 
-forced_start()->
-  Node=node(),
-  mnesia:wait_for_tables([schema],?WAIT_SCHEMA_TIMEOUT),
-  case mnesia:table_info(schema,master_nodes) of
-    [Node]->ok;
-    _->
-      case mnesia:set_master_nodes([Node]) of
-        ok->
-          mnesia:stop(),
-          mnesia:start();
-        {error,Error}->
-          ?LOGERROR("error set master node ~p, error ~p",[Node,Error])
-      end
+set_forced_mode()->
+  case mnesia:set_master_nodes([node()]) of
+    ok->ok;
+    {error,Error}->
+      ?LOGERROR("error set master node ~p, error ~p",[node(),Error]),
+      ?ERROR(Error)
   end.
 
-wait_schema()->
+wait_for_schema()->
+  % Wait master node to attach this node to the schema
+  wait_for_master(),
+  % Copy mnesia schema
+  case mnesia:change_table_copy_type(schema,node(),disc_copies) of
+    {atomic,ok}->ok;
+    {aborted,Reason1}->
+      ?LOGERROR("unable to copy mnesia schema ~p",[Reason1]),
+      ?ERROR(Reason1)
+  end,
+
+  % copy dlss schema
+  ?LOGINFO("waiting for dlss schema availability..."),
+  mnesia:wait_for_tables([dlss_schema],?WAIT_SCHEMA_TIMEOUT),
+  case mnesia:add_table_copy(dlss_schema,node(),disc_copies) of
+    {atomic,ok}->ok;
+    {aborted,Reason2}->
+      ?LOGERROR("unable to copy dlss schema ~p",[Reason2]),
+      ?ERROR(Reason2)
+  end.
+
+wait_for_master()->
   Node=node(),
   case mnesia:system_info(running_db_nodes) of
     [Node]->
-      timer:sleep(1000),
-      wait_schema();
+      ?LOGINFO("...waiting attach"),
+      timer:sleep(5000),
+      wait_for_master();
     Nodes when length(Nodes)>1->
-      {atomic,ok}=mnesia:change_table_copy_type(schema,node(),disc_copies)
+      % If there are more than one node in the schema then the schema has arrived
+      ok
   end.
 
 

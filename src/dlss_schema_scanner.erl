@@ -52,7 +52,7 @@
 %%	API
 %%=================================================================
 start_link()->
-  gen_server:start_link({local,?MODULE}, [], []).
+  gen_server:start_link({local,?MODULE}, ?MODULE,[], []).
 
 %%=================================================================
 %%	OTP
@@ -98,7 +98,7 @@ handle_info(loop,#state{
     catch
         _:Error:Stack->
           ?LOGERROR("schema scanner error ~p, stack ~p",[Error,Stack]),
-          Processes1
+          Processes
     end,
 
   {noreply,State#state{processes = Processes1}}.

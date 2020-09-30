@@ -19,6 +19,8 @@
 -ifndef(DLSS_STRUCT).
 -define(DLSS_STRUCT,1).
 
+-record(kv,{key,value}).
+
 -define(ERROR(Error),erlang:error(Error)).
 
 -define(ENV(Key,Default),application:get_env(dlss,Key,Default)).

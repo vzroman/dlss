@@ -23,12 +23,18 @@
 -behaviour(gen_server).
 
 %%=================================================================
+%%	STORAGE SEGMENT API
+%%=================================================================
+-export([
+  dirty_next/2,
+  dirty_write/2,dirty_write/3
+]).
+%%=================================================================
 %%	API
 %%=================================================================
 -export([
   start_link/1
 ]).
-
 %%=================================================================
 %%	OTP
 %%=================================================================
@@ -46,6 +52,17 @@
 -define(DEFAULT_SCAN_CYCLE,5000).
 
 %%=================================================================
+%%	STORAGE SEGMENT API
+%%=================================================================
+dirty_next(Segment,Pattern)->
+  mnesia:dirty_next(Segment,Pattern).
+
+dirty_write(Segment,{Key,Value})->
+  dirty_write(Segment,Key,Value).
+dirty_write(Segment,Key,Value)->
+  mnesia:dirty_write(Segment,#kv{key = Key,value = Value}).
+
+%%=================================================================
 %%	API
 %%=================================================================
 start_link(Segment)->
@@ -54,7 +71,7 @@ start_link(Segment)->
   % This gives us a more explicit way to address a segment handler
   % of the explicitly defined node and do a load balancing for dirty
   % mode operations
-  gen_server:start_link({local,?MODULE}, [Segment], []).
+  gen_server:start_link({local,?MODULE}, ?MODULE, [Segment], []).
 
 
 
