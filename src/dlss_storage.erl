@@ -106,7 +106,7 @@ add(Name,Type,Options)->
 
 remove(Name)->
   ?LOGWARNING("removing storage ~p",[Name]),
-  Start=#sgm{str=Name,key='_',lvl = '_'},
+  Start=#sgm{str=Name,key='_',lvl = -1},
   remove(Name,dlss_segment:dirty_next(dlss_schema,Start)).
 
 remove(Storage,#sgm{str=Storage}=Sgm)->
