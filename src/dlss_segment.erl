@@ -27,6 +27,7 @@
 %%=================================================================
 -export([
   dirty_next/2,
+  dirty_read/2,
   dirty_write/2,dirty_write/3,
   dirty_delete/2
 ]).
@@ -57,6 +58,12 @@
 %%=================================================================
 dirty_next(Segment,Pattern)->
   mnesia:dirty_next(Segment,Pattern).
+
+dirty_read(Segment,Key)->
+  case mnesia:dirty_read(Segment,Key) of
+    [#kv{value = Value}]->Value;
+    _->undefined
+  end.
 
 dirty_write(Segment,{Key,Value})->
   dirty_write(Segment,Key,Value).

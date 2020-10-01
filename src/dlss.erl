@@ -29,6 +29,7 @@
   remove_storage/1
 ]).
 
+
 %-----------------------------------------------------------------
 %	Get list of all dlss storages
 %-----------------------------------------------------------------
@@ -40,6 +41,12 @@ get_storages()->
 get_segments()->
   dlss_storage:get_segments().
 
+%-----------------------------------------------------------------
+%	Get list of dlss segments for the Storage
+%-----------------------------------------------------------------
+get_segments(Storage)->
+  dlss_storage:get_segments(Storage).
+
 add_storage(Name,Type)->
   dlss_storage:add(Name,Type).
 add_storage(Name,Type,Options)->
@@ -47,11 +54,5 @@ add_storage(Name,Type,Options)->
 
 remove_storage(Name)->
   dlss_storage:remove(Name).
-
-%-----------------------------------------------------------------
-%	Get list of dlss segments for the Storage
-%-----------------------------------------------------------------
-get_segments(Storage)->
-  dlss_storage:get_segments(Storage).
 
 

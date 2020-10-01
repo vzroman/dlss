@@ -41,6 +41,17 @@
   code_change/3
 ]).
 
+%%====================================================================
+%%		Test API
+%%====================================================================
+-ifdef(TEST).
+-export([
+  init_backend/0,
+  stop/0
+]).
+-endif.
+
+
 -define(DEFAULT_START_TIMEOUT, 600000). % 10 min.
 -define(WAIT_SCHEMA_TIMEOUT,5000).
 -define(ATTACH_TIMEOUT,600000). %10 min.
@@ -185,6 +196,9 @@ create_schema()->
     {disc_copies,[node()]},
     {ram_copies,[]}
   ]).
+
+stop()->
+  mnesia:stop().
 
 
 wiat_segments(Timeout)->

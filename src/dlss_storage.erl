@@ -20,7 +20,7 @@
 
 -include("dlss.hrl").
 
--record(sgm,{str,key,lvl,tbl}).
+-record(sgm,{str,key,lvl}).
 
 %%=================================================================
 %%	STORAGE SEGMENT API
@@ -39,23 +39,26 @@
 %%  Service API
 %%-----------------------------------------------------------------
 get_storages()->
-  Start=#sgm{str='_',key='_',lvl = '_',tbl='_'},
+  Start=#sgm{str='_',key='_',lvl = '_'},
   get_storages(dlss_segment:dirty_next(dlss_schema,Start),[]).
+get_storages(#sgm{str = Str}=Sgm,[Str|_]=Acc)->
+  get_storages(dlss_segment:dirty_next(dlss_schema,Sgm),Acc);
 get_storages(#sgm{str = Str}=Sgm,Acc)->
   get_storages(dlss_segment:dirty_next(dlss_schema,Sgm),[Str|Acc]);
 get_storages(_Sgm,Acc)->
   lists:reverse(Acc).
 
 get_segments()->
-  Start=#sgm{str='_',key='_',lvl = '_',tbl='_'},
+  Start=#sgm{str='_',key='_',lvl = '_'},
   get_segments('_',dlss_segment:dirty_next(dlss_schema,Start),[]).
 
 get_segments(Storage)->
-  Start=#sgm{str=Storage,key='_',lvl = '_',tbl='_'},
+  Start=#sgm{str=Storage,key='_',lvl = -1},
   get_segments(Storage,dlss_segment:dirty_next(dlss_schema,Start),[]).
 
-get_segments(Storage,#sgm{str = Str,tbl=Table}=Sgm,Acc)
+get_segments(Storage,#sgm{str = Str}=Sgm,Acc)
   when Str=:=Storage;Storage=:='_'->
+  Table=dlss_segment:dirty_read(dlss_schema,Sgm),
   get_segments(Storage,dlss_segment:dirty_next(dlss_schema,Sgm),[Table|Acc]);
 get_segments(_Storage,_Sgm,Acc)->
   lists:reverse(Acc).
@@ -80,7 +83,7 @@ add(Name,Type,Options)->
     Root,
     Attributes
   ]),
-  case mnesia:create_table(Name,[
+  case mnesia:create_table(Root,[
     {attributes,record_info(fields,kv)},
     {record_name,kv},
     {type,ordered_set}|
@@ -99,16 +102,18 @@ add(Name,Type,Options)->
   end,
 
   % Add the storage to the schema
-  ok=dlss_segment:dirty_write(dlss_schema,#sgm{str=Name,lvl=0,tbl=Root,key='_'}).
+  ok=dlss_segment:dirty_write(dlss_schema,#sgm{str=Name,lvl=0,key='_'},Root).
 
 remove(Name)->
   ?LOGWARNING("removing storage ~p",[Name]),
-  Start=#sgm{str=Name,key='_',lvl = '_',tbl='_'},
+  Start=#sgm{str=Name,key='_',lvl = '_'},
   remove(Name,dlss_segment:dirty_next(dlss_schema,Start)).
 
-remove(Storage,#sgm{str=Storage,tbl=Table}=Sgm)->
+remove(Storage,#sgm{str=Storage}=Sgm)->
+  Table=dlss_segment:dirty_read(dlss_schema,Sgm),
   ?LOGWARNING("removing segment ~p storage ~p",[Table,Storage]),
   ok=dlss_segment:dirty_delete(dlss_schema,Sgm),
+
   case mnesia:delete_table(Table) of
     {atomic,ok}->ok;
     {aborted,Reason}->
@@ -118,6 +123,7 @@ remove(Storage,#sgm{str=Storage,tbl=Table}=Sgm)->
         Reason
       ])
   end,
+  reset_id(Storage),
   remove(Storage,dlss_segment:dirty_next(dlss_schema,Sgm));
 remove(Storage,_Sgm)->
   ?LOGINFO("storage ~p removed",[Storage]).
@@ -133,6 +139,9 @@ new_segment_name(Storage)->
 
 get_unique_id(Storage)->
   mnesia:dirty_update_counter(dlss_schema,{id,Storage},1).
+reset_id(Storage)->
+  mnesia:dirty_delete(dlss_schema,{id,Storage}).
+
 
 table_attributes(Type,#{
   nodes:=Nodes,
