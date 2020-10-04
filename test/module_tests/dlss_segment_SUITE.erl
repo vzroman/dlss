@@ -18,6 +18,7 @@
 -module(dlss_segment_SUITE).
 
 -include("dlss_test.hrl").
+-include("dlss.hrl").
 
 %% API
 -export([
@@ -39,22 +40,38 @@
 -export([
   test_performance_disc_write/1,
   test_performance_disc_read/1,
-  test_performance_disc_delete/1
+  test_performance_disc_scan/1,
+  test_performance_disc_select/1,
+  test_performance_disc_delete/1,
+
+  test_performance_dets_write/1,
+  test_performance_dets_read/1,
+  test_performance_dets_delete/1
 ]).
 
 all()->
   [
-    test_order,
-    {group,performance}
+    test_order
+    ,{group,performance_leveldb}
+    ,{group,performance_dets}
   ].
 
 groups()->
-  [{performance,
+  [{performance_leveldb,
     [sequence],
     [
       test_performance_disc_write,
       test_performance_disc_read,
+      test_performance_disc_select,
+      test_performance_disc_scan,
       test_performance_disc_delete
+    ]
+  },{performance_dets,
+    [sequence],
+    [
+      test_performance_dets_write,
+      test_performance_dets_read,
+      test_performance_dets_delete
     ]
   }].
 
@@ -62,10 +79,12 @@ groups()->
 init_per_suite(Config)->
   dlss_backend:init_backend(),
   dlss:add_storage(order_test,disc),
+  Count=1000000,
   [Segment]=dlss:get_segments(order_test),
   [
     {storage,order_test},
-    {segment,Segment}
+    {segment,Segment},
+    {count,Count}
     |Config
   ].
 end_per_suite(Config)->
@@ -75,13 +94,25 @@ end_per_suite(Config)->
   ok.
 
 
-init_per_group(performance,Config)->
-  Count=lists:seq(1,100000),
-  [{count,Count}|Config];
+init_per_group(performance_dets,Config)->
+  {atomic,ok}= mnesia:create_table(test_dets,[
+    {attributes,record_info(fields,kv)},
+    {record_name,kv},
+    {type,set},
+    {disc_only_copies, [node()]}
+  ]),
+  [
+    {dets,test_dets}
+    |Config
+  ];
 
 init_per_group(_,Config)->
   Config.
 
+end_per_group(performance,Config)->
+  Segment=?GET(dets,Config),
+  {atomic,ok}=mnesia:delete_table(Segment),
+  ok;
 end_per_group(_,_Config)->
   ok.
 
@@ -100,7 +131,7 @@ test_order(Config)->
   {value,1}=dlss_segment:dirty_read(Segment,{1,2}),
 
   ok=dlss_segment:dirty_delete(Segment,{1,2}),
-  undefined=dlss_segment:dirty_read(Segment,{1,2}),
+  not_found=dlss_segment:dirty_read(Segment,{1,2}),
 
   ok.
 
@@ -112,7 +143,9 @@ test_performance_disc_write(Config)->
   Segment=?GET(segment,Config),
   Count=?GET(count,Config),
 
-  [ok=dlss_segment:dirty_write(Segment,{I,2},{value,I})||I<-Count],
+  for(fun(I)->
+    ok=dlss_segment:dirty_write(Segment,{I,2},{value,I})
+  end,0,Count),
 
   ok.
 
@@ -121,7 +154,34 @@ test_performance_disc_read(Config)->
   Segment=?GET(segment,Config),
   Count=?GET(count,Config),
 
-  [{value,I}=dlss_segment:dirty_read(Segment,{I,2})||I<-Count],
+  for(fun(I)->
+    {value,I}=dlss_segment:dirty_read(Segment,{I,2})
+  end,0,Count),
+
+  ok.
+
+test_performance_disc_select(Config)->
+  Segment=?GET(segment,Config),
+  Count=?GET(count,Config),
+  Step=Count div 100,
+  From=Step*40,
+  To=Step*85,
+  Total=To-From,
+  Result=mnesia:dirty_select(Segment,[{#kv{key='$1',value='$2'},[{'>=','$1',{{From+1,2}}},{'=<','$1',{{To,2}}}],[{{'$1','$2'}}]}]),
+  Total=length(Result),
+  ok.
+
+
+test_performance_disc_scan(Config)->
+  Segment=?GET(segment,Config),
+  Count=?GET(count,Config),
+
+  Step=Count div 100,
+  From=Step*40,
+  To=Step*85,
+  Total=To-From,
+  Result=dlss_segment:dirty_scan(Segment,{From+1,2},{To,2}),
+  Total=length(Result),
 
   ok.
 
@@ -130,9 +190,48 @@ test_performance_disc_delete(Config)->
   Segment=?GET(segment,Config),
   Count=?GET(count,Config),
 
-  [{value,I}=dlss_segment:dirty_read(Segment,{I,2})||I<-Count],
+  for(fun(I)->
+    {value,I}=dlss_segment:dirty_read(Segment,{I,2})
+  end,0,Count),
 
   ok.
 
+test_performance_dets_write(Config)->
 
+  Segment=?GET(dets,Config),
+  Count=?GET(count,Config),
+
+  for(fun(I)->
+    ok=dlss_segment:dirty_write(Segment,{I,2},{value,I})
+  end,0,Count),
+
+  ok.
+
+test_performance_dets_read(Config)->
+
+  Segment=?GET(dets,Config),
+  Count=?GET(count,Config),
+
+  for(fun(I)->
+    {value,I}=dlss_segment:dirty_read(Segment,{I,2})
+  end,0,Count),
+
+  ok.
+
+test_performance_dets_delete(Config)->
+
+  Segment=?GET(dets,Config),
+  Count=?GET(count,Config),
+
+  for(fun(I)->
+    {value,I}=dlss_segment:dirty_read(Segment,{I,2})
+  end,0,Count),
+
+  ok.
+
+for(_F,From,To) when From>=To->
+  ok;
+for(F,From,To)->
+  F(From),
+  for(F,From+1,To).
 

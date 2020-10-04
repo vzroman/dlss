@@ -26,8 +26,10 @@
 %%	STORAGE SEGMENT API
 %%=================================================================
 -export([
+  dirty_first/1,
   dirty_next/2,
   dirty_read/2,
+  dirty_scan/3,
   dirty_write/2,dirty_write/3,
   dirty_delete/2
 ]).
@@ -53,17 +55,98 @@
 
 -define(DEFAULT_SCAN_CYCLE,5000).
 
+-define(MAX_SCAN_INTERVAL_BATCH,1000).
+
 %%=================================================================
 %%	STORAGE SEGMENT API
 %%=================================================================
+dirty_first(Segment)->
+  mnesia:dirty_first(Segment).
 dirty_next(Segment,Pattern)->
   mnesia:dirty_next(Segment,Pattern).
 
 dirty_read(Segment,Key)->
   case mnesia:dirty_read(Segment,Key) of
     [#kv{value = Value}]->Value;
-    _->undefined
+    _->not_found
   end.
+
+dirty_scan(Segment,From,To)->
+  dirty_scan(Segment,From,To,infinity).
+dirty_scan(Segment,From,To,Limit)->
+
+  % Find out the type of the storage
+  StorageType=mnesia_lib:storage_type_at_node(node(),Segment),
+
+  % Define where to stop
+  StopGuard=
+    if
+      To=:='$end_of_table' ->[];  % Nowhere
+      true -> [{'=<','$1',{const,To}}]    % Stop at the To key
+    end,
+
+  MS=[{#kv{key='$1',value='$2'},StopGuard,[{{'$1','$2'}}]}],
+
+  % Initialize the continuation
+  case mnesia_lib:db_select_init(StorageType,Segment,MS,1) of
+    {[],'$end_of_table'}->[]; % The segment is empty or there are no keys less than To
+
+    {[{FirstKey,FirstValue}],Cont}->
+
+      % Define the from which to start
+      StartKey=
+        if
+          From=:='$start_of_table' ->FirstKey ;
+          true ->From
+        end,
+
+      % Initialize the continuation with the key to start from
+      Cont1=init_continuation(Cont,StartKey,Limit),
+
+      % Define the head
+      Head=
+        if
+          StartKey=:=From ->[{StartKey,FirstValue}] ;
+          true ->
+            case dirty_read(Segment,From) of
+              not_found->[];
+              FromValue->[{From,FromValue}]
+            end
+        end,
+
+      % Run the search
+      Head++run_continuation(Cont1,StorageType,MS,Limit,[])
+  end.
+
+init_continuation('$end_of_table',_StartKey,_Limit)->
+  '$end_of_table';
+init_continuation({Segment,_LastKey,Par3,_Limit,Ref,Par6,Par7,Par8},StartKey,Limit)->
+  % This is the form of ets ordered_set continuation
+  {Segment,StartKey,Par3,Limit,Ref,Par6,Par7,Par8};
+init_continuation({_LastKey,_Limit,Fun},StartKey,Limit)->
+  % This is the form of mnesia_leveldb continuation
+  {StartKey,Limit,Fun}.
+
+run_continuation('$end_of_table',_StorageType,_MS,_Limit,Acc)->
+  lists:append(lists:reverse(Acc));
+run_continuation(_Cont,_StorageType,_MS,Limit,Acc) when Limit=<0->
+  lists:append(lists:reverse(Acc));
+run_continuation(Cont,StorageType,MS,Limit,Acc)->
+  % Run the search
+  {Result,Cont1}=mnesia_lib:db_select_cont(StorageType,Cont,MS),
+  % Update the acc
+  Acc1=
+    case Result of
+      []->Acc;
+      _->[Result|Acc]
+    end,
+  % Update the limit
+  Limit1=
+    if
+      is_integer(Limit)-> Limit-length(Result);
+      true -> Limit
+    end,
+  run_continuation(Cont1,StorageType,MS,Limit1,Acc1).
 
 dirty_write(Segment,{Key,Value})->
   dirty_write(Segment,Key,Value).
