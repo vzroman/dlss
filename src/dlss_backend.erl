@@ -129,8 +129,6 @@ init_backend()->
   % We want to see in the console what's happening
   mnesia:set_debug_level(debug),
   ok=mnesia:start(),
-  % Register leveldb backend. !!! Many thanks to Klarna and Basho developers
-  mnesia_eleveldb:register(),
 
   ?LOGINFO("dlss initalization"),
   if
@@ -146,6 +144,7 @@ init_backend()->
           mnesia:stop(),
           ok=mnesia:delete_schema([node()]),
           ok=mnesia:start(),
+          % Register leveldb backend. !!! Many thanks to Google, Basho and Klarna developers
           mnesia_eleveldb:register(),
 
           ?LOGINFO("waiting for the schema from the master node..."),
@@ -155,6 +154,7 @@ init_backend()->
           wiat_segments(?ENV(start_timeout,?DEFAULT_START_TIMEOUT));
         true ->
           ?LOGINFO("node is starting as master"),
+          mnesia_eleveldb:register(),
           create_schema()
       end;
     true ->
@@ -167,7 +167,6 @@ init_backend()->
           ?LOGWARNING("restarting mnesia"),
           mnesia:stop(),
           ok=mnesia:start(),
-          mnesia_eleveldb:register(),
 
           ?LOGINFO("waiting for schema availability..."),
           mnesia:wait_for_tables([schema,dlss_schema],?WAIT_SCHEMA_TIMEOUT),
