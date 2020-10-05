@@ -33,6 +33,7 @@
 ]).
 
 -export([
+  test_read/1,
   test_order/1
 ]).
 
@@ -51,9 +52,10 @@
 
 all()->
   [
+    test_read,
     test_order
-    ,{group,performance_leveldb}
-    ,{group,performance_dets}
+%%    ,{group,performance_leveldb}
+%%    ,{group,performance_dets}
   ].
 
 groups()->
@@ -123,7 +125,7 @@ init_per_testcase(_,Config)->
 end_per_testcase(_,_Config)->
   ok.
 
-test_order(Config)->
+test_read(Config)->
   Segment=?GET(segment,Config),
 
 
@@ -132,6 +134,57 @@ test_order(Config)->
 
   ok=dlss_segment:dirty_delete(Segment,{1,2}),
   not_found=dlss_segment:dirty_read(Segment,{1,2}),
+
+
+  ok.
+
+test_order(Config)->
+  Segment=?GET(segment,Config),
+
+
+  %% Simple integer
+  ok=dlss_segment:dirty_write(Segment,{10,1},test_value),
+  ok=dlss_segment:dirty_write(Segment,{10,2},test_value),
+  {10,1}=dlss_segment:dirty_next(Segment,{2,10}),
+  {10,2}=dlss_segment:dirty_next(Segment,{10,1}),
+  '$end_of_table'=dlss_segment:dirty_next(Segment,{10,2}),
+
+  % an atom is greater than an integer
+  ok=dlss_segment:dirty_write(Segment,{test,5},test_value),
+  ok=dlss_segment:dirty_write(Segment,{5,test},test_value),
+  {5,test}=dlss_segment:dirty_first(Segment),
+  {10,1}=dlss_segment:dirty_next(Segment,{5,test}),
+  {test,5}=dlss_segment:dirty_next(Segment,{10,2}),
+
+  % a tuple is greater than an atom
+  ok=dlss_segment:dirty_write(Segment,{{test},5},test_value),
+  ok=dlss_segment:dirty_write(Segment,{5,{test}},test_value),
+  {5,{test}}=dlss_segment:dirty_next(Segment,{5,test}),
+  {{test},5}=dlss_segment:dirty_next(Segment,{test,5}),
+
+  % a longer tuple is greater than a shorter one
+  ok=dlss_segment:dirty_write(Segment,{{0,test},5},test_value),
+  ok=dlss_segment:dirty_write(Segment,{5,{0,test}},test_value),
+  {5,{0,test}}=dlss_segment:dirty_next(Segment,{5,{test}}),
+  {{0,test},5}=dlss_segment:dirty_next(Segment,{{test},5}),
+
+  % a list is greater than a tuple
+  ok=dlss_segment:dirty_write(Segment,{[test],5},test_value),
+  ok=dlss_segment:dirty_write(Segment,{5,[test]},test_value),
+  {5,[test]}=dlss_segment:dirty_next(Segment,{5,{0,test}}),
+  {[test],5}=dlss_segment:dirty_next(Segment,{{0,test},5}),
+
+  % lists are compared lexicographically
+  ok=dlss_segment:dirty_write(Segment,{[5,test],5},test_value),
+  ok=dlss_segment:dirty_write(Segment,{5,[5,test]},test_value),
+  {5,[5,test]}=dlss_segment:dirty_next(Segment,{5,{0,test}}),
+  {[5,test],5}=dlss_segment:dirty_next(Segment,{{0,test},5}),
+
+  % a binary is greater than a list
+  ok=dlss_segment:dirty_write(Segment,{<<0>>,5},test_value),
+  ok=dlss_segment:dirty_write(Segment,{5,<<0>>},test_value),
+  {5,<<0>>}=dlss_segment:dirty_next(Segment,{5,[test]}),
+  {<<0>>,5}=dlss_segment:dirty_next(Segment,{[test],5}),
 
   ok.
 
