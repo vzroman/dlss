@@ -138,7 +138,7 @@ test_leveldb_write(Config)->
 
   for(fun(I)->
     ok=dlss_segment:dirty_write(Segment,{I,2},{value,I})
-      end,0,Count),
+  end,0,Count),
 
   ok.
 
@@ -149,7 +149,7 @@ test_leveldb_read(Config)->
 
   for(fun(I)->
     {value,I}=dlss_segment:dirty_read(Segment,{I,2})
-      end,0,Count),
+  end,0,Count),
 
   ok.
 
@@ -160,7 +160,7 @@ test_leveldb_select(Config)->
   From=Step*40,
   To=Step*85,
   Total=To-From,
-  Result=mnesia:dirty_select(Segment,[{#kv{key='$1',value='$2'},[{'>=','$1',{{From+1,2}}},{'=<','$1',{{To,2}}}],[{{'$1','$2'}}]}]),
+  Result=mnesia:dirty_select(Segment,[{#kv{key='$1',value='$2'},[{'>','$1',{{From,2}}},{'=<','$1',{{To,2}}}],[{{'$1','$2'}}]}]),
   Total=length(Result),
   ok.
 
@@ -173,7 +173,7 @@ test_leveldb_scan(Config)->
   From=Step*40,
   To=Step*85,
   Total=To-From,
-  Result=dlss_segment:dirty_scan(Segment,{From+1,2},{To,2}),
+  Result=dlss_segment:dirty_scan(Segment,{From,2},{To,2}),
   Total=length(Result),
 
   ok.
@@ -185,7 +185,7 @@ test_leveldb_delete(Config)->
 
   for(fun(I)->
     {value,I}=dlss_segment:dirty_read(Segment,{I,2})
-      end,0,Count),
+  end,0,Count),
 
   ok.
 
@@ -196,7 +196,7 @@ test_dets_write(Config)->
 
   for(fun(I)->
     ok=dlss_segment:dirty_write(Segment,{I,2},{value,I})
-      end,0,Count),
+  end,0,Count),
 
   ok.
 

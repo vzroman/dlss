@@ -94,25 +94,14 @@ dirty_scan(Segment,From,To,Limit)->
     {[{FirstKey,FirstValue}],Cont}->
 
       % Define the from which to start
-      StartKey=
+      {StartKey,Head}=
         if
-          From=:='$start_of_table' ->FirstKey ;
-          true ->From
+          From=:='$start_of_table' ->{FirstKey,[{FirstKey,FirstValue}]} ;
+          true ->{From,[]}
         end,
 
       % Initialize the continuation with the key to start from
       Cont1=init_continuation(Cont,StartKey,Limit),
-
-      % Define the head
-      Head=
-        if
-          StartKey=:=From ->[{StartKey,FirstValue}] ;
-          true ->
-            case dirty_read(Segment,From) of
-              not_found->[];
-              FromValue->[{From,FromValue}]
-            end
-        end,
 
       % Run the search
       Head++run_continuation(Cont1,StorageType,MS,Limit,[])
