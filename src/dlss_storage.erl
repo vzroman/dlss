@@ -30,7 +30,8 @@
   get_storages/0,
   get_segments/0,get_segments/1,
   add/2,
-  remove/1
+  remove/1,
+  get_type/1
 ]).
 
 %%=================================================================
@@ -44,34 +45,52 @@
 %%  Service API
 %%-----------------------------------------------------------------
 get_storages()->
-  Start=#sgm{str='_',key='_',lvl = '_'},
-  get_storages(dlss_segment:dirty_next(dlss_schema,Start),[]).
-get_storages(#sgm{str = Str}=Sgm,[Str|_]=Acc)->
-  get_storages(dlss_segment:dirty_next(dlss_schema,Sgm),Acc);
-get_storages(#sgm{str = Str}=Sgm,Acc)->
-  get_storages(dlss_segment:dirty_next(dlss_schema,Sgm),[Str|Acc]);
-get_storages(_Sgm,Acc)->
-  lists:reverse(Acc).
+  MS=[{
+    #kv{key = #sgm{str = '$1',key = '_',lvl = 0},value = '_'},
+    [],
+    ['$1']
+  }],
+  mnesia:dirty_select(dlss_schema,MS).
 
 get_segments()->
-  Start=#sgm{str='_',key='_',lvl = '_'},
-  get_segments('_',dlss_segment:dirty_next(dlss_schema,Start),[]).
+  MS=[{
+    #kv{key = #sgm{str = '_',key = '_',lvl = '_'}, value = '$1'},
+    [],
+    ['$1']
+  }],
+  mnesia:dirty_select(dlss_schema,MS).
+
 
 get_segments(Storage)->
-  Start=#sgm{str=Storage,key='_',lvl = -1},
-  get_segments(Storage,dlss_segment:dirty_next(dlss_schema,Start),[]).
+  MS=[{
+    #kv{key = #sgm{str = Storage,key = '_',lvl = '_'}, value = '$1'},
+    [],
+    ['$1']
+  }],
+  mnesia:dirty_select(dlss_schema,MS).
 
-get_segments(Storage,#sgm{str = Str}=Sgm,Acc)
-  when Str=:=Storage;Storage=:='_'->
-  Table=dlss_segment:dirty_read(dlss_schema,Sgm),
-  get_segments(Storage,dlss_segment:dirty_next(dlss_schema,Sgm),[Table|Acc]);
-get_segments(_Storage,_Sgm,Acc)->
-  lists:reverse(Acc).
+get_type(Storage)->
+  {ok,Root}=root_segment(Storage),
+  Nodes=[{T,mnesia:table_info(Root,CT)}||{CT,T}<-[
+    {disc_copies,ramdisc},
+    {ram_copies,ram},
+    {leveldb_copies,disc}
+  ]],
+  case [T||{T,N}<-Nodes,N=/=[]] of
+    [T]->T;
+    _->throw(invalid_storage_type)
+  end.
 
 %---------Create a new storage----------------------------------------
 add(Name,Type)->
   add(Name,Type,#{}).
 add(Name,Type,Options)->
+
+  % Check if the occupied
+  case root_segment(Name) of
+    {ok,_}->?ERROR(already_exists);
+    _->ok
+  end,
 
   % Default options
   Attributes=table_attributes(Type,maps:merge(#{
@@ -155,6 +174,11 @@ get_unique_id(Storage)->
 reset_id(Storage)->
   mnesia:dirty_delete(dlss_schema,{id,Storage}).
 
+root_segment(Storage)->
+  case dlss_segment:dirty_read(dlss_schema,#sgm{str=Storage,key = '_',lvl = 0}) of
+    not_found->{error,invalid_storage};
+    Segment->{ok,Segment}
+  end.
 
 table_attributes(Type,#{
   nodes:=Nodes,
