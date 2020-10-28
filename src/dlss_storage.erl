@@ -31,7 +31,8 @@
   get_segments/0,get_segments/1,
   add/2,
   remove/1,
-  get_type/1
+  get_type/1,
+  add_child_segment/2
 ]).
 
 %%=================================================================
@@ -71,17 +72,10 @@ get_segments(Storage)->
 
 get_type(Storage)->
   {ok,Root}=root_segment(Storage),
-  Nodes=[{T,mnesia:table_info(Root,CT)}||{CT,T}<-[
-    {disc_copies,ramdisc},
-    {ram_copies,ram},
-    {leveldb_copies,disc}
-  ]],
-  case [T||{T,N}<-Nodes,N=/=[]] of
-    [T]->T;
-    _->throw(invalid_storage_type)
-  end.
+  #{ type:= T }=dlss_segment:get_info(Root),
+  T.
 
-%---------Create a new storage----------------------------------------
+%---------Create/remove a storage----------------------------------------
 add(Name,Type)->
   add(Name,Type,#{}).
 add(Name,Type,Options)->
@@ -126,7 +120,7 @@ add(Name,Type,Options)->
   end,
 
   % Add the storage to the schema
-  ok=dlss_segment:dirty_write(dlss_schema,#sgm{str=Name,lvl=0,key='_'},Root).
+  ok=dlss_segment:dirty_write(dlss_schema,#sgm{str=Name,key='_',lvl=0},Root).
 
 remove(Name)->
   ?LOGWARNING("removing storage ~p",[Name]),
@@ -152,14 +146,57 @@ remove(Storage,#sgm{str=Storage}=Sgm)->
 remove(Storage,_Sgm)->
   ?LOGINFO("storage ~p removed",[Storage]).
 
+%---------Create/Remove a segment----------------------------------------
+add_child_segment(#sgm{str = Str, lvl = Lvl} = Sgm, FromKey)->
+
+  % Obtain the segment name
+  Segment=dlss_segment:dirty_read(dlss_schema,Sgm),
+
+  % Get segment params
+  Params = #{ type:=Type } = dlss_segment:get_info(Segment),
+
+  % Default options
+  Attributes=table_attributes(Type,Params),
+
+  % Generate an unique name within the storage
+  ChildName=new_segment_name(Str),
+
+  ?LOGINFO("create a new child segment ~p from ~p with attributes ~p",[
+    ChildName,
+    Segment,
+    Attributes
+  ]),
+  case mnesia:create_table(ChildName,[
+    {attributes,record_info(fields,kv)},
+    {record_name,kv},
+    {type,ordered_set}|
+    Attributes
+  ]) of
+    {atomic,ok}->ok;
+    {aborted,Reason}->
+      ?LOGERROR("unable to create a new child segment ~p from ~p with attributes ~p for storage ~p, error ~p",[
+        ChildName,
+        Segment,
+        Attributes,
+        Str,
+        Reason
+      ]),
+      ?ERROR(Reason)
+  end,
+
+  % Add the storage to the schema
+  ok=dlss_segment:dirty_write(dlss_schema,Sgm#sgm{key=FromKey,lvl=Lvl + 1},ChildName).
+
+
+
+
 %%=================================================================
 %%	Read/Write
 %%=================================================================
 dirty_read(Storage,Key)->
 
-%%  Segments=key_segments(Storage,Key),
-%%
-%%  mneisa:dirty_rpc(Tab, M, F, Args),
+  %Segments=key_segments(Storage,Key),
+
   ok.
 %%=================================================================
 %%	Internal stuff
@@ -204,6 +241,7 @@ table_attributes(Type,#{
       true->[]
     end,
   TypeAttr++LocalContent.
+
 
 
 

@@ -33,6 +33,14 @@
   dirty_write/2,dirty_write/3,
   dirty_delete/2
 ]).
+
+%%=================================================================
+%%	SERVICE API
+%%=================================================================
+-export([
+  get_info/1
+]).
+
 %%=================================================================
 %%	API
 %%=================================================================
@@ -146,6 +154,19 @@ dirty_delete(Segment,Key)->
   mnesia:dirty_delete(Segment,Key).
 
 %%=================================================================
+%%	Service API
+%%=================================================================
+get_info(Segment)->
+  Local = mnesia:table_info(Segment,local_content),
+  { Type, Nodes }=get_nodes(Segment),
+  #{
+    type => Type,
+    local => Local,
+    nodes => Nodes
+  }.
+
+
+%%=================================================================
 %%	API
 %%=================================================================
 start_link(Segment)->
@@ -202,3 +223,18 @@ terminate(Reason,#state{segment = Segment})->
 
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
+
+
+%%============================================================================
+%%	Internal helpers
+%%============================================================================
+get_nodes(Segment)->
+  Nodes=[{T,mnesia:table_info(Segment,CT)}||{CT,T}<-[
+    {disc_copies,ramdisc},
+    {ram_copies,ram},
+    {leveldb_copies,disc}
+  ]],
+  case [{T,N}||{T,N}<-Nodes,N=/=[]] of
+    [Result]->Result;
+    _->throw(invalid_storage_type)
+  end.
