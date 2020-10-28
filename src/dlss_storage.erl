@@ -29,10 +29,12 @@
   %-----Service API-------
   get_storages/0,
   get_segments/0,get_segments/1,
+  root_segment/1,
+  segment_params/1,
   add/2,
   remove/1,
   get_type/1,
-  add_child_segment/2
+  spawn_segment/1,spawn_segment/2
 ]).
 
 %%=================================================================
@@ -70,10 +72,30 @@ get_segments(Storage)->
   }],
   mnesia:dirty_select(dlss_schema,MS).
 
+root_segment(Storage)->
+  case dlss_segment:dirty_read(dlss_schema,#sgm{str=Storage,key = '_',lvl = 0}) of
+    not_found->{error,invalid_storage};
+    Segment->{ok,Segment}
+  end.
+
 get_type(Storage)->
   {ok,Root}=root_segment(Storage),
   #{ type:= T }=dlss_segment:get_info(Root),
   T.
+
+segment_params(Name)->
+  case segment_by_name(Name) of
+    { ok, #sgm{ str = Str, lvl = Lvl, key = Key } }->
+      % The start key except for '_' is wrapped into a tuple
+      % to make the schema properly ordered by start keys
+      StartKey =
+        case Key of
+          { K } -> K;
+          _-> Key
+        end,
+      { ok, #{ storage => Str, level => Lvl, key => StartKey } };
+    Error -> Error
+  end.
 
 %---------Create/remove a storage----------------------------------------
 add(Name,Type)->
@@ -147,7 +169,14 @@ remove(Storage,_Sgm)->
   ?LOGINFO("storage ~p removed",[Storage]).
 
 %---------Create/Remove a segment----------------------------------------
-add_child_segment(#sgm{str = Str, lvl = Lvl} = Sgm, FromKey)->
+spawn_segment(Segment) ->
+  spawn_segment(Segment,'$start_of_table').
+spawn_segment(Name, FromKey) when is_atom(Name)->
+  case segment_by_name(Name) of
+    { ok, Segment }-> spawn_segment( Segment, FromKey );
+    Error -> Error
+  end;
+spawn_segment(#sgm{str = Str, lvl = Lvl, key = Key} = Sgm, FromKey)->
 
   % Obtain the segment name
   Segment=dlss_segment:dirty_read(dlss_schema,Sgm),
@@ -184,8 +213,14 @@ add_child_segment(#sgm{str = Str, lvl = Lvl} = Sgm, FromKey)->
       ?ERROR(Reason)
   end,
 
-  % Add the storage to the schema
-  ok=dlss_segment:dirty_write(dlss_schema,Sgm#sgm{key=FromKey,lvl=Lvl + 1},ChildName).
+  StartKey=
+    if
+      FromKey =:='$start_of_table' -> Key ;
+      true -> { FromKey }
+    end,
+
+  % Add the segment to the schema
+  ok = dlss_segment:dirty_write( dlss_schema, Sgm#sgm{ key=StartKey, lvl= Lvl + 1 }, ChildName ).
 
 
 
@@ -211,11 +246,6 @@ get_unique_id(Storage)->
 reset_id(Storage)->
   mnesia:dirty_delete(dlss_schema,{id,Storage}).
 
-root_segment(Storage)->
-  case dlss_segment:dirty_read(dlss_schema,#sgm{str=Storage,key = '_',lvl = 0}) of
-    not_found->{error,invalid_storage};
-    Segment->{ok,Segment}
-  end.
 
 table_attributes(Type,#{
   nodes:=Nodes,
@@ -241,6 +271,17 @@ table_attributes(Type,#{
       true->[]
     end,
   TypeAttr++LocalContent.
+
+segment_by_name(Name)->
+  MS=[{
+    #kv{key = '$1', value = Name},
+    [],
+    ['$1']
+  }],
+  case mnesia:dirty_select(dlss_schema,MS) of
+    [Key]->{ ok, Key };
+    _-> { error, not_found }
+  end.
 
 
 

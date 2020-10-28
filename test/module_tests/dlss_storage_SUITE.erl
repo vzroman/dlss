@@ -33,13 +33,15 @@
 ]).
 
 -export([
-  test_service_api/1
+  test_service_api/1,
+  test_storage_split/1
 ]).
 
 
 all()->
   [
-    test_service_api
+    test_service_api,
+    test_storage_split
   ].
 
 groups()->
@@ -99,6 +101,33 @@ test_service_api(_Config)->
   [dlss_storage3_1]=dlss_storage:get_segments(),
 
   dlss_storage:remove(storage3),
+  []=dlss_storage:get_storages(),
+  []=dlss_storage:get_segments(),
+
+  ok.
+
+test_storage_split(_Config)->
+
+  ok=dlss_storage:add(storage1,disc),
+  disc=dlss_storage:get_type(storage1),
+  [storage1]=dlss_storage:get_storages(),
+  [dlss_storage1_1]=dlss_storage:get_segments(storage1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  [dlss_storage1_1,dlss_storage1_2]=dlss_storage:get_segments(storage1),
+  { ok, #{
+    level := 1,
+    key := '_'
+  } } = dlss_storage:segment_params(dlss_storage1_2),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_1,100),
+  [dlss_storage1_1, dlss_storage1_2, dlss_storage1_3]=dlss_storage:get_segments(storage1),
+  { ok, #{
+    level := 1,
+    key := 100
+  } } = dlss_storage:segment_params(dlss_storage1_3),
+
+  dlss_storage:remove(storage1),
   []=dlss_storage:get_storages(),
   []=dlss_storage:get_segments(),
 
