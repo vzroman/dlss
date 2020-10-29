@@ -173,12 +173,16 @@ remove(Storage,_Sgm)->
 %---------Spawn a segment----------------------------------------
 spawn_segment(Segment) ->
   spawn_segment(Segment,'$start_of_table').
-spawn_segment(Name, FromKey) when is_atom(Name)->
+spawn_segment(Name, SplitKey) when is_atom(Name)->
   case segment_by_name(Name) of
-    { ok, Segment }-> spawn_segment( Segment, FromKey );
+    { ok, Segment }-> spawn_segment( Segment, SplitKey );
     Error -> Error
   end;
-spawn_segment(#sgm{str = Str, lvl = Lvl, key = Key} = Sgm, FromKey)->
+spawn_segment(#sgm{key = { Key } }, SplitKey)
+  when SplitKey =/= '$start_of_table', SplitKey < Key ->
+  % The splitting cannot be less than the start key of the storage
+  ?ERROR({invalid_split_key, SplitKey});
+spawn_segment(#sgm{str = Str, lvl = Lvl, key = Key} = Sgm, SplitKey)->
 
   % Obtain the segment name
   Segment=dlss_segment:dirty_read(dlss_schema,Sgm),
@@ -217,8 +221,8 @@ spawn_segment(#sgm{str = Str, lvl = Lvl, key = Key} = Sgm, FromKey)->
 
   StartKey=
     if
-      FromKey =:='$start_of_table' -> Key ;
-      true -> { FromKey }
+      SplitKey =:='$start_of_table' -> Key ;
+      true -> { SplitKey }
     end,
 
   % Add the segment to the schema
@@ -273,6 +277,11 @@ absorb_segment(#sgm{str = Str} = Sgm, Force)->
     true -> { error, not_empty }
   end.
 
+get_children(Name) when is_atom(Name)->
+  case segment_by_name(Name) of
+    { ok, Segment }-> get_children(Segment);
+    Error -> Error
+  end;
 get_children(Sgm)->
   get_children(dlss_segment:dirty_next(dlss_schema,Sgm),Sgm,[]).
 

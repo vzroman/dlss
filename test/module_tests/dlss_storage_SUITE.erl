@@ -34,14 +34,16 @@
 
 -export([
   test_service_api/1,
-  test_storage_split/1
+  test_storage_split/1,
+  test_storage_children/1
 ]).
 
 
 all()->
   [
     test_service_api,
-    test_storage_split
+    test_storage_split,
+    test_storage_children
   ].
 
 groups()->
@@ -126,6 +128,54 @@ test_storage_split(_Config)->
     level := 1,
     key := 100
   } } = dlss_storage:segment_params(dlss_storage1_3),
+
+  dlss_storage:remove(storage1),
+  []=dlss_storage:get_storages(),
+  []=dlss_storage:get_segments(),
+
+  ok.
+
+test_storage_children(_Config)->
+
+  ok=dlss_storage:add(storage1,disc),
+  disc=dlss_storage:get_type(storage1),
+  [dlss_storage1_1]=dlss_storage:get_segments(storage1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  [dlss_storage1_1,dlss_storage1_2]=dlss_storage:get_segments(storage1),
+  [{_,dlss_storage1_2}] = dlss_storage:get_children(dlss_storage1_1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_1,some_split_key),
+  [dlss_storage1_1,dlss_storage1_2,dlss_storage1_3]=dlss_storage:get_segments(storage1),
+  [{_,dlss_storage1_2},{_,dlss_storage1_3}] = dlss_storage:get_children(dlss_storage1_1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_2),
+  [{_,dlss_storage1_4}] = dlss_storage:get_children(dlss_storage1_2),
+  [
+    {_,dlss_storage1_2},{_,dlss_storage1_4},
+    {_,dlss_storage1_3}] = dlss_storage:get_children(dlss_storage1_1),
+  [] = dlss_storage:get_children(dlss_storage1_3),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_2,next_split_key),
+  [{_,dlss_storage1_4},{_,dlss_storage1_5}] = dlss_storage:get_children(dlss_storage1_2),
+  [
+    {_,dlss_storage1_2},
+    {_,dlss_storage1_4},{_,dlss_storage1_5},
+    {_,dlss_storage1_3}
+  ] = dlss_storage:get_children(dlss_storage1_1),
+  [] = dlss_storage:get_children(dlss_storage1_3),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_3),
+  [{_,dlss_storage1_6}] = dlss_storage:get_children(dlss_storage1_3),
+  [{_,dlss_storage1_4},{_,dlss_storage1_5}] = dlss_storage:get_children(dlss_storage1_2),
+  [
+    {_,dlss_storage1_2},
+    {_,dlss_storage1_4},{_,dlss_storage1_5},
+    {_,dlss_storage1_3},
+    {_,dlss_storage1_6}
+  ] = dlss_storage:get_children(dlss_storage1_1),
+
+  ?assertError( { invalid_split_key, 22 }, dlss_storage:spawn_segment(dlss_storage1_3, 22) ),
 
   dlss_storage:remove(storage1),
   []=dlss_storage:get_storages(),
