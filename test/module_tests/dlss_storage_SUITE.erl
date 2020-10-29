@@ -33,17 +33,19 @@
 ]).
 
 -export([
-  test_service_api/1,
-  test_storage_split/1,
-  test_storage_children/1
+  service_api/1,
+  segment_split/1,
+  segment_children/1,
+  absorb_segment/1
 ]).
 
 
 all()->
   [
-    test_service_api,
-    test_storage_split,
-    test_storage_children
+    service_api,
+    segment_split,
+    segment_children,
+    absorb_segment
   ].
 
 groups()->
@@ -70,7 +72,7 @@ init_per_testcase(_,Config)->
 end_per_testcase(_,_Config)->
   ok.
 
-test_service_api(_Config)->
+service_api(_Config)->
 
   ok=dlss_storage:add(storage1,disc),
   disc=dlss_storage:get_type(storage1),
@@ -108,7 +110,7 @@ test_service_api(_Config)->
 
   ok.
 
-test_storage_split(_Config)->
+segment_split(_Config)->
 
   ok=dlss_storage:add(storage1,disc),
   disc=dlss_storage:get_type(storage1),
@@ -135,7 +137,7 @@ test_storage_split(_Config)->
 
   ok.
 
-test_storage_children(_Config)->
+segment_children(_Config)->
 
   ok=dlss_storage:add(storage1,disc),
   disc=dlss_storage:get_type(storage1),
@@ -176,6 +178,87 @@ test_storage_children(_Config)->
   ] = dlss_storage:get_children(dlss_storage1_1),
 
   ?assertError( { invalid_split_key, 22 }, dlss_storage:spawn_segment(dlss_storage1_3, 22) ),
+
+  dlss_storage:remove(storage1),
+  []=dlss_storage:get_storages(),
+  []=dlss_storage:get_segments(),
+
+  ok.
+
+absorb_segment(_Config)->
+
+  ok=dlss_storage:add(storage1,disc),
+  disc=dlss_storage:get_type(storage1),
+  [dlss_storage1_1]=dlss_storage:get_segments(storage1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  [dlss_storage1_1,dlss_storage1_2]=dlss_storage:get_segments(storage1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_1,some_split_key),
+  [dlss_storage1_1,dlss_storage1_2,dlss_storage1_3]=dlss_storage:get_segments(storage1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_2),
+  [
+    {_,dlss_storage1_2},{_,dlss_storage1_4},
+    {_,dlss_storage1_3}
+  ] = dlss_storage:get_children(dlss_storage1_1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_2,next_split_key),
+  [
+    {_,dlss_storage1_2},
+    {_,dlss_storage1_4},{_,dlss_storage1_5},
+    {_,dlss_storage1_3}
+  ] = dlss_storage:get_children(dlss_storage1_1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_3),
+  [
+    {_,dlss_storage1_2},
+    {_,dlss_storage1_4},{_,dlss_storage1_5},
+    {_,dlss_storage1_3},
+    {_,dlss_storage1_6}
+  ] = dlss_storage:get_children(dlss_storage1_1),
+
+  { error, root_segment } = dlss_storage:absorb_segment(dlss_storage1_1),
+
+  %-----------------------------------------------------------------
+  % Absorb the segment from the level 1
+  %-----------------------------------------------------------------
+  % The parent
+  { ok, #{
+    level := 1,
+    key := '_'
+  } } = dlss_storage:segment_params(dlss_storage1_2),
+
+  % The children
+  { ok, #{
+    level := 2,
+    key := '_'
+  } } = dlss_storage:segment_params(dlss_storage1_4),
+
+  { ok, #{
+    level := 2,
+    key := next_split_key
+  } } = dlss_storage:segment_params(dlss_storage1_5),
+
+  % The ABSORB
+  ok = dlss_storage:absorb_segment( dlss_storage1_2 ),
+  % The storage segments after the absorb
+  [
+    {_,dlss_storage1_4},{_,dlss_storage1_5},
+    {_,dlss_storage1_3},
+    {_,dlss_storage1_6}
+  ] = dlss_storage:get_children(dlss_storage1_1),
+
+  % The children are at the level of the parent segment now
+  { ok, #{
+    level := 1,
+    key := '_'
+  } } = dlss_storage:segment_params(dlss_storage1_4),
+
+  { ok, #{
+    level := 1,
+    key := next_split_key
+  } } = dlss_storage:segment_params(dlss_storage1_5),
 
   dlss_storage:remove(storage1),
   []=dlss_storage:get_storages(),

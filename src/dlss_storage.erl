@@ -236,6 +236,9 @@ absorb_segment(Name,Force) when is_atom(Name)->
     { ok, Segment }-> absorb_segment( Segment, Force );
     Error -> Error
   end;
+absorb_segment(#sgm{lvl = 0}, _Force)->
+  % The root segment cannot be absorbed
+  { error, root_segment };
 absorb_segment(#sgm{str = Str} = Sgm, Force)->
 
   % Obtain the segment name
@@ -258,8 +261,10 @@ absorb_segment(#sgm{str = Str} = Sgm, Force)->
         ok = dlss_segment:delete(dlss_schema, Sgm, write ),
 
         % Put all children segments level up
-        [ ok = dlss_segment:write(dlss_schema, S#sgm{ lvl = S#sgm.lvl - 1 }, T , write ) ||
-          { S, T } <- Children]
+        [ begin
+            ok = dlss_segment:write(dlss_schema, S#sgm{ lvl = S#sgm.lvl - 1 }, T , write ),
+            ok = dlss_segment:delete(dlss_schema, S , write )
+          end || { S, T } <- Children]
       end) of
         { ok, _} ->
 
