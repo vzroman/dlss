@@ -27,7 +27,9 @@
 %%=================================================================
 -export([
   dirty_first/1,
+  dirty_last/1,
   dirty_next/2,
+  dirty_prev/2,
   dirty_read/2,
   dirty_scan/3,
   write/3,write/4,dirty_write/3,
@@ -72,8 +74,13 @@
 %-------------ITERATOR----------------------------------------------
 dirty_first(Segment)->
   mnesia:dirty_first(Segment).
+dirty_last(Segment)->
+  mnesia:dirty_last(Segment).
+
 dirty_next(Segment,Pattern)->
   mnesia:dirty_next(Segment,Pattern).
+dirty_prev(Segment,Pattern)->
+  mnesia:dirty_prev(Segment,Pattern).
 
 %-------------INTERVAL SCAN----------------------------------------------
 dirty_scan(Segment,From,To)->

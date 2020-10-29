@@ -304,9 +304,19 @@ get_children('$end_of_table',_Sgm,Acc)->
 %%=================================================================
 dirty_read( Storage, Key )->
 
-  %Segments=key_segments(Storage,Key),
+  Segments= get_key_segments(Storage,Key),
 
   ok.
+
+get_key_segments(Storage, Key)->
+  [root_segment(Storage) | get_key_segments( Storage, Key, 1 = _Lvl)].
+get_key_segments( Storage, Key, Lvl )->
+  case dlss_segment:dirty_prev(dlss_schema,#sgm{ str = Storage, key = Key, lvl = Lvl }) of
+    #sgm{ lvl = Lvl } = Sgm ->
+      [ dlss_segment:dirty_read(dlss_schema,Sgm) | get_key_segments(Storage, Key, Lvl + 1) ];
+    _->
+      []
+  end.
 %%=================================================================
 %%	Internal stuff
 %%=================================================================
