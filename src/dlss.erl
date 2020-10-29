@@ -29,7 +29,14 @@
   remove_storage/1
 ]).
 
+-export([
+  %-----Data API-------
+  transaction/1,transaction_sync/1
+]).
 
+%%---------------------------------------------------------------
+%%	SERVICE API
+%%---------------------------------------------------------------
 %-----------------------------------------------------------------
 %	Get list of all dlss storages
 %-----------------------------------------------------------------
@@ -54,5 +61,25 @@ add_storage(Name,Type,Options)->
 
 remove_storage(Name)->
   dlss_storage:remove(Name).
+
+%%---------------------------------------------------------------
+%%	DATA API
+%%---------------------------------------------------------------
+%-----------------------------------------------------------------
+%	Wrap the procedure into the ACID transaction
+%-----------------------------------------------------------------
+transaction(Fun)->
+  % We use the mnesia engine to deliver the true distributed ACID transactions
+  case mnesia:transaction(Fun) of
+    {atomic,FunResult}->{ok,FunResult};
+    {aborted,Reason}->{error,Reason}
+  end.
+
+% Sync transaction wait all changes are applied
+transaction_sync(Fun)->
+  case mnesia:sync_transaction(Fun) of
+    {atomic,FunResult}->{ok,FunResult};
+    {aborted,Reason}->{error,Reason}
+  end.
 
 

@@ -34,7 +34,9 @@
   add/2,
   remove/1,
   get_type/1,
-  spawn_segment/1,spawn_segment/2
+  spawn_segment/1,spawn_segment/2,
+  absorb_segment/1,absorb_segment/2,
+  get_children/1
 ]).
 
 %%=================================================================
@@ -168,7 +170,7 @@ remove(Storage,#sgm{str=Storage}=Sgm)->
 remove(Storage,_Sgm)->
   ?LOGINFO("storage ~p removed",[Storage]).
 
-%---------Create/Remove a segment----------------------------------------
+%---------Spawn a segment----------------------------------------
 spawn_segment(Segment) ->
   spawn_segment(Segment,'$start_of_table').
 spawn_segment(Name, FromKey) when is_atom(Name)->
@@ -222,13 +224,71 @@ spawn_segment(#sgm{str = Str, lvl = Lvl, key = Key} = Sgm, FromKey)->
   % Add the segment to the schema
   ok = dlss_segment:dirty_write( dlss_schema, Sgm#sgm{ key=StartKey, lvl= Lvl + 1 }, ChildName ).
 
+%---------Absorb a segment----------------------------------------
+absorb_segment(Segemnt)->
+  absorb_segment(Segemnt,_Force=false).
+absorb_segment(Name,Force) when is_atom(Name)->
+  case segment_by_name(Name) of
+    { ok, Segment }-> absorb_segment( Segment, Force );
+    Error -> Error
+  end;
+absorb_segment(#sgm{str = Str} = Sgm, Force)->
 
+  % Obtain the segment name
+  Name=dlss_segment:dirty_read(dlss_schema,Sgm),
 
+  % Check if the segment is ready to be removed
+  Ready=
+    if
+      Force ->true;
+      true -> dlss_segment:is_empty(Name)
+    end,
+
+  if
+    Ready ->
+      case dlss:transaction(fun()->
+        % Find all the children of the segment
+        Children = get_children(Sgm),
+
+        % Remove the absorbed segment from the dlss schema
+        ok = dlss_segment:delete(dlss_schema, Sgm, write ),
+
+        % Put all children segments level up
+        [ ok = dlss_segment:write(dlss_schema, S#sgm{ lvl = S#sgm.lvl - 1 }, T , write ) ||
+          { S, T } <- Children]
+      end) of
+        { ok, _} ->
+
+          % Remove the segment from mnesia
+          case mnesia:delete_table(Name) of
+            {atomic,ok}->ok;
+            {aborted,Reason}->
+              ?LOGERROR("unable to remove segment ~p storage ~p, reason ~p",[
+                Name,
+                Str,
+                Reason
+              ])
+          end
+      end;
+    true -> { error, not_empty }
+  end.
+
+get_children(Sgm)->
+  get_children(dlss_segment:dirty_next(dlss_schema,Sgm),Sgm,[]).
+
+get_children(#sgm{ lvl = NextLvl },#sgm{lvl = Lvl}, Acc)
+  when NextLvl =< Lvl->
+  lists:reverse(Acc);
+get_children(#sgm{} = Next,Sgm,Acc)->
+  Table = dlss_segment:dirty_read( dlss_schema, Next ),
+  get_children(dlss_segment:dirty_next(dlss_schema,Next),Sgm,[{Next,Table}|Acc]);
+get_children('$end_of_table',_Sgm,Acc)->
+  lists:reverse(Acc).
 
 %%=================================================================
 %%	Read/Write
 %%=================================================================
-dirty_read(Storage,Key)->
+dirty_read( Storage, Key )->
 
   %Segments=key_segments(Storage,Key),
 
@@ -242,6 +302,8 @@ new_segment_name(Storage)->
   list_to_atom(Name).
 
 get_unique_id(Storage)->
+  % TODO. Dirty update does not guarantee a unique value.
+  % Two concurrent processes may get the same value
   mnesia:dirty_update_counter(dlss_schema,{id,Storage},1).
 reset_id(Storage)->
   mnesia:dirty_delete(dlss_schema,{id,Storage}).

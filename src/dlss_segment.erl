@@ -30,15 +30,16 @@
   dirty_next/2,
   dirty_read/2,
   dirty_scan/3,
-  dirty_write/2,dirty_write/3,
-  dirty_delete/2
+  write/3,write/4,dirty_write/3,
+  delete/2,delete/3,dirty_delete/2
 ]).
 
 %%=================================================================
 %%	SERVICE API
 %%=================================================================
 -export([
-  get_info/1
+  get_info/1,
+  is_empty/1
 ]).
 
 %%=================================================================
@@ -68,17 +69,13 @@
 %%=================================================================
 %%	STORAGE SEGMENT API
 %%=================================================================
+%-------------ITERATOR----------------------------------------------
 dirty_first(Segment)->
   mnesia:dirty_first(Segment).
 dirty_next(Segment,Pattern)->
   mnesia:dirty_next(Segment,Pattern).
 
-dirty_read(Segment,Key)->
-  case mnesia:dirty_read(Segment,Key) of
-    [#kv{value = Value}]->Value;
-    _->not_found
-  end.
-
+%-------------INTERVAL SCAN----------------------------------------------
 dirty_scan(Segment,From,To)->
   dirty_scan(Segment,From,To,infinity).
 dirty_scan(Segment,From,To,Limit)->
@@ -145,11 +142,27 @@ run_continuation(Cont,StorageType,MS,Limit,Acc)->
     end,
   run_continuation(Cont1,StorageType,MS,Limit1,Acc1).
 
-dirty_write(Segment,{Key,Value})->
-  dirty_write(Segment,Key,Value).
+%-------------READ----------------------------------------------
+dirty_read(Segment,Key)->
+  case mnesia:dirty_read(Segment,Key) of
+    [#kv{value = Value}]->Value;
+    _->not_found
+  end.
+
+%-------------WRITE----------------------------------------------
+write(Segment,Key,Value)->
+  write(Segment,Key,Value, _Lock = none).
+write(Segment,Key,Value,Lock)->
+  mnesia:write(Segment,#kv{key = Key,value = Value}, Lock).
+
 dirty_write(Segment,Key,Value)->
   mnesia:dirty_write(Segment,#kv{key = Key,value = Value}).
 
+%-------------DELETE----------------------------------------------
+delete(Segment,Key)->
+  delete(Segment,Key,_Lock=none).
+delete(Segment,Key,Lock)->
+  mnesia:delete(Segment,Key,Lock).
 dirty_delete(Segment,Key)->
   mnesia:dirty_delete(Segment,Key).
 
@@ -164,6 +177,12 @@ get_info(Segment)->
     local => Local,
     nodes => Nodes
   }.
+
+is_empty(Segment)->
+  case dirty_first(Segment) of
+    '$end_of_table'->true;
+    _->false
+  end.
 
 %%=================================================================
 %%	API
