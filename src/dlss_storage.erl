@@ -46,6 +46,17 @@
   dirty_read/2
 ]).
 
+%%====================================================================
+%%		Test API
+%%====================================================================
+-ifdef(TEST).
+
+-export([
+  get_key_segments/2
+]).
+
+-endif.
+
 %%-----------------------------------------------------------------
 %%  Service API
 %%-----------------------------------------------------------------
@@ -309,14 +320,24 @@ dirty_read( Storage, Key )->
   ok.
 
 get_key_segments(Storage, Key)->
-  [root_segment(Storage) | get_key_segments( Storage, Key, 1 = _Lvl)].
-get_key_segments( Storage, Key, Lvl )->
-  case dlss_segment:dirty_prev(dlss_schema,#sgm{ str = Storage, key = Key, lvl = Lvl }) of
-    #sgm{ lvl = Lvl } = Sgm ->
-      [ dlss_segment:dirty_read(dlss_schema,Sgm) | get_key_segments(Storage, Key, Lvl + 1) ];
-    _->
-      []
-  end.
+  % The root segment has the highest priority
+  {ok,Root} = root_segment(Storage),
+  % The scanning starts at the lowest level
+  Lowest = #sgm{ str = Storage, key = { Key}, lvl = '_' },
+  [ Root | get_key_segments( dlss_segment:dirty_prev(dlss_schema, Lowest ), _Lvl= '_' ,[]) ].
+get_key_segments( #sgm{ lvl = 1 } = Sgm, _Level, Acc )->
+  % The level 1 is the final
+  [ dlss_segment:dirty_read(dlss_schema, Sgm)| Acc ];
+get_key_segments( #sgm{ lvl = Lvl } = Sgm, Lvl, Acc )->
+  % if the level is the same it means that we are running towards the closest key,
+  % that is also in the higher level.
+  % Just skip this segment
+  get_key_segments( dlss_segment:dirty_prev(dlss_schema, Sgm ), Lvl ,Acc);
+get_key_segments( #sgm{ lvl = Lvl } = Sgm, _Lvl, Acc )->
+  % The level has changed. It means we have stepped level up
+  % and this is the closest to the Key segment at this level
+  Acc1 = [ dlss_segment:dirty_read(dlss_schema, Sgm) | Acc ],
+  get_key_segments( dlss_segment:dirty_prev(dlss_schema, Sgm ), Lvl ,Acc1 ).
 %%=================================================================
 %%	Internal stuff
 %%=================================================================

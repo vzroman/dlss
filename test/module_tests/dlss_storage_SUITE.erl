@@ -36,7 +36,8 @@
   service_api/1,
   segment_split/1,
   segment_children/1,
-  absorb_segment/1
+  absorb_segment/1,
+  get_key_segments/1
 ]).
 
 
@@ -45,7 +46,8 @@ all()->
     service_api,
     segment_split,
     segment_children,
-    absorb_segment
+    absorb_segment,
+    get_key_segments
   ].
 
 groups()->
@@ -265,6 +267,91 @@ absorb_segment(_Config)->
   []=dlss_storage:get_segments(),
 
   ok.
+
+get_key_segments(_Config)->
+
+  ok=dlss_storage:add(storage1,disc),
+  [dlss_storage1_1]=dlss_storage:get_segments(storage1),
+
+  %------------------------------------------------------
+  % Two levels
+  %------------------------------------------------------
+  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  [
+    dlss_storage1_1,
+    dlss_storage1_2
+  ]=dlss_storage:get_segments(storage1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_1,{x,50}),
+
+  [
+    dlss_storage1_1,
+    dlss_storage1_2,
+    dlss_storage1_3
+  ]=dlss_storage:get_segments(storage1),
+
+  [
+    dlss_storage1_1,
+    dlss_storage1_2
+  ] = dlss_storage:get_key_segments(storage1, {x,20}),
+
+  [
+    dlss_storage1_1,
+    dlss_storage1_3
+  ] = dlss_storage:get_key_segments(storage1, {x,70}),
+
+  % The edge case
+  [
+    dlss_storage1_1,
+    dlss_storage1_3
+  ] = dlss_storage:get_key_segments(storage1, {x,50}),
+
+  %------------------------------------------------------
+  % Three levels
+  %------------------------------------------------------
+  % Keep splitting deeper
+  ok = dlss_storage:spawn_segment(dlss_storage1_2),
+  [
+    {_,dlss_storage1_2},{_,dlss_storage1_4},
+    {_,dlss_storage1_3}
+  ] = dlss_storage:get_children(dlss_storage1_1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_2, {x,25} ),
+  [
+    {_,dlss_storage1_2},
+    {_,dlss_storage1_4},{_,dlss_storage1_5},
+    {_,dlss_storage1_3}
+  ] = dlss_storage:get_children(dlss_storage1_1),
+
+  [
+    dlss_storage1_1,
+    dlss_storage1_2,
+    dlss_storage1_4
+  ] = dlss_storage:get_key_segments(storage1, {x,20}),
+
+  [
+    dlss_storage1_1,
+    dlss_storage1_2,
+    dlss_storage1_5
+  ] = dlss_storage:get_key_segments(storage1, {x,40}),
+
+  % The edge condition
+  [
+    dlss_storage1_1,
+    dlss_storage1_2,
+    dlss_storage1_5
+  ] = dlss_storage:get_key_segments(storage1, {x,25}),
+
+
+  % Clean up
+  dlss_storage:remove(storage1),
+  []=dlss_storage:get_storages(),
+  []=dlss_storage:get_segments(),
+
+  ok.
+
+
+
 
 
 
