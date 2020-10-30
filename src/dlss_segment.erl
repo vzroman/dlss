@@ -30,7 +30,7 @@
   dirty_last/1,
   dirty_next/2,
   dirty_prev/2,
-  dirty_read/2,
+  read/2,read/3,dirty_read/2,
   dirty_scan/3,
   write/3,write/4,dirty_write/3,
   delete/2,delete/3,dirty_delete/2
@@ -150,6 +150,13 @@ run_continuation(Cont,StorageType,MS,Limit,Acc)->
   run_continuation(Cont1,StorageType,MS,Limit1,Acc1).
 
 %-------------READ----------------------------------------------
+read( Segment, Key )->
+  read( Segment, Key, _Lock = none).
+read( Segment, Key, Lock)->
+  case mnesia:read(Segment,Key,Lock) of
+    [#kv{value = Value}]->Value;
+    _->not_found
+  end.
 dirty_read(Segment,Key)->
   case mnesia:dirty_read(Segment,Key) of
     [#kv{value = Value}]->Value;

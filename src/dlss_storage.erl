@@ -43,7 +43,8 @@
 %%	STORAGE READ/WRITE API
 %%=================================================================
 -export([
-  dirty_read/2
+  read/2,read/3,dirty_read/2,
+  write/3,write/4,dirty_write/3
 ]).
 
 %%====================================================================
@@ -313,11 +314,34 @@ get_children('$end_of_table',_Sgm,Acc)->
 %%=================================================================
 %%	Read/Write
 %%=================================================================
+%---------------------Read-----------------------------------------
+read(Storage, Key )->
+  read( Storage, Key, _Lock = none ).
+read(Storage, Key, Lock)->
+  % Get potential segments ordered by priority (level)
+  [ Root | Segments ]= get_key_segments(Storage,Key),
+  case dlss_segment:read(Root,Key,Lock) of
+    not_found->
+      % The lock is already on the root segment, further search can be done
+      % in dirty mode
+      segments_dirty_read(Segments, Key );
+    Value->
+      % The value is found in the root
+      Value
+  end.
 dirty_read( Storage, Key )->
-
+  % Get potential segments ordered by priority (level)
   Segments= get_key_segments(Storage,Key),
+  % Search through segments
+  segments_dirty_read( Segments, Key).
 
-  ok.
+segments_dirty_read([ Segment | Rest ], Key)->
+  case dlss_segment:dirty_read(Segment, Key) of
+    not_found->segments_dirty_read(Rest, Key);
+    Value -> Value
+  end;
+segments_dirty_read([], _Key)->
+  not_found.
 
 get_key_segments(Storage, Key)->
   % The root segment has the highest priority
@@ -338,6 +362,19 @@ get_key_segments( #sgm{ lvl = Lvl } = Sgm, _Lvl, Acc )->
   % and this is the closest to the Key segment at this level
   Acc1 = [ dlss_segment:dirty_read(dlss_schema, Sgm) | Acc ],
   get_key_segments( dlss_segment:dirty_prev(dlss_schema, Sgm ), Lvl ,Acc1 ).
+
+%---------------------Write-----------------------------------------
+write(Storage, Key, Value)->
+  write( Storage, Key, Value, _Lock = none).
+write(Storage, Key, Value, Lock)->
+  % All write operations are performed to the Root segment only
+  {ok,Root} = root_segment(Storage),
+  dlss_segment:write( Root, Key, Value, Lock ).
+dirty_write(Storage, Key, Value)->
+  % All write operations are performed to the Root segment only
+  {ok,Root} = root_segment(Storage),
+  dlss_segment:dirty_write( Root, Key, Value ).
+
 %%=================================================================
 %%	Internal stuff
 %%=================================================================
