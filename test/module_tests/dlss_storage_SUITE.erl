@@ -418,7 +418,6 @@ storage_read(_Config)->
   ok = dlss_segment:dirty_write(dlss_storage1_5,{x,25},{y,25}),
   {y,25} = dlss_storage:dirty_read(storage1,{x,25}),
 
-
   % Clean up
   dlss_storage:remove(storage1),
   []=dlss_storage:get_storages(),

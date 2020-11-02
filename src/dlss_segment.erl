@@ -41,7 +41,9 @@
 %%=================================================================
 -export([
   get_info/1,
-  is_empty/1
+  is_empty/1,
+  add_node/2,
+  remove_node/2
 ]).
 
 %%=================================================================
@@ -196,6 +198,25 @@ is_empty(Segment)->
   case dirty_first(Segment) of
     '$end_of_table'->true;
     _->false
+  end.
+
+add_node(Segment,Node)->
+  #{ type:=Type } = get_info(Segment),
+  MnesiaType =
+    if
+      Type =:= ram      -> ram_copies;
+      Type =:= ramdisc  -> disc_copies;
+      Type =:= disc     -> leveldb_copies
+    end,
+  case mnesia:add_table_copy(Segment,Node,MnesiaType) of
+    {atomic,ok} -> ok;
+    {aborted,Reason}->{error,Reason}
+  end.
+
+remove_node(Segment,Node)->
+  case mnesia:del_table_copy(Segment,Node) of
+    {atomic,ok}->ok;
+    {aborted,Reason}->{error,Reason}
   end.
 
 %%=================================================================

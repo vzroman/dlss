@@ -26,7 +26,11 @@
 %%	API
 %%=================================================================
 -export([
-  start_link/0
+  start_link/0,
+  init_backend/0,init_backend/1,
+  add_node/1,
+  remove_node/1,
+  stop/0
 ]).
 
 %%=================================================================
@@ -40,16 +44,6 @@
   terminate/2,
   code_change/3
 ]).
-
-%%====================================================================
-%%		Test API
-%%====================================================================
--ifdef(TEST).
--export([
-  init_backend/0,
-  stop/0
-]).
--endif.
 
 
 -define(DEFAULT_START_TIMEOUT, 600000). % 10 min.
@@ -66,6 +60,17 @@
 %%=================================================================
 start_link()->
   gen_server:start_link({local,?MODULE},?MODULE, [], []).
+
+% Add a new node to the schema
+add_node(Node)->
+  case mnesia:change_config(extra_db_nodes,[Node]) of
+    []->false;
+    _->true
+  end.
+
+% Remove a node from the schema
+remove_node(Node)->
+  mnesia:del_table_copy(schema,Node).
 
 %%=================================================================
 %%	OTP
@@ -112,6 +117,12 @@ code_change(_OldVsn, State, _Extra) ->
 %%	Backend initialization
 %%=================================================================
 init_backend()->
+  init_backend(#{}).
+init_backend(#{
+  as_node := AsNode,
+  force := IsForced,
+  start_timeout := StartTimeout
+})->
   % Create mnesia schema
   IsFirstStart=
     case mnesia:create_schema([node()]) of
@@ -134,10 +145,8 @@ init_backend()->
   if
     IsFirstStart ->
       ?LOGINFO("schema is not defined yet"),
-
-      AsNode=?ENV("AS_NODE",as_node,"false"),
       if
-        AsNode=:="true";AsNode=:=true ->
+        AsNode ->
           ?LOGINFO("node is starting as slave"),
 
           ?LOGINFO("restarting mnesia"),
@@ -151,16 +160,16 @@ init_backend()->
           wait_for_schema(),
 
           ?LOGINFO("waiting for segemnts availability..."),
-          wiat_segments(?ENV(start_timeout,?DEFAULT_START_TIMEOUT));
+          wiat_segments(StartTimeout);
         true ->
           ?LOGINFO("node is starting as master"),
           mnesia_eleveldb:register(),
           create_schema()
       end;
     true ->
-      IsForced=?ENV("FORCE",force,"false"),
+
       if
-        IsForced=:="true";IsForced=:=true ->
+        IsForced ->
           ?LOGWARNING("starting in FORCED mode"),
           set_forced_mode(),
 
@@ -172,7 +181,7 @@ init_backend()->
           mnesia:wait_for_tables([schema,dlss_schema],?WAIT_SCHEMA_TIMEOUT),
 
           ?LOGINFO("waiting for segemnts availability..."),
-          wiat_segments(?ENV(start_timeout,?DEFAULT_START_TIMEOUT));
+          wiat_segments(StartTimeout);
         true ->
           ?LOGINFO("node is starting in normal mode"),
 
@@ -180,12 +189,29 @@ init_backend()->
           mnesia:wait_for_tables([schema,dlss_schema],?WAIT_SCHEMA_TIMEOUT),
 
           ?LOGINFO("waiting for segemnts availability..."),
-          wiat_segments(?ENV(start_timeout,?DEFAULT_START_TIMEOUT))
+          wiat_segments(StartTimeout)
       end
   end,
 
   mnesia:set_debug_level(none),
-  ?LOGINFO("dlss is ready").
+  ?LOGINFO("dlss is ready");
+
+init_backend(Params)->
+
+  % Default backend params
+  AsNode=?ENV("AS_NODE",as_node,"false"),
+  IsForced=?ENV("FORCE",force,"false"),
+
+  Params1=
+    maps:merge(#{
+      as_node => (AsNode=:="true") or (AsNode=:=true),
+      force => (IsForced=:="true") or (IsForced=:=true),
+      start_timeout => ?ENV(start_timeout,?DEFAULT_START_TIMEOUT)
+    },Params),
+
+  init_backend(Params1).
+
+
 
 create_schema()->
   mnesia:create_table(dlss_schema,[

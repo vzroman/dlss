@@ -1,6 +1,6 @@
-{define, 'MODULE_TEST', "../"}.
+{define, 'PERFORMANCE_TEST', "../"}.
 
-{suites, 'MODULE_TEST', [
+{suites, 'PERFORMANCE_TEST', [
     dlss_segment_SUITE
 ]}.
 
