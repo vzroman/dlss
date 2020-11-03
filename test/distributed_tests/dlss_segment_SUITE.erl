@@ -44,6 +44,21 @@
 %%  * start the erlang VM with appropriate env and args (i.e. erl -name master@127.0.0.1 -pa _build/default/lib/*/ebin)
 %%  * execute the tests with ct_master:run (i.e. ct_master:run("test/distributed_tests/test.spec"))
 
+%%=======================================================================
+%% DEBUG:
+%%  * ./test_shell
+%%  * erl -name slave@127.0.0.1 -setcookie dlss -pa _build/default/lib/*/ebin
+%%  * slv: dlss_backend:init_backend(#{as_node=>true})
+%%  * mst: dlss_backend:add_node('slave@127.0.0.1')
+%%  * mst: dlss_storage:add(storage1,disc),
+%%  * mst: dlss_storage:spawn_segment(dlss_storage1_1)
+%%  * mst: dlss_storage:spawn_segment(dlss_storage1_1,{x,50})
+%%  * mst: dlss_segment:add_node(dlss_storage1_3,'slave@127.0.0.1')
+%%  * mst/slv: dlss_segment:get_info(dlss_storage1_3)
+%%  -----remove---------------
+%%  * slv: dlss_segment:remove_node(dlss_storage1_3,'slave@127.0.0.1')
+%%  * mst/slv: dlss_segment:get_info(dlss_storage1_3)
+
 -include("dlss_test.hrl").
 -include("dlss.hrl").
 
