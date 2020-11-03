@@ -160,7 +160,7 @@ init_backend(#{
           wait_for_schema(),
 
           ?LOGINFO("waiting for segemnts availability..."),
-          wiat_segments(StartTimeout);
+          wait_segments(StartTimeout);
         true ->
           ?LOGINFO("node is starting as master"),
           mnesia_eleveldb:register(),
@@ -181,7 +181,7 @@ init_backend(#{
           mnesia:wait_for_tables([schema,dlss_schema],?WAIT_SCHEMA_TIMEOUT),
 
           ?LOGINFO("waiting for segemnts availability..."),
-          wiat_segments(StartTimeout);
+          wait_segments(StartTimeout);
         true ->
           ?LOGINFO("node is starting in normal mode"),
 
@@ -189,7 +189,7 @@ init_backend(#{
           mnesia:wait_for_tables([schema,dlss_schema],?WAIT_SCHEMA_TIMEOUT),
 
           ?LOGINFO("waiting for segemnts availability..."),
-          wiat_segments(StartTimeout)
+          wait_segments(StartTimeout)
       end
   end,
 
@@ -226,7 +226,7 @@ stop()->
   mnesia:stop().
 
 
-wiat_segments(Timeout)->
+wait_segments(Timeout)->
   Segments=dlss:get_segments(),
   mnesia:wait_for_tables(Segments,Timeout).
 
