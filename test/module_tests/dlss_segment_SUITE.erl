@@ -17,8 +17,12 @@
 %%----------------------------------------------------------------
 -module(dlss_segment_SUITE).
 
--include("dlss_test.hrl").
+% -include("dlss_test.hrl").
 -include("dlss.hrl").
+-include_lib("eunit/include/eunit.hrl").
+
+-define(GET(Key,Config),proplists:get_value(Key,Config)).
+-define(GET(Key,Config,Default),proplists:get_value(Key,Config,Default)).
 
 %% API
 -export([
@@ -34,14 +38,16 @@
 
 -export([
   test_read/1,
-  test_order/1
+  test_order/1,
+  test_median/1
 ]).
 
 
 all()->
   [
     test_read,
-    test_order
+    test_order,
+    test_median
   ].
 
 groups()->
@@ -49,18 +55,9 @@ groups()->
 
 %% Init system storages
 init_per_suite(Config)->
-  dlss_backend:init_backend(),
-  dlss:add_storage(order_test,disc),
-  [Segment]=dlss:get_segments(order_test),
-  [
-    {storage,order_test},
-    {segment,Segment}
-    |Config
-  ].
+  Config.
+
 end_per_suite(Config)->
-  Storage=?GET(storage,Config),
-  dlss:remove_storage(Storage),
-  dlss_backend:stop(),
   ok.
 
 init_per_group(_,Config)->
@@ -70,10 +67,20 @@ end_per_group(_,_Config)->
   ok.
 
 
-init_per_testcase(_,Config)->
-  Config.
+init_per_testcase(_, Config)->
+  dlss_backend:init_backend(),
+  dlss:add_storage(order_test, disc),
+  [Segment] = dlss:get_segments(order_test),
+  [
+    {storage, order_test},
+    {segment, Segment}
+    | Config
+  ].
 
-end_per_testcase(_,_Config)->
+end_per_testcase(_, Config)->
+  Storage=?GET(storage, Config),
+  dlss:remove_storage(Storage),
+  dlss_backend:stop(),
   ok.
 
 test_read(Config)->
@@ -86,12 +93,10 @@ test_read(Config)->
   ok=dlss_segment:dirty_delete(Segment,{1,2}),
   not_found=dlss_segment:dirty_read(Segment,{1,2}),
 
-
   ok.
 
 test_order(Config)->
   Segment=?GET(segment,Config),
-
 
   %% Simple integer
   ok=dlss_segment:dirty_write(Segment,{10,1},test_value),
@@ -139,4 +144,29 @@ test_order(Config)->
 
   ok.
 
+test_median(Config)->
+  Segment = ?GET(segment, Config),
+
+  %% no elements 
+  ?assertEqual(
+    {error, null_segment},
+    dlss_segment:median(Segment)
+  ),
+
+  %% 1 element
+  ok = dlss_segment:dirty_write(Segment, {10, 1}, 1),
+  ?assertEqual(
+    {error, single_element}, 
+    dlss_segment:median(Segment)
+  ),
+
+  %% a lot of elements
+  [ dlss_segment:dirty_write(Segment, {10, I}, I) || I <- lists:seq(2, 10) ],
+  ok = dlss_segment:dirty_write(Segment, {10, 11}, <<"some_long_name">>),
+  ?assertEqual(
+    {ok, {10, 7}}, 
+    dlss_segment:median(Segment)
+  ),
+
+  ok.
 
