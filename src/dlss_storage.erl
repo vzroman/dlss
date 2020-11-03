@@ -87,9 +87,10 @@ get_segments(Storage)->
   mnesia:dirty_select(dlss_schema,MS).
 
 root_segment(Storage)->
-  case dlss_segment:dirty_read(dlss_schema,#sgm{str=Storage,key = '_',lvl = 0}) of
-    not_found->{error,invalid_storage};
-    Segment->{ok,Segment}
+  case dlss_segment:dirty_next(dlss_schema,#sgm{str=Storage,key = '_',lvl = -1 }) of
+    #sgm{ str = Storage } = Sgm->
+      { ok, dlss_segment:dirty_read(dlss_schema,Sgm) };
+    _->{error,invalid_storage}
   end.
 
 get_type(Storage)->
@@ -344,12 +345,10 @@ segments_dirty_read([], _Key)->
   not_found.
 
 get_key_segments(Storage, Key)->
-  % The root segment has the highest priority
-  {ok,Root} = root_segment(Storage),
   % The scanning starts at the lowest level
   Lowest = #sgm{ str = Storage, key = { Key}, lvl = '_' },
-  [ Root | get_key_segments( dlss_segment:dirty_prev(dlss_schema, Lowest ), _Lvl= '_' ,[]) ].
-get_key_segments( #sgm{ lvl = 1 } = Sgm, _Level, Acc )->
+  get_key_segments( dlss_segment:dirty_prev(dlss_schema, Lowest ), _Lvl= '_' ,[]).
+get_key_segments( #sgm{ lvl = 0 } = Sgm, _Level, Acc )->
   % The level 1 is the final
   [ dlss_segment:dirty_read(dlss_schema, Sgm)| Acc ];
 get_key_segments( #sgm{ lvl = Lvl } = Sgm, Lvl, Acc )->
