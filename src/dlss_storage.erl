@@ -21,6 +21,7 @@
 -include("dlss.hrl").
 
 -record(sgm,{str,key,lvl}).
+-record(i,{str,key,lvls}).
 
 %%=================================================================
 %%	STORAGE SERVICE API
@@ -36,7 +37,8 @@
   get_type/1,
   spawn_segment/1,spawn_segment/2,
   absorb_segment/1,absorb_segment/2,
-  get_children/1
+  get_children/1,
+  parent_segment/1
 ]).
 
 %%=================================================================
@@ -44,9 +46,16 @@
 %%=================================================================
 -export([
   read/2,read/3,dirty_read/2,
-  write/3,write/4,dirty_write/3
+  write/3,write/4,dirty_write/3,
+  delete/2,delete/3,dirty_delete/2
 ]).
 
+%%=================================================================
+%%	STORAGE ITERATOR API
+%%=================================================================
+-export([
+  dirty_next/2
+]).
 %%====================================================================
 %%		Test API
 %%====================================================================
@@ -295,6 +304,7 @@ absorb_segment(#sgm{str = Str} = Sgm, Force)->
     true -> { error, not_empty }
   end.
 
+%------------Get children segments-----------------------------------------
 get_children(Name) when is_atom(Name)->
   case segment_by_name(Name) of
     { ok, Segment }-> get_children(Segment);
@@ -312,6 +322,28 @@ get_children(#sgm{} = Next,Sgm,Acc)->
 get_children('$end_of_table',_Sgm,Acc)->
   lists:reverse(Acc).
 
+%------------Get parent segment-----------------------------------------
+parent_segment(Name) when is_atom(Name)->
+  case segment_by_name(Name) of
+    { ok, Segment }->
+      Parent = parent_segment(Segment),
+      dlss_segment:dirty_read(dlss_schema,Parent);
+    Error -> Error
+  end;
+parent_segment(#sgm{lvl = Lvl} = Sgm)->
+  parent_segment( dlss_segment:dirty_prev(dlss_schema, Sgm ), Lvl ).
+parent_segment( #sgm{ lvl = 0 } = Sgm, _Lvl )->
+  % The root segment
+  Sgm;
+parent_segment( #sgm{ lvl = LvlUp } = Sgm, Lvl ) when LvlUp < Lvl->
+  % The level has changed. It means we have stepped level up
+  % and this is the closest to the Key segment at this level
+  Sgm;
+parent_segment( Sgm, Lvl )->
+  % if the level is the same it means that we are running through the level
+  % towards the common Key. Skip
+  parent_segment( dlss_segment:dirty_prev(dlss_schema, Sgm ), Lvl ).
+
 %%=================================================================
 %%	Read/Write
 %%=================================================================
@@ -326,6 +358,9 @@ read(Storage, Key, Lock)->
       % The lock is already on the root segment, further search can be done
       % in dirty mode
       segments_dirty_read(Segments, Key );
+    '@deleted@'->
+      % The key is deleted
+      not_found;
     Value->
       % The value is found in the root
       Value
@@ -338,6 +373,7 @@ dirty_read( Storage, Key )->
 
 segments_dirty_read([ Segment | Rest ], Key)->
   case dlss_segment:dirty_read(Segment, Key) of
+    '@deleted@'->not_found;
     not_found->segments_dirty_read(Rest, Key);
     Value -> Value
   end;
@@ -346,21 +382,16 @@ segments_dirty_read([], _Key)->
 
 get_key_segments(Storage, Key)->
   % The scanning starts at the lowest level
-  Lowest = #sgm{ str = Storage, key = { Key}, lvl = '_' },
-  get_key_segments( dlss_segment:dirty_prev(dlss_schema, Lowest ), _Lvl= '_' ,[]).
-get_key_segments( #sgm{ lvl = 0 } = Sgm, _Level, Acc )->
-  % The level 1 is the final
+  Lowest = #sgm{ str = Storage, key = { Key }, lvl = '_' },
+  key_segments( parent_segment(Lowest),[]).
+key_segments( #sgm{ lvl = 0 } = Sgm, Acc )->
+  % The level 0 is the final
   [ dlss_segment:dirty_read(dlss_schema, Sgm)| Acc ];
-get_key_segments( #sgm{ lvl = Lvl } = Sgm, Lvl, Acc )->
-  % if the level is the same it means that we are running towards the closest key,
-  % that is also in the higher level.
-  % Just skip this segment
-  get_key_segments( dlss_segment:dirty_prev(dlss_schema, Sgm ), Lvl ,Acc);
-get_key_segments( #sgm{ lvl = Lvl } = Sgm, _Lvl, Acc )->
+key_segments( Sgm, Acc )->
   % The level has changed. It means we have stepped level up
   % and this is the closest to the Key segment at this level
   Acc1 = [ dlss_segment:dirty_read(dlss_schema, Sgm) | Acc ],
-  get_key_segments( dlss_segment:dirty_prev(dlss_schema, Sgm ), Lvl ,Acc1 ).
+  key_segments( parent_segment(Sgm) ,Acc1 ).
 
 %---------------------Write-----------------------------------------
 write(Storage, Key, Value)->
@@ -373,6 +404,58 @@ dirty_write(Storage, Key, Value)->
   % All write operations are performed to the Root segment only
   {ok,Root} = root_segment(Storage),
   dlss_segment:dirty_write( Root, Key, Value ).
+
+%---------------------Delete-----------------------------------------
+delete(Storage, Key)->
+  delete( Storage, Key, _Lock = none).
+delete(Storage, Key, Lock)->
+  % The value is replaces with the special flag,
+  % Actual delete is performed during rebalancing
+  write( Storage, Key, '@deleted@', Lock ).
+dirty_delete(Storage, Key)->
+  dirty_write( Storage, Key, '@deleted@' ).
+
+%%=================================================================
+%%	Iterate
+%%=================================================================
+dirty_next(Storage,Key)->
+  Lowest = #sgm{ str = Storage, key = { Key }, lvl = '_' },
+  dirty_next( parent_segment(Lowest), Key, '$end_of_table' ).
+dirty_next( #sgm{ lvl = 0 } = Sgm, Key, Acc )->
+  % The level 0 is final
+  Segment = dlss_segment:dirty_read(dlss_schema, Sgm),
+  Next = dlss_segment:dirty_next( Segment, Key ),
+  if
+    Next =:= '$end_of_table' -> Acc ;
+    Acc =:= '$end_of_table' -> Next ;
+    Next < Acc -> Next ;
+    true -> Acc
+  end;
+dirty_next( Sgm, Key, Acc )->
+  Segment = dlss_segment:dirty_read(dlss_schema, Sgm),
+  Next=
+    case dlss_segment:dirty_next( Segment, Key ) of
+      '$end_of_table'->
+        % If the segment does not contain the Next key then try to lookup
+        % in the next segment at the same level
+        case next_sibling(Sgm) of
+          undefined ->
+            '$end_of_table';
+          NextSgm->
+            ct:pal("NextSgm ~p",[NextSgm]),
+            NextSegment = dlss_segment:dirty_read(dlss_schema, NextSgm),
+            dlss_segment:dirty_next( NextSegment, Key )
+        end;
+      NextKey->NextKey
+    end,
+  Acc1=
+    if
+      Next =:= '$end_of_table'-> Acc;
+      Acc =:= '$end_of_table' -> Next;
+      Next < Acc -> Next;
+      true -> Acc
+    end,
+  dirty_next( parent_segment(Sgm), Key, Acc1 ).
 
 %%=================================================================
 %%	Internal stuff
@@ -425,6 +508,21 @@ segment_by_name(Name)->
     [Key]->{ ok, Key };
     _-> { error, not_found }
   end.
+
+next_sibling(#sgm{ lvl = Lvl } = Sgm)->
+  next_sibling( dlss_segment:dirty_next(dlss_schema, Sgm), Lvl ).
+next_sibling(#sgm{ lvl = LvlDown } = Sgm, Lvl) when LvlDown > Lvl->
+  % Running through sub-levels
+  next_sibling( dlss_segment:dirty_next(dlss_schema, Sgm), Lvl );
+next_sibling(#sgm{ lvl = Lvl } = Sgm, Lvl)->
+  % The segment is at the same level. This is the sibling
+  Sgm;
+next_sibling(#sgm{ lvl = LvlUp }, Lvl) when LvlUp < Lvl->
+  % The next segment is only at the upper level
+  undefined;
+next_sibling('$end_of_table', _Lvl)->
+  undefined.
+
 
 
 

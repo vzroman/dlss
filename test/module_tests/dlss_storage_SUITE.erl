@@ -38,7 +38,8 @@
   segment_children/1,
   absorb_segment/1,
   get_key_segments/1,
-  storage_read/1
+  storage_read/1,
+  storage_next/1
 ]).
 
 
@@ -49,7 +50,8 @@ all()->
     segment_children,
     absorb_segment,
     get_key_segments,
-    storage_read
+    storage_read,
+    storage_next
   ].
 
 groups()->
@@ -417,6 +419,90 @@ storage_read(_Config)->
   % The edge
   ok = dlss_segment:dirty_write(dlss_storage1_5,{x,25},{y,25}),
   {y,25} = dlss_storage:dirty_read(storage1,{x,25}),
+
+  % Clean up
+  dlss_storage:remove(storage1),
+  []=dlss_storage:get_storages(),
+  []=dlss_storage:get_segments(),
+
+  ok.
+
+storage_next(_Config)->
+
+  ok=dlss_storage:add(storage1,disc),
+  [dlss_storage1_1]=dlss_storage:get_segments(storage1),
+
+  %------------------------------------------------------
+  % Two levels
+  %------------------------------------------------------
+  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  [
+    dlss_storage1_1,
+    dlss_storage1_2
+  ]=dlss_storage:get_segments(storage1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_1,{x,50}),
+
+  [
+    dlss_storage1_1,
+    dlss_storage1_2,
+    dlss_storage1_3
+  ]=dlss_storage:get_segments(storage1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_2),
+  [
+    {_,dlss_storage1_2},{_,dlss_storage1_4},
+    {_,dlss_storage1_3}
+  ] = dlss_storage:get_children(dlss_storage1_1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_2, {x,25} ),
+  [
+    {_,dlss_storage1_2},
+    {_,dlss_storage1_4},{_,dlss_storage1_5},
+    {_,dlss_storage1_3}
+  ] = dlss_storage:get_children(dlss_storage1_1),
+
+  % Fill in the root
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,20},l0),
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,26},l0),
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,49},l0),
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,52},l0),
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,53},l0),
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,130},l0),
+
+  % Fill in the level 1
+  ok = dlss_segment:dirty_write(dlss_storage1_2,{x,10},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_2,{x,12},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_2,{x,26},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_2,{x,27},l1),
+
+  ok = dlss_segment:dirty_write(dlss_storage1_3,{x,50},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_3,{x,53},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_3,{x,57},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_3,{x,170},l1),
+
+  % Fill in the level 2
+  ok = dlss_segment:dirty_write(dlss_storage1_4,{x,5},l2),
+  ok = dlss_segment:dirty_write(dlss_storage1_4,{x,10},l2),
+  ok = dlss_segment:dirty_write(dlss_storage1_4,{x,13},l2),
+
+  ok = dlss_segment:dirty_write(dlss_storage1_5,{x,25},l2),
+  ok = dlss_segment:dirty_write(dlss_storage1_5,{x,26},l2),
+  ok = dlss_segment:dirty_write(dlss_storage1_5,{x,47},l2),
+
+  Iterator=
+    fun(K,Acc,I)->
+      ct:pal("from key ~p",[K]),
+      case dlss_storage:dirty_next(storage1,K) of
+        '$end_of_table'->lists:reverse(Acc);
+        N->
+          ct:pal("next key ~p",[N]),
+          I(N,[N|Acc],I)
+      end
+    end,
+
+  [{x,5},{x,10},{x,12},{x,13},{x,20},{x,25},{x,26},{x,27},{x,47},{x,49},{x,50},{x,52},{x,53},{x,57},{x,130},{x,170}]
+    = Iterator(0,[],Iterator),
 
   % Clean up
   dlss_storage:remove(storage1),
