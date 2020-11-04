@@ -21,7 +21,6 @@
 -include("dlss.hrl").
 
 -record(sgm,{str,key,lvl}).
--record(i,{str,key,lvls}).
 
 %%=================================================================
 %%	STORAGE SERVICE API
