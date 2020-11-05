@@ -35,7 +35,7 @@
   remove/1,
   get_type/1,
   spawn_segment/1,spawn_segment/2,
-  absorb_segment/1,absorb_segment/2,
+  absorb_segment/1,
   get_children/1,
   parent_segment/1
 ]).
@@ -53,7 +53,7 @@
 %%	STORAGE ITERATOR API
 %%=================================================================
 -export([
-  dirty_next/2
+  next/2,dirty_next/2
 ]).
 %%====================================================================
 %%		Test API
@@ -247,60 +247,59 @@ spawn_segment(#sgm{str = Str, lvl = Lvl, key = Key} = Sgm, SplitKey)->
     end,
 
   % Add the segment to the schema
-  ok = dlss_segment:dirty_write( dlss_schema, Sgm#sgm{ key=StartKey, lvl= Lvl + 1 }, ChildName ).
+  case dlss:transaction(fun()->
+    % Set a lock on the schema
+    mnesia:lock({table,dlss_schema},read),
+    % Add the segment
+    ok = dlss_segment:dirty_write( dlss_schema, Sgm#sgm{ key=StartKey, lvl= Lvl + 1 }, ChildName )
+  end) of
+    {ok,ok} -> ok;
+    Error -> Error
+  end.
 
 %---------Absorb a segment----------------------------------------
-absorb_segment(Segemnt)->
-  absorb_segment(Segemnt,_Force=false).
-absorb_segment(Name,Force) when is_atom(Name)->
+absorb_segment(Name) when is_atom(Name)->
   case segment_by_name(Name) of
-    { ok, Segment }-> absorb_segment( Segment, Force );
+    { ok, Segment }-> absorb_segment( Segment );
     Error -> Error
   end;
-absorb_segment(#sgm{lvl = 0}, _Force)->
+absorb_segment(#sgm{lvl = 0})->
   % The root segment cannot be absorbed
   { error, root_segment };
-absorb_segment(#sgm{str = Str} = Sgm, Force)->
+absorb_segment(#sgm{str = Str} = Sgm)->
 
   % Obtain the segment name
   Name=dlss_segment:dirty_read(dlss_schema,Sgm),
 
-  % Check if the segment is ready to be removed
-  Ready=
-    if
-      Force ->true;
-      true -> dlss_segment:is_empty(Name)
-    end,
+  case dlss:transaction(fun()->
 
-  if
-    Ready ->
-      case dlss:transaction(fun()->
-        % Find all the children of the segment
-        Children = get_children(Sgm),
+    % Set a lock on the schema while traversing segments
+    mnesia:lock({table,dlss_schema},write),
 
-        % Remove the absorbed segment from the dlss schema
-        ok = dlss_segment:delete(dlss_schema, Sgm, write ),
+    % Find all the children of the segment
+    Children = get_children(Sgm),
 
-        % Put all children segments level up
-        [ begin
-            ok = dlss_segment:write(dlss_schema, S#sgm{ lvl = S#sgm.lvl - 1 }, T , write ),
-            ok = dlss_segment:delete(dlss_schema, S , write )
-          end || { S, T } <- Children]
-      end) of
-        { ok, _} ->
+    % Remove the absorbed segment from the dlss schema
+    ok = dlss_segment:delete(dlss_schema, Sgm, write ),
 
-          % Remove the segment from mnesia
-          case mnesia:delete_table(Name) of
-            {atomic,ok}->ok;
-            {aborted,Reason}->
-              ?LOGERROR("unable to remove segment ~p storage ~p, reason ~p",[
-                Name,
-                Str,
-                Reason
-              ])
-          end
-      end;
-    true -> { error, not_empty }
+    % Put all children segments level up
+    [ begin
+        ok = dlss_segment:write(dlss_schema, S#sgm{ lvl = S#sgm.lvl - 1 }, T , write ),
+        ok = dlss_segment:delete(dlss_schema, S , write )
+      end || { S, T } <- Children]
+                        end) of
+    { ok, _} ->
+
+      % Remove the segment from mnesia
+      case mnesia:delete_table(Name) of
+        {atomic,ok}->ok;
+        {aborted,Reason}->
+          ?LOGERROR("unable to remove segment ~p storage ~p, reason ~p",[
+            Name,
+            Str,
+            Reason
+          ])
+      end
   end.
 
 %------------Get children segments-----------------------------------------
@@ -350,6 +349,8 @@ parent_segment( Sgm, Lvl )->
 read(Storage, Key )->
   read( Storage, Key, _Lock = none ).
 read(Storage, Key, Lock)->
+  % Set a lock on the schema
+  mnesia:lock({table,dlss_schema},read),
   % Get potential segments ordered by priority (level)
   [ Root | Segments ]= get_key_segments(Storage,Key),
   case dlss_segment:read(Root,Key,Lock) of
@@ -396,6 +397,8 @@ key_segments( Sgm, Acc )->
 write(Storage, Key, Value)->
   write( Storage, Key, Value, _Lock = none).
 write(Storage, Key, Value, Lock)->
+  % Set a lock on the schema while performing the operation
+  mnesia:lock({table,dlss_schema},read),
   % All write operations are performed to the Root segment only
   {ok,Root} = root_segment(Storage),
   dlss_segment:write( Root, Key, Value, Lock ).
@@ -417,23 +420,31 @@ dirty_delete(Storage, Key)->
 %%=================================================================
 %%	Iterate
 %%=================================================================
-dirty_next(Storage,Key)->
+next( Storage, Key )->
+  % Set a lock on the schema
+  mnesia:lock({table,dlss_schema},read),
+  % The safe iterator
+  Iter = fun(Segment)-> safe_next(Segment,Key) end,
+  % Schema starting point
   Lowest = #sgm{ str = Storage, key = { Key }, lvl = '_' },
-  dirty_next( parent_segment(Lowest), Key, '$end_of_table' ).
-dirty_next( #sgm{ lvl = 0 } = Sgm, Key, Acc )->
+  next( parent_segment(Lowest), Iter, '$end_of_table' ).
+
+dirty_next(Storage,Key)->
+  % The iterator
+  Iter = fun(Segment)->dlss_segment:dirty_next(Segment,Key) end,
+  % Starting point
+  Lowest = #sgm{ str = Storage, key = { Key }, lvl = '_' },
+  next( parent_segment(Lowest), Iter, '$end_of_table' ).
+
+next( #sgm{ lvl = 0 } = Sgm, Iter, Acc )->
   % The level 0 is final
   Segment = dlss_segment:dirty_read(dlss_schema, Sgm),
-  Next = dlss_segment:dirty_next( Segment, Key ),
-  if
-    Next =:= '$end_of_table' -> Acc ;
-    Acc =:= '$end_of_table' -> Next ;
-    Next < Acc -> Next ;
-    true -> Acc
-  end;
-dirty_next( Sgm, Key, Acc )->
+  Next = Iter( Segment ),
+  next_acc( Next, Acc );
+next( Sgm, Iter, Acc )->
   Segment = dlss_segment:dirty_read(dlss_schema, Sgm),
   Next=
-    case dlss_segment:dirty_next( Segment, Key ) of
+    case Iter( Segment ) of
       '$end_of_table'->
         % If the segment does not contain the Next key then try to lookup
         % in the next segment at the same level
@@ -441,21 +452,33 @@ dirty_next( Sgm, Key, Acc )->
           undefined ->
             '$end_of_table';
           NextSgm->
-            ct:pal("NextSgm ~p",[NextSgm]),
             NextSegment = dlss_segment:dirty_read(dlss_schema, NextSgm),
-            dlss_segment:dirty_next( NextSegment, Key )
+            Iter( NextSegment )
         end;
       NextKey->NextKey
     end,
-  Acc1=
-    if
-      Next =:= '$end_of_table'-> Acc;
-      Acc =:= '$end_of_table' -> Next;
-      Next < Acc -> Next;
-      true -> Acc
-    end,
-  dirty_next( parent_segment(Sgm), Key, Acc1 ).
+  Acc1= next_acc( Next, Acc ),
+  next( parent_segment(Sgm), Iter, Acc1 ).
 
+next_acc(Key,Acc)->
+  if
+    Key =:= '$end_of_table'-> Acc;
+    Acc =:= '$end_of_table' -> Key;
+    Key < Acc -> Key;
+    true -> Acc
+  end.
+
+safe_next(Segment,Key)->
+  case dlss_segment:next(Segment,Key) of
+    '$end_of_table' -> '$end_of_table';
+    Next ->
+      % In the safe mode we check if the key is already delete.
+      % As 'next' has already locked the table, we can do it in dirty mode
+      case dlss_segment:dirty_read(Segment,Next) of
+        '@deleted@' -> safe_next(Segment,Next);
+        _->Next
+      end
+  end.
 %%=================================================================
 %%	Internal stuff
 %%=================================================================
