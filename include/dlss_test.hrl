@@ -32,14 +32,13 @@
             {unexpected_success, __V}]})
       catch
         error:Term -> ok;
-        __C:__T ->
+        __C:__T:__Stack ->
           erlang:error({assertException,
             [{module, ?MODULE},
               {line, ?LINE},
               {expression, (??Expr)},
               {unexpected_exception,
-                {__C, __T,
-                  erlang:get_stacktrace()}}]})
+                {__C, __T, __Stack}}]})
       end
       end)())
   end).

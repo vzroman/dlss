@@ -113,7 +113,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%============================================================================
 %%	The loop
 %%============================================================================
-scan_segments(Started)->
+scan_segments(_Started)->
   ?LOGDEBUG("start schema scanning"),
 
   % The service checks a schema on segments hosted by this node.

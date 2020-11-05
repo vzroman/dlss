@@ -17,12 +17,8 @@
 %%----------------------------------------------------------------
 -module(dlss_segment_SUITE).
 
-% -include("dlss_test.hrl").
+-include("dlss_test.hrl").
 -include("dlss.hrl").
--include_lib("eunit/include/eunit.hrl").
-
--define(GET(Key,Config),proplists:get_value(Key,Config)).
--define(GET(Key,Config,Default),proplists:get_value(Key,Config,Default)).
 
 %% API
 -export([
@@ -57,7 +53,7 @@ groups()->
 init_per_suite(Config)->
   Config.
 
-end_per_suite(Config)->
+end_per_suite(_Config)->
   ok.
 
 init_per_group(_,Config)->
@@ -147,26 +143,25 @@ test_order(Config)->
 test_median(Config)->
   Segment = ?GET(segment, Config),
 
-  %% no elements 
-  ?assertEqual(
-    {error, null_segment},
-    dlss_segment:median(Segment)
-  ),
+  0 = dlss_segment:get_size( Segment ),
 
-  %% 1 element
-  ok = dlss_segment:dirty_write(Segment, {10, 1}, 1),
-  ?assertEqual(
-    {error, single_element}, 
-    dlss_segment:median(Segment)
-  ),
+  { error, { total_size, 0 } } = dlss_segment:get_split_key( Segment, 10 ),
 
-  %% a lot of elements
-  [ dlss_segment:dirty_write(Segment, {10, I}, I) || I <- lists:seq(2, 10) ],
-  ok = dlss_segment:dirty_write(Segment, {10, 11}, <<"some_long_name">>),
-  ?assertEqual(
-    {ok, {10, 7}}, 
-    dlss_segment:median(Segment)
-  ),
+  ok = dlss_segment:dirty_write( Segment, {10,0}, <<"some_long_name">> ),
+  ItemSize = dlss_segment:get_size( Segment ),
+
+  [ dlss_segment:dirty_write(Segment, {10, I}, <<"some_long_name">>) || I <- lists:seq(1,9) ],
+  Size10 = ItemSize * 10,
+
+  Size10 = dlss_segment:get_size( Segment ),
+
+  { error, { total_size, Size10 } } = dlss_segment:get_split_key( Segment, ItemSize * 11 ),
+
+  % There is no 11-th key
+  { error, { total_size, Size10 } } = dlss_segment:get_split_key( Segment, ItemSize * 10 ),
+
+
+  { 10, 7 } = dlss_segment:get_split_key( Segment, ItemSize * 7 ),
 
   ok.
 
