@@ -60,7 +60,9 @@
 %%	API
 %%=================================================================
 -export([
-  start_link/1
+  start/1,
+  start_link/1,
+  stop/1
 ]).
 %%=================================================================
 %%	OTP
@@ -79,6 +81,8 @@
 -define(DEFAULT_SCAN_CYCLE,5000).
 
 -define(MAX_SCAN_INTERVAL_BATCH,1000).
+
+-define(PROCESS(Segment), list_to_atom( atom_to_list(Segment) ++ "_sup" ) ).
 
 %%=================================================================
 %%	STORAGE SEGMENT API
@@ -282,13 +286,19 @@ get_split_key( Key , _Segment, _Size, _Acc)->
 %%=================================================================
 %%	API
 %%=================================================================
+start(Segment)->
+  dlss_schema_sup:start_segment(Segment).
+
 start_link(Segment)->
-  % The process is registered locally to not to conflict
-  % with the processes that handle the same segment on  other nodes.
-  % This gives us a more explicit way to address a segment handler
-  % of the explicitly defined node and do a load balancing for dirty
-  % mode operations
-  gen_server:start_link({local,?MODULE}, ?MODULE, [Segment], []).
+  gen_server:start_link({local, ?PROCESS(Segment) }, ?MODULE, [Segment], []).
+
+stop(Segment)->
+  case whereis(?PROCESS(Segment)) of
+    PID when is_pid(PID)->
+      dlss_schema_sup:stop_segment(PID);
+    _ ->
+      { error, not_started }
+  end.
 
 %%=================================================================
 %%	OTP
@@ -309,11 +319,6 @@ init([Segment])->
 
 handle_call(_Params, _From, State) ->
   {reply, {ok,undefined}, State}.
-
-
-handle_cast({stop,From},State)->
-  From!{stopped,self()},
-  {stop, normal, State};
 
 handle_cast(_Request,State)->
   {noreply,State}.
