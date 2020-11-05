@@ -53,7 +53,8 @@
 %%	STORAGE ITERATOR API
 %%=================================================================
 -export([
-  next/2,dirty_next/2
+  next/2,dirty_next/2,
+  prev/2,dirty_prev/2
 ]).
 %%====================================================================
 %%		Test API
@@ -420,6 +421,7 @@ dirty_delete(Storage, Key)->
 %%=================================================================
 %%	Iterate
 %%=================================================================
+%---------NEXT------------------------
 next( Storage, Key )->
   % Set a lock on the schema
   mnesia:lock({table,dlss_schema},read),
@@ -479,6 +481,96 @@ safe_next(Segment,Key)->
         _->Next
       end
   end.
+
+next_sibling(#sgm{ lvl = Lvl } = Sgm)->
+  next_sibling( dlss_segment:dirty_next(dlss_schema, Sgm), Lvl ).
+next_sibling(#sgm{ lvl = LvlDown } = Sgm, Lvl) when LvlDown > Lvl->
+  % Running through sub-levels
+  next_sibling( dlss_segment:dirty_next(dlss_schema, Sgm), Lvl );
+next_sibling(#sgm{ lvl = Lvl } = Sgm, Lvl)->
+  % The segment is at the same level. This is the sibling
+  Sgm;
+next_sibling(#sgm{ lvl = LvlUp }, Lvl) when LvlUp < Lvl->
+  % The next segment is only at the upper level
+  undefined;
+next_sibling('$end_of_table', _Lvl)->
+  undefined.
+
+%---------PREVIOUS------------------------
+prev( Storage, Key )->
+  % Set a lock on the schema
+  mnesia:lock({table,dlss_schema},read),
+  % The safe iterator
+  Iter = fun(Segment)-> safe_prev(Segment,Key) end,
+  % Schema starting point
+  Lowest = #sgm{ str = Storage, key = { Key }, lvl = '_' },
+  prev( parent_segment(Lowest), Iter, '$end_of_table' ).
+
+dirty_prev(Storage,Key)->
+  % The iterator
+  Iter = fun(Segment)->dlss_segment:dirty_prev(Segment,Key) end,
+  % Starting point
+  Lowest = #sgm{ str = Storage, key = { Key }, lvl = '_' },
+  prev( parent_segment(Lowest), Iter, '$end_of_table' ).
+
+prev( #sgm{ lvl = 0 } = Sgm, Iter, Acc )->
+  % The level 0 is final
+  Segment = dlss_segment:dirty_read(dlss_schema, Sgm),
+  Prev = Iter( Segment ),
+  prev_acc( Prev, Acc );
+prev( Sgm, Iter, Acc )->
+  Segment = dlss_segment:dirty_read(dlss_schema, Sgm),
+  Prev=
+    case Iter( Segment ) of
+      '$end_of_table'->
+        % If the segment does not contain the Next key then try to lookup
+        % in the previous segment at the same level
+        case prev_sibling(Sgm) of
+          undefined ->
+            '$end_of_table';
+          PrevSgm->
+            PrevSegment = dlss_segment:dirty_read(dlss_schema, PrevSgm),
+            Iter( PrevSegment )
+        end;
+      PrevKey->PrevKey
+    end,
+  Acc1= prev_acc( Prev, Acc ),
+  prev( parent_segment(Sgm), Iter, Acc1 ).
+
+prev_acc(Key,Acc)->
+  if
+    Key =:= '$end_of_table'-> Acc;
+    Acc =:= '$end_of_table' -> Key;
+    Key > Acc -> Key;
+    true -> Acc
+  end.
+
+safe_prev(Segment,Key)->
+  case dlss_segment:prev(Segment,Key) of
+    '$end_of_table' -> '$end_of_table';
+    Prev ->
+      % In the safe mode we check if the key is already delete.
+      % As 'next' has already locked the table, we can do it in dirty mode
+      case dlss_segment:dirty_read(Segment,Prev) of
+        '@deleted@' -> safe_prev(Segment,Prev);
+        _->Prev
+      end
+  end.
+
+prev_sibling(#sgm{ lvl = Lvl } = Sgm)->
+  prev_sibling( dlss_segment:dirty_prev(dlss_schema, Sgm), Lvl ).
+prev_sibling(#sgm{ lvl = LvlDown } = Sgm, Lvl) when LvlDown > Lvl->
+  % Running through sub-levels
+  prev_sibling( dlss_segment:dirty_prev(dlss_schema, Sgm), Lvl );
+prev_sibling(#sgm{ lvl = Lvl } = Sgm, Lvl)->
+  % The segment is at the same level. This is the sibling
+  Sgm;
+prev_sibling(#sgm{ lvl = LvlUp }, Lvl) when LvlUp < Lvl->
+  % The next segment is only at the upper level
+  undefined;
+prev_sibling('$end_of_table', _Lvl)->
+  undefined.
+
 %%=================================================================
 %%	Internal stuff
 %%=================================================================
@@ -531,19 +623,7 @@ segment_by_name(Name)->
     _-> { error, not_found }
   end.
 
-next_sibling(#sgm{ lvl = Lvl } = Sgm)->
-  next_sibling( dlss_segment:dirty_next(dlss_schema, Sgm), Lvl ).
-next_sibling(#sgm{ lvl = LvlDown } = Sgm, Lvl) when LvlDown > Lvl->
-  % Running through sub-levels
-  next_sibling( dlss_segment:dirty_next(dlss_schema, Sgm), Lvl );
-next_sibling(#sgm{ lvl = Lvl } = Sgm, Lvl)->
-  % The segment is at the same level. This is the sibling
-  Sgm;
-next_sibling(#sgm{ lvl = LvlUp }, Lvl) when LvlUp < Lvl->
-  % The next segment is only at the upper level
-  undefined;
-next_sibling('$end_of_table', _Lvl)->
-  undefined.
+
 
 
 
