@@ -23,17 +23,25 @@
 -behaviour(gen_server).
 
 %%=================================================================
-%%	STORAGE SEGMENT API
+%%	STORAGE READ/WRITE API
 %%=================================================================
 -export([
-  dirty_first/1,
-  dirty_last/1,
-  dirty_next/2,
-  dirty_prev/2,
   read/2,read/3,dirty_read/2,
-  dirty_scan/3,
   write/3,write/4,dirty_write/3,
   delete/2,delete/3,dirty_delete/2
+]).
+
+%%=================================================================
+%%	STORAGE ITERATOR API
+%%=================================================================
+-export([
+  first/1,dirty_first/1,
+  last/1,dirty_last/1,
+  next/2,dirty_next/2,
+  prev/2,dirty_prev/2,
+  %----OPTIMIZED SCANNING------------------
+  select/2,dirty_select/2,
+  dirty_scan/3
 ]).
 
 %%=================================================================
@@ -74,15 +82,25 @@
 %%	STORAGE SEGMENT API
 %%=================================================================
 %-------------ITERATOR----------------------------------------------
+first(Segment)->
+  mnesia:first(Segment).
 dirty_first(Segment)->
   mnesia:dirty_first(Segment).
+
+last(Segment)->
+  mnesia:last(Segment).
 dirty_last(Segment)->
   mnesia:dirty_last(Segment).
 
-dirty_next(Segment,Pattern)->
-  mnesia:dirty_next(Segment,Pattern).
-dirty_prev(Segment,Pattern)->
-  mnesia:dirty_prev(Segment,Pattern).
+next(Segment,Key)->
+  mnesia:next(Segment,Key).
+dirty_next(Segment,Key)->
+  mnesia:dirty_next(Segment,Key).
+
+prev(Segment,Key)->
+  mnesia:prev(Segment,Key).
+dirty_prev(Segment,Key)->
+  mnesia:dirty_prev(Segment,Key).
 
 %-------------INTERVAL SCAN----------------------------------------------
 dirty_scan(Segment,From,To)->
@@ -150,6 +168,12 @@ run_continuation(Cont,StorageType,MS,Limit,Acc)->
       true -> Limit
     end,
   run_continuation(Cont1,StorageType,MS,Limit1,Acc1).
+
+%-------------SELECT----------------------------------------------
+select(Segment,MS)->
+  mnesia:select(Segment,MS).
+dirty_select(Segment,MS)->
+  mnesia:dirty_select(Segment,MS).
 
 %-------------READ----------------------------------------------
 read( Segment, Key )->

@@ -27,10 +27,14 @@
 %%=================================================================
 -export([
   start_link/0,
+  stop/0,
   init_backend/0,init_backend/1,
   add_node/1,
   remove_node/1,
-  stop/0
+  create_segment/2,
+  delete_segment/1,
+  transaction/1,sync_transaction/1,
+  lock/2
 ]).
 
 %%=================================================================
@@ -71,6 +75,41 @@ add_node(Node)->
 % Remove a node from the schema
 remove_node(Node)->
   mnesia:del_table_copy(schema,Node).
+
+create_segment(Name,Params)->
+  Attributes = table_attributes(Params),
+  case mnesia:create_table(Name,[
+    {attributes,record_info(fields,kv)},
+    {record_name,kv},
+    {type,ordered_set}|
+    Attributes
+  ]) of
+    {atomic, ok } -> ok;
+    {aborted, Reason } -> {error, Reason}
+  end.
+
+delete_segment(Name)->
+  case mnesia:delete_table(Name) of
+    {atomic,ok}->ok;
+    {aborted,Reason}-> {error, Reason }
+  end.
+
+transaction(Fun)->
+  % We use the mnesia engine to deliver the true distributed ACID transactions
+  case mnesia:transaction(Fun) of
+    {atomic,FunResult}->{ok,FunResult};
+    {aborted,Reason}->{error,Reason}
+  end.
+
+% Sync transaction wait all changes are applied
+sync_transaction(Fun)->
+  case mnesia:sync_transaction(Fun) of
+    {atomic,FunResult}->{ok,FunResult};
+    {aborted,Reason}->{error,Reason}
+  end.
+
+lock( Item, Lock )->
+  mnesia:lock( Item, Lock ).
 
 %%=================================================================
 %%	OTP
@@ -270,6 +309,32 @@ wait_for_master()->
       % If there are more than one node in the schema then the schema has arrived
       ok
   end.
+
+table_attributes(#{
+  type:=Type,
+  nodes:=Nodes,
+  local:=IsLocal
+})->
+  TypeAttr=
+    case Type of
+      ram->[
+        {disc_copies,[]},
+        {ram_copies,Nodes}
+      ];
+      ramdisc->[
+        {disc_copies,Nodes},
+        {ram_copies,[]}
+      ];
+      disc->
+        [{leveldb_copies,Nodes}]
+    end,
+
+  LocalContent=
+    if
+      IsLocal->[{local_content,true}];
+      true->[]
+    end,
+  TypeAttr++LocalContent.
 
 
 
