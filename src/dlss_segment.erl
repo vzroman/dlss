@@ -28,7 +28,8 @@
 -export([
   read/2,read/3,dirty_read/2,
   write/3,write/4,dirty_write/3,
-  delete/2,delete/3,dirty_delete/2
+  delete/2,delete/3,dirty_delete/2,
+  median/1
 ]).
 
 %%=================================================================
@@ -77,6 +78,10 @@
 -define(DEFAULT_SCAN_CYCLE,5000).
 
 -define(MAX_SCAN_INTERVAL_BATCH,1000).
+
+-type key() :: any().
+
+-type segment() :: any().
 
 %%=================================================================
 %%	STORAGE SEGMENT API
@@ -206,6 +211,42 @@ delete(Segment,Key,Lock)->
 dirty_delete(Segment,Key)->
   mnesia:dirty_delete(Segment,Key).
 
+%-------------DELETE----------------------------------------------
+% Returns key for next of segment median key per segment size.
+%-------------DELETE----------------------------------------------
+-spec median(Segment :: segment()) -> {ok, Key :: key()} | {error, atom()}.
+median(Segment) ->
+  FirstKey = mnesia:dirty_first(Segment),
+  case {dirty_fold(FirstKey, Segment, 0), mnesia:dirty_next(Segment, FirstKey)} of
+    {0, _} ->
+      {error, null_segment};
+    {Num, '$end_of_table'} when Num =/= 0 ->
+      {error, single_element};
+    {TotalSize, _} ->
+      find_median_key(FirstKey, Segment, TotalSize/2, 0)
+  end.
+
+dirty_fold('$end_of_table', _Segment, Final) ->
+  Final;
+dirty_fold(Key, Segment, TotalAcc) ->
+  [Record] = mnesia:dirty_read(Segment, Key),
+  dirty_fold(mnesia:dirty_next(Segment, Key), Segment, TotalAcc + record_size(Record)).
+
+find_median_key('$end_of_table', _Segment, _Median, _TotalAcc) ->
+  {error, internal};
+find_median_key(Key, Segment, Median, TotalAcc) ->
+  [Record] = mnesia:dirty_read(Segment, Key),
+  IntermediateSize = TotalAcc + record_size(Record),
+  case IntermediateSize < Median of
+    true ->
+      find_median_key(mnesia:dirty_next(Segment, Key), Segment, Median, IntermediateSize);
+    false ->
+      {ok, Key}
+  end.
+
+record_size(Term) ->
+  size(term_to_binary(Term)).
+
 %%=================================================================
 %%	Service API
 %%=================================================================
@@ -287,11 +328,8 @@ handle_cast(_Request,State)->
 %%============================================================================
 %%	The loop
 %%============================================================================
-handle_info(loop,#state{
-  segment = Segment,
-  cycle = Cycle
-}=State)->
-  {ok,_}=timer:send_after(Cycle,loop),
+handle_info(loop,#state{cycle = Cycle}=State)->
+  {ok, _} = timer:send_after(Cycle,loop),
   {noreply,State}.
 
 terminate(Reason,#state{segment = Segment})->
