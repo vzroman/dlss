@@ -76,7 +76,7 @@ get_storages()->
     [],
     ['$1']
   }],
-  mnesia:dirty_select(dlss_schema,MS).
+  dlss_segment:dirty_select(dlss_schema,MS).
 
 get_segments()->
   MS=[{
@@ -84,7 +84,7 @@ get_segments()->
     [],
     ['$1']
   }],
-  mnesia:dirty_select(dlss_schema,MS).
+  dlss_segment:dirty_select(dlss_schema,MS).
 
 
 get_segments(Storage)->
@@ -93,7 +93,7 @@ get_segments(Storage)->
     [],
     ['$1']
   }],
-  mnesia:dirty_select(dlss_schema,MS).
+  dlss_segment:dirty_select(dlss_schema,MS).
 
 root_segment(Storage)->
   case dlss_segment:dirty_next(dlss_schema,#sgm{str=Storage,key = '_',lvl = -1 }) of
@@ -133,36 +133,32 @@ add(Name,Type,Options)->
   end,
 
   % Default options
-  Attributes=table_attributes(Type,maps:merge(#{
+  Params=maps:merge(#{
+    type=>Type,
     nodes=>[node()],
     local=>false
-  },Options)),
+  },Options),
 
    % Generate an unique name within the storage
   Root=new_segment_name(Name),
 
-  ?LOGINFO("create a new storage ~p of type ~p with root segment ~p with attributes ~p",[
+  ?LOGINFO("create a new storage ~p of type ~p with root segment ~p with params ~p",[
     Name,
     Type,
     Root,
-    Attributes
+    Params
   ]),
-  case mnesia:create_table(Root,[
-    {attributes,record_info(fields,kv)},
-    {record_name,kv},
-    {type,ordered_set}|
-    Attributes
-  ]) of
-    {atomic,ok}->ok;
-    {aborted,Reason}->
-      ?LOGERROR("unable to create a root segment ~p of type ~p with attributes ~p for storage ~p, error ~p",[
+  case dlss_backend:create_segment(Root,Params) of
+    ok -> ok;
+    { error , Error }->
+      ?LOGERROR("unable to create a root segment ~p of type ~p with params ~p for storage ~p, error ~p",[
         Root,
         Type,
-        Attributes,
+        Params,
         Name,
-        Reason
+        Error
       ]),
-      ?ERROR(Reason)
+      ?ERROR(Error)
   end,
 
   % Add the storage to the schema
@@ -170,27 +166,43 @@ add(Name,Type,Options)->
 
 remove(Name)->
   ?LOGWARNING("removing storage ~p",[Name]),
-  Start=#sgm{str=Name,key='_',lvl = -1},
-  remove(Name,dlss_segment:dirty_next(dlss_schema,Start)).
+  Segments = get_segments( Name ),
+  case dlss:transaction(fun()->
+    % Set a lock on the schema
+    dlss_backend:lock({table,dlss_schema},write),
+
+    Start=#sgm{str=Name,key='_',lvl = -1},
+    remove(Name,dlss_segment:dirty_next(dlss_schema,Start)),
+    reset_id(Name)
+  end) of
+    {ok,_} ->
+      [case dlss_backend:delete_segment(S) of
+         ok -> ok;
+         { error, Error } ->
+           ?LOGERROR("backend error on removing segment ~p storage ~p, error ~p",[
+             S,
+             Name,
+             Error
+           ])
+       end|| S<-Segments],
+      ?LOGINFO("storage ~p removed",[Name]),
+      ok;
+    {error,Error} ->
+      ?LOGERROR("unable to remove storage ~p, error ~p",[
+        Name,
+        Error
+      ]),
+      ?ERROR(Error)
+  end.
 
 remove(Storage,#sgm{str=Storage}=Sgm)->
   Table=dlss_segment:dirty_read(dlss_schema,Sgm),
   ?LOGWARNING("removing segment ~p storage ~p",[Table,Storage]),
-  ok=dlss_segment:dirty_delete(dlss_schema,Sgm),
-
-  case mnesia:delete_table(Table) of
-    {atomic,ok}->ok;
-    {aborted,Reason}->
-      ?LOGERROR("unable to remove segment ~p storage ~p, reason ~p",[
-        Table,
-        Storage,
-        Reason
-      ])
-  end,
-  reset_id(Storage),
+  ok=dlss_segment:delete(dlss_schema,Sgm,write),
   remove(Storage,dlss_segment:dirty_next(dlss_schema,Sgm));
-remove(Storage,_Sgm)->
-  ?LOGINFO("storage ~p removed",[Storage]).
+remove(_Storage,_Sgm)->
+  % '$end_of_table'
+  ok.
 
 %---------Spawn a segment----------------------------------------
 spawn_segment(Segment) ->
@@ -210,35 +222,27 @@ spawn_segment(#sgm{str = Str, lvl = Lvl, key = Key} = Sgm, SplitKey)->
   Segment=dlss_segment:dirty_read(dlss_schema,Sgm),
 
   % Get segment params
-  Params = #{ type:=Type } = dlss_segment:get_info(Segment),
-
-  % Default options
-  Attributes=table_attributes(Type,Params),
+  Params = dlss_segment:get_info(Segment),
 
   % Generate an unique name within the storage
   ChildName=new_segment_name(Str),
 
-  ?LOGINFO("create a new child segment ~p from ~p with attributes ~p",[
+  ?LOGINFO("create a new child segment ~p from ~p with params ~p",[
     ChildName,
     Segment,
-    Attributes
+    Params
   ]),
-  case mnesia:create_table(ChildName,[
-    {attributes,record_info(fields,kv)},
-    {record_name,kv},
-    {type,ordered_set}|
-    Attributes
-  ]) of
-    {atomic,ok}->ok;
-    {aborted,Reason}->
-      ?LOGERROR("unable to create a new child segment ~p from ~p with attributes ~p for storage ~p, error ~p",[
+  case dlss_backend:create_segment(ChildName,Params) of
+    ok -> ok;
+    { error, BackendError }->
+      ?LOGERROR("unable to create a new child segment ~p from ~p with params ~p for storage ~p, error ~p",[
         ChildName,
         Segment,
-        Attributes,
+        Params,
         Str,
-        Reason
+        BackendError
       ]),
-      ?ERROR(Reason)
+      ?ERROR(BackendError)
   end,
 
   StartKey=
@@ -250,9 +254,9 @@ spawn_segment(#sgm{str = Str, lvl = Lvl, key = Key} = Sgm, SplitKey)->
   % Add the segment to the schema
   case dlss:transaction(fun()->
     % Set a lock on the schema
-    mnesia:lock({table,dlss_schema},read),
+    dlss_backend:lock({table,dlss_schema},read),
     % Add the segment
-    ok = dlss_segment:dirty_write( dlss_schema, Sgm#sgm{ key=StartKey, lvl= Lvl + 1 }, ChildName )
+    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ key=StartKey, lvl= Lvl + 1 }, ChildName, write )
   end) of
     {ok,ok} -> ok;
     Error -> Error
@@ -275,7 +279,7 @@ absorb_segment(#sgm{str = Str} = Sgm)->
   case dlss:transaction(fun()->
 
     % Set a lock on the schema while traversing segments
-    mnesia:lock({table,dlss_schema},write),
+    dlss_backend:lock({table,dlss_schema},write),
 
     % Find all the children of the segment
     Children = get_children(Sgm),
@@ -288,19 +292,24 @@ absorb_segment(#sgm{str = Str} = Sgm)->
         ok = dlss_segment:write(dlss_schema, S#sgm{ lvl = S#sgm.lvl - 1 }, T , write ),
         ok = dlss_segment:delete(dlss_schema, S , write )
       end || { S, T } <- Children]
-                        end) of
+  end) of
     { ok, _} ->
-
-      % Remove the segment from mnesia
-      case mnesia:delete_table(Name) of
-        {atomic,ok}->ok;
-        {aborted,Reason}->
+      % Remove the segment from backend
+      case dlss_backend:delete_segment(Name) of
+        ok->ok;
+        {error,Error}->
           ?LOGERROR("unable to remove segment ~p storage ~p, reason ~p",[
             Name,
             Str,
-            Reason
+            Error
           ])
-      end
+      end;
+    { error, Error}->
+      ?LOGERROR("error absorbing segment ~p storage ~p, error ~p",[
+        Name,
+        Str,
+        Error
+      ])
   end.
 
 %------------Get children segments-----------------------------------------
@@ -351,7 +360,7 @@ read(Storage, Key )->
   read( Storage, Key, _Lock = none ).
 read(Storage, Key, Lock)->
   % Set a lock on the schema
-  mnesia:lock({table,dlss_schema},read),
+  dlss_backend:lock({table,dlss_schema},read),
   % Get potential segments ordered by priority (level)
   [ Root | Segments ]= get_key_segments(Storage,Key),
   case dlss_segment:read(Root,Key,Lock) of
@@ -399,7 +408,7 @@ write(Storage, Key, Value)->
   write( Storage, Key, Value, _Lock = none).
 write(Storage, Key, Value, Lock)->
   % Set a lock on the schema while performing the operation
-  mnesia:lock({table,dlss_schema},read),
+  dlss_backend:lock({table,dlss_schema},read),
   % All write operations are performed to the Root segment only
   {ok,Root} = root_segment(Storage),
   dlss_segment:write( Root, Key, Value, Lock ).
@@ -424,7 +433,7 @@ dirty_delete(Storage, Key)->
 %---------NEXT------------------------
 next( Storage, Key )->
   % Set a lock on the schema
-  mnesia:lock({table,dlss_schema},read),
+  dlss_backend:lock({table,dlss_schema},read),
   % The safe iterator
   Iter = fun(Segment)-> safe_next(Segment,Key) end,
   % Schema starting point
@@ -499,7 +508,7 @@ next_sibling('$end_of_table', _Lvl)->
 %---------PREVIOUS------------------------
 prev( Storage, Key )->
   % Set a lock on the schema
-  mnesia:lock({table,dlss_schema},read),
+  dlss_backend:lock({table,dlss_schema},read),
   % The safe iterator
   Iter = fun(Segment)-> safe_prev(Segment,Key) end,
   % Schema starting point
@@ -580,37 +589,20 @@ new_segment_name(Storage)->
   list_to_atom(Name).
 
 get_unique_id(Storage)->
-  % TODO. Dirty update does not guarantee a unique value.
-  % Two concurrent processes may get the same value
-  mnesia:dirty_update_counter(dlss_schema,{id,Storage},1).
+  case dlss:transaction(fun()->
+    I =
+      case dlss_segment:read( dlss_schema, { id, Storage }, write ) of
+        ID when is_integer(ID) -> ID + 1;
+        _ -> 1
+      end,
+    ok = dlss_segment:write( dlss_schema, { id, Storage }, I ),
+    I
+  end) of
+    {ok, Value } -> Value;
+    { error, Error } -> ?ERROR(Error)
+  end.
 reset_id(Storage)->
-  mnesia:dirty_delete(dlss_schema,{id,Storage}).
-
-
-table_attributes(Type,#{
-  nodes:=Nodes,
-  local:=IsLocal
-})->
-  TypeAttr=
-    case Type of
-      ram->[
-        {disc_copies,[]},
-        {ram_copies,Nodes}
-      ];
-      ramdisc->[
-        {disc_copies,Nodes},
-        {ram_copies,[]}
-      ];
-      disc->
-        [{leveldb_copies,Nodes}]
-    end,
-
-  LocalContent=
-    if
-      IsLocal->[{local_content,true}];
-      true->[]
-    end,
-  TypeAttr++LocalContent.
+  dlss_segment:delete( dlss_schema, {id,Storage}, write).
 
 segment_by_name(Name)->
   MS=[{
@@ -618,7 +610,7 @@ segment_by_name(Name)->
     [],
     ['$1']
   }],
-  case mnesia:dirty_select(dlss_schema,MS) of
+  case dlss_segment:dirty_select(dlss_schema,MS) of
     [Key]->{ ok, Key };
     _-> { error, not_found }
   end.

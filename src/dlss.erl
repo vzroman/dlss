@@ -31,7 +31,7 @@
 
 -export([
   %-----Data API-------
-  transaction/1,transaction_sync/1
+  transaction/1,sync_transaction/1
 ]).
 
 %%---------------------------------------------------------------
@@ -69,17 +69,11 @@ remove_storage(Name)->
 %	Wrap the procedure into the ACID transaction
 %-----------------------------------------------------------------
 transaction(Fun)->
-  % We use the mnesia engine to deliver the true distributed ACID transactions
-  case mnesia:transaction(Fun) of
-    {atomic,FunResult}->{ok,FunResult};
-    {aborted,Reason}->{error,Reason}
-  end.
+  % We use the backend transaction engine
+  dlss_backend:transaction(Fun).
 
 % Sync transaction wait all changes are applied
-transaction_sync(Fun)->
-  case mnesia:sync_transaction(Fun) of
-    {atomic,FunResult}->{ok,FunResult};
-    {aborted,Reason}->{error,Reason}
-  end.
+sync_transaction(Fun)->
+  dlss_backend:sync_transaction(Fun).
 
 

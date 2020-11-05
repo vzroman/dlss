@@ -40,6 +40,7 @@
   next/2,dirty_next/2,
   prev/2,dirty_prev/2,
   %----OPTIMIZED SCANNING------------------
+  select/2,dirty_select/2,
   dirty_scan/3
 ]).
 
@@ -167,6 +168,12 @@ run_continuation(Cont,StorageType,MS,Limit,Acc)->
       true -> Limit
     end,
   run_continuation(Cont1,StorageType,MS,Limit1,Acc1).
+
+%-------------SELECT----------------------------------------------
+select(Segment,MS)->
+  mnesia:select(Segment,MS).
+dirty_select(Segment,MS)->
+  mnesia:dirty_select(Segment,MS).
 
 %-------------READ----------------------------------------------
 read( Segment, Key )->
