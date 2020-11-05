@@ -29,6 +29,7 @@
   %-----Service API-------
   get_storages/0,
   get_segments/0,get_segments/1,
+  new_root_segment/1,
   root_segment/1,
   segment_params/1,
   add/2,
@@ -182,6 +183,66 @@ remove(Storage,#sgm{str=Storage}=Sgm)->
   remove(Storage,dlss_segment:dirty_next(dlss_schema,Sgm));
 remove(Storage,_Sgm)->
   ?LOGINFO("storage ~p removed",[Storage]).
+
+%---------Add a new Root segment to the storage----------------------------------------
+
+new_root_segment(Storage) ->
+  %% Get Root segment
+  {ok,Root} = root_segment(Storage),
+
+  %% Get Root table info
+  #{type:=Type,local:=IsLocal,nodes:=Nodes} = dlss_segment:get_info(Root),
+
+  %% Preparing  attributes for new Root segment
+  Attributes=table_attributes(Type,maps:merge(#{
+    nodes=>Nodes,
+    local=>IsLocal
+  },#{})),
+
+  %% Generate an unique name within the storage for the new Root segment
+  NewRoot=new_segment_name(Storage),
+  ?LOGINFO("add a new root segment ~p with attributes ~p",[
+    NewRoot,
+    Attributes
+  ]),
+
+  %% Creating a new table for New Root
+  case mnesia:create_table(NewRoot,[
+    {attributes,record_info(fields,kv)},
+    {record_name,kv},
+    {type,ordered_set}|
+    Attributes
+  ]) of
+    {atomic,ok}->ok;
+    {aborted,Reason}->
+      ?LOGERROR("unable to create a new root segment ~p of type ~p with attributes ~p for storage ~p, error ~p",[
+        NewRoot,
+        Type,
+        Attributes,
+        Storage,
+        Reason
+      ]),
+      ?ERROR(Reason)
+  end,
+
+  %% Level down all segments to +1
+  dlss:transaction(fun()->
+
+    %% Locking an old Root table
+    mnesia:lock({table,Root},read),
+
+    % Find all segments of the Storage
+    Segments = get_children(#sgm{str=Storage,key = '_',lvl = -1 }),
+
+    % Put all segments level down
+    [ begin
+        ok = dlss_segment:write(dlss_schema, S#sgm{ lvl = S#sgm.lvl + 1 }, T , write ),
+        ok = dlss_segment:delete(dlss_schema, S , write )
+      end || {S, T} <- lists:reverse(Segments)],
+    % Add the new Root segment to the schema
+    ok=dlss_segment:write(dlss_schema, #sgm{str=Storage,key='_',lvl=0}, NewRoot , write)
+                   end),
+  ok.
 
 %---------Spawn a segment----------------------------------------
 spawn_segment(Segment) ->

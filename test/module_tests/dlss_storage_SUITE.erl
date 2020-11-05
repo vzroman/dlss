@@ -38,7 +38,9 @@
   segment_children/1,
   absorb_segment/1,
   get_key_segments/1,
-  storage_read/1
+  storage_read/1,
+  create_root_segment/1,
+  write_data_to_storage/1
 ]).
 
 
@@ -49,11 +51,20 @@ all()->
     segment_children,
     absorb_segment,
     get_key_segments,
-    storage_read
+    storage_read,
+    {group, add_root_segment}
   ].
 
 groups()->
-  [].
+  [
+    {add_root_segment,
+      [parallel],  % Run strategy
+      [
+        create_root_segment,
+        write_data_to_storage
+      ]
+    }
+  ].
 
 %% Init system storages
 init_per_suite(Config)->
@@ -63,9 +74,18 @@ end_per_suite(_Config)->
   dlss_backend:stop(),
   ok.
 
+init_per_group(add_root_segment,Config)->
+  ok=dlss_storage:add(storage_1,disc),
+  Config;
 init_per_group(_,Config)->
   Config.
 
+end_per_group(add_root_segment,_Config)->
+  % Clean up
+  dlss_storage:remove(storage_1),
+  []=dlss_storage:get_storages(),
+  []=dlss_storage:get_segments(),
+  ok;
 end_per_group(_,_Config)->
   ok.
 
@@ -425,6 +445,68 @@ storage_read(_Config)->
 
   ok.
 
+create_root_segment(_Config)->
+  % Check for storage type
+  disc=dlss_storage:get_type(storage_1),
+
+  % Check for storage Root segment
+  [dlss_storage_1_1]=dlss_storage:get_segments(storage_1),
+
+  % Wait for 1 second
+  timer:sleep(1000),
+
+  % Spawn a new segment for storage
+  ok = dlss_storage:spawn_segment(dlss_storage_1_1),
+  [dlss_storage_1_1,dlss_storage_1_2]=dlss_storage:get_segments(storage_1),
+  [{_,dlss_storage_1_2}] = dlss_storage:get_children(dlss_storage_1_1),
+
+  % Spawn new segment with splitting segment of dlss_storage_1_1
+  ok = dlss_storage:spawn_segment(dlss_storage_1_1,some_split_key),
+  [dlss_storage_1_1,dlss_storage_1_2,dlss_storage_1_3]=dlss_storage:get_segments(storage_1),
+
+  % Add a new Root segment for storage
+  ok = dlss_storage:new_root_segment(storage_1),
+
+  % Check for segments
+  [dlss_storage_1_4,dlss_storage_1_1,dlss_storage_1_2,dlss_storage_1_3]=dlss_storage:get_segments(storage_1),
+
+  % Check level of new created Root segment
+  { ok, #{
+    storage := storage_1,
+    level := 0
+  } } = dlss_storage:segment_params(dlss_storage_1_4),
+
+  % Check level of dlss_storage_1_1
+  { ok, #{
+    storage := storage_1,
+    level := 1
+  } } = dlss_storage:segment_params(dlss_storage_1_1),
+
+  % Check level of dlss_storage_1_2
+  { ok, #{
+    storage := storage_1,
+    level := 2
+  } } = dlss_storage:segment_params(dlss_storage_1_2),
+
+  % Check level of dlss_storage_1_3
+  { ok, #{
+    storage := storage_1,
+    level := 2
+  } } = dlss_storage:segment_params(dlss_storage_1_3),
+
+  ok.
+
+write_data_to_storage(_Config)->
+  % Put the value to storage
+  [begin
+     ok = dlss_storage:dirty_write(storage_1,{x,N},{y,N})
+   end || N <- lists:seq(1,200000)],
+
+  % Get value from storage
+  [begin
+     {y,N} = dlss_storage:dirty_read(storage_1,{x,N})
+   end || N <- lists:seq(1,200000)],
+  ok.
 
 
 
