@@ -492,41 +492,25 @@ first(Storage)->
   % The scanning starts at the lowest level
   Lowest = #sgm{ str = Storage, key = '~', lvl = '_' },
   Segments = key_segments( parent_segment(Lowest),[]),
-  first(Segments,none).
+  first(Segments,'$end_of_table').
 
 dirty_first(Storage)->
   % The scanning starts at the lowest level
   Lowest = #sgm{ str = Storage, key = '~', lvl = '_' },
   Segments = key_segments( parent_segment(Lowest),[]),
-  dirty_first(Segments,none).
+  dirty_first(Segments,'$end_of_table').
 
-first([],F)-> F;
-first([S1|Rest],none)->
-  % First iteration
-  first(Rest,dlss_segment:first(S1));
-first([S1|Rest],F)->
-  F1 = dlss_segment:first(S1),
-  F2 =
-    if
-      F1 =:= '$end_of_table' -> F;
-      F > F1 -> F1;
-      true -> F
-    end,
-  first(Rest,F2).
+first([S1|Rest],Acc)->
+  F = dlss_segment:first(S1),
+  Acc1= next_acc( F, Acc ),
+  first(Rest,Acc1);
+first([],F)-> F.
 
-dirty_first([],F)-> F;
-dirty_first([S1|Rest],none)->
-  % First iteration
-  dirty_first(Rest,dlss_segment:dirty_first(S1));
-dirty_first([S1|Rest],F)->
-  F1 = dlss_segment:dirty_first(S1),
-  F2 =
-    if
-      F1 =:= '$end_of_table' -> F;
-      F > F1 -> F1;
-      true -> F
-    end,
-  dirty_first(Rest,F2).
+dirty_first([S1|Rest], Acc)->
+  F = dlss_segment:dirty_first(S1),
+  Acc1 = next_acc(F, Acc),
+  dirty_first(Rest,Acc1);
+dirty_first([],F)-> F.
 
 %---------LAST------------------------
 last(Storage)->
@@ -535,39 +519,25 @@ last(Storage)->
   % The scanning starts at the lowest level
   Highest = #sgm{ str = Storage, key = [], lvl = '_' },
   Segments = key_segments( parent_segment(Highest),[]),
-  last(Segments,none).
+  last(Segments,'$end_of_table').
 
 dirty_last(Storage)->
   % The scanning starts at the lowest level
   Highest = #sgm{ str = Storage, key = [], lvl = '_' },
   Segments = key_segments( parent_segment(Highest),[]),
-  dirty_last(Segments,none).
+  dirty_last(Segments,'$end_of_table').
 
-last([],L)-> L;
-last([S1|Rest],none)->
-  % First iteration
-  last(Rest,dlss_segment:last(S1));
-last([S1|Rest],L)->
-  L1 = dlss_segment:last(S1),
-  L2 =
-    if
-      L < L1 -> L1;
-      true -> L
-    end,
-  last(Rest,L2).
+last([S1|Rest], Acc)->
+  L = dlss_segment:last(S1),
+  Acc1 = prev_acc( L, Acc ),
+  last(Rest,Acc1);
+last([],L)-> L.
 
-dirty_last([],L)-> L;
-dirty_last([S1|Rest],none)->
-  % First iteration
-  dirty_last(Rest,dlss_segment:dirty_last(S1));
-dirty_last([S1|Rest],L)->
-  L1 = dlss_segment:dirty_last(S1),
-  L2 =
-    if
-      L < L1 -> L1;
-      true -> L
-    end,
-  dirty_last(Rest,L2).
+dirty_last([S1|Rest], Acc)->
+  L = dlss_segment:dirty_last(S1),
+  Acc1 = prev_acc( L, Acc),
+  dirty_last(Rest,Acc1);
+dirty_last([],L)-> L.
 
 %---------NEXT------------------------
 next( Storage, Key )->

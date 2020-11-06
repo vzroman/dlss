@@ -717,7 +717,7 @@ storage_first(_Config)->
 
   {ok,{x,10}}  =  dlss:transaction(fun()->
     dlss_storage:first(storage1)
-                                  end ),
+  end ),
 
   {x,10} = dlss_storage:dirty_first(storage1),
 
@@ -792,6 +792,12 @@ storage_last(_Config)->
   ok = dlss_segment:dirty_write(dlss_storage1_1,{x,53},l0),
   ok = dlss_segment:dirty_write(dlss_storage1_1,{x,130},l0),
 
+  {ok,{x,130}}  =  dlss:transaction(fun()->
+    dlss_storage:last(storage1)
+  end ),
+
+  {x,130} = dlss_storage:dirty_last(storage1),
+
   % Fill in the level 1
   ok = dlss_segment:dirty_write(dlss_storage1_2,{x,10},l1),
   ok = dlss_segment:dirty_write(dlss_storage1_2,{x,12},l1),
@@ -814,7 +820,7 @@ storage_last(_Config)->
 
   {ok,{x,170}}  =  dlss:transaction(fun()->
     dlss_storage:last(storage1)
-                                  end ),
+  end ),
 
   {x,170} = dlss_storage:dirty_last(storage1),
 
@@ -877,14 +883,14 @@ create_root_segment(_Config)->
 
 write_data_to_storage(_Config)->
   % Put the value to storage
-%%  [begin
-%%     ok = dlss_storage:dirty_write(storage_1,{x,N},{y,N})
-%%   end || N <- lists:seq(1,200000)],
-%%
-%%  % Get value from storage
-%%  [begin
-%%     {y,N} = dlss_storage:dirty_read(storage_1,{x,N})
-%%   end || N <- lists:seq(1,200000)],
+  [begin
+     ok = dlss_storage:dirty_write(storage_1,{x,N},{y,N})
+   end || N <- lists:seq(1,200000)],
+
+  % Get value from storage
+  [begin
+     {y,N} = dlss_storage:dirty_read(storage_1,{x,N})
+   end || N <- lists:seq(1,200000)],
   ok.
 
 
