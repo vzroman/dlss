@@ -320,6 +320,9 @@ init([Segment])->
 handle_call(_Params, _From, State) ->
   {reply, {ok,undefined}, State}.
 
+handle_cast({stop,From},State)->
+  From!{stopped,self()},
+  {stop, normal, State};
 handle_cast(_Request,State)->
   {noreply,State}.
 
@@ -332,6 +335,7 @@ handle_info(loop,#state{
 }=State)->
   {ok,_}=timer:send_after(Cycle,loop),
   {noreply,State}.
+
 
 terminate(Reason,#state{segment = Segment})->
   ?LOGINFO("terminating segment server ~p, reason ~p",[Segment,Reason]),

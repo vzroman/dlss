@@ -53,7 +53,10 @@ start_segment(Segment)->
   supervisor:start_child(?SERVER,[Segment]).
 
 stop_segment(Segment)->
-  supervisor:terminate_child(?SERVER,Segment).
+  case gen_server:stop(Segment,normal,?ENV(segment_stop_timeout, ?DEFAULT_STOP_TIMEOUT)) of
+    ok->ok;
+    _->supervisor:terminate_child(?SERVER,Segment)
+  end.
 
 %%=================================================================
 %%	OTP
