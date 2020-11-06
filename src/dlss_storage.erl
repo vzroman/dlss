@@ -27,6 +27,7 @@
 %%=================================================================
 -export([
   %-----Service API-------
+  is_storage/1,
   get_storages/0,
   get_segments/0,get_segments/1,
   new_root_segment/1,
@@ -72,6 +73,11 @@
 %%-----------------------------------------------------------------
 %%  Service API
 %%-----------------------------------------------------------------
+is_storage(Storage)->
+  case dlss_segment:dirty_read( dlss_schema, { id, Storage } ) of
+    not_found -> false;
+    _-> true
+  end.
 get_storages()->
   MS=[{
     #kv{key = #sgm{str = '$1',key = '_',lvl = 0},value = '_'},
@@ -100,12 +106,12 @@ get_segments(Storage)->
 root_segment(Storage)->
   case dlss_segment:dirty_next(dlss_schema,#sgm{str=Storage,key = '_',lvl = -1 }) of
     #sgm{ str = Storage } = Sgm->
-      { ok, dlss_segment:dirty_read(dlss_schema,Sgm) };
-    _->{error,invalid_storage}
+      dlss_segment:dirty_read(dlss_schema,Sgm);
+    _->?ERROR(invalid_storage)
   end.
 
 get_type(Storage)->
-  {ok,Root}=root_segment(Storage),
+  Root=root_segment(Storage),
   #{ type:= T }=dlss_segment:get_info(Root),
   T.
 
@@ -129,8 +135,8 @@ add(Name,Type)->
 add(Name,Type,Options)->
 
   % Check if the occupied
-  case root_segment(Name) of
-    {ok,_}->?ERROR(already_exists);
+  case is_storage(Name) of
+    true->?ERROR(already_exists);
     _->ok
   end,
 
@@ -210,7 +216,7 @@ remove(_Storage,_Sgm)->
 
 new_root_segment(Storage) ->
   %% Get Root segment
-  {ok,Root} = root_segment(Storage),
+  Root = root_segment(Storage),
 
   %% Get Root table info
   Params = dlss_segment:get_info(Root),
@@ -340,7 +346,7 @@ hog_parent(Segment)->
 hog_parent( '$end_of_table', _Stop, _Parent, _Segment )->
   ok;
 hog_parent( Key, Stop, Parent, Segment )
-  when Key =/='$end_of_table',Key < Stop->
+  when Key =/='$end_of_table',Key =< Stop->
 
   case dlss_segment:dirty_read( Parent, Key ) of
     '@deleted@' ->
@@ -436,7 +442,10 @@ parent_segment(Name) when is_atom(Name)->
     Error -> Error
   end;
 parent_segment(#sgm{str = Str, lvl = Lvl} = Sgm)->
-  parent_segment( dlss_segment:dirty_prev(dlss_schema, Sgm ), Str, Lvl ).
+  case is_storage(Str) of
+    true-> parent_segment( dlss_segment:dirty_prev(dlss_schema, Sgm ), Str, Lvl );
+    _-> ?ERROR( invalid_storage )
+  end.
 parent_segment( #sgm{ str = Str, lvl = 0 } = Sgm, Str, _Lvl )->
   % The root segment
   Sgm;
@@ -496,9 +505,13 @@ segments_dirty_read([], _Key)->
   not_found.
 
 get_key_segments(Storage, Key)->
-  % The scanning starts at the lowest level
-  Lowest = #sgm{ str = Storage, key = { Key }, lvl = '_' },
-  key_segments( parent_segment(Lowest),[]).
+  case is_storage(Storage) of
+    true->
+      % The scanning starts at the lowest level
+      Lowest = #sgm{ str = Storage, key = { Key }, lvl = '_' },
+      key_segments( parent_segment(Lowest),[]);
+    _->?ERROR(invalid_storage)
+  end.
 key_segments( #sgm{ lvl = 0 } = Sgm, Acc )->
   % The level 0 is the final
   [ dlss_segment:dirty_read(dlss_schema, Sgm)| Acc ];
@@ -515,11 +528,11 @@ write(Storage, Key, Value, Lock)->
   % Set a lock on the schema while performing the operation
   dlss_backend:lock({table,dlss_schema},read),
   % All write operations are performed to the Root segment only
-  {ok,Root} = root_segment(Storage),
+  Root = root_segment(Storage),
   dlss_segment:write( Root, Key, Value, Lock ).
 dirty_write(Storage, Key, Value)->
   % All write operations are performed to the Root segment only
-  {ok,Root} = root_segment(Storage),
+  Root = root_segment(Storage),
   dlss_segment:dirty_write( Root, Key, Value ).
 
 %---------------------Delete-----------------------------------------

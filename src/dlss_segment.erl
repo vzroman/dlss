@@ -379,10 +379,12 @@ loop( Segment, #{ storage := Storage, level := Level } )->
           ?LOGINFO("the segment ~p in storage ~p reached the limit, size ~p",[ Segment, Storage, Size ]),
           % Calculate the median key
           { ok, Median } = get_split_key( Segment, Size div 2 ),
-          % Create the left segment
-          dlss_storage:spawn_segment(Segment),
-          % Create the right segment
-          dlss_storage:spawn_segment(Segment,Median);
+          % First create the right segment, then create the left segment.
+          % We need the right segment first because if there is no next sibling the left
+          % segment can hog not its keys while the right is starting
+          dlss_storage:spawn_segment(Segment,Median),
+          % Then create the left segment
+          dlss_storage:spawn_segment(Segment);
         true ->
           if
             Level > 1->
