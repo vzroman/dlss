@@ -251,16 +251,13 @@ remove_node(Segment,Node)->
 
 %----------Calculate the size (bytes) occupied by the segment-------
 get_size(Segment)->
-  get_size( mnesia:dirty_first(Segment), Segment, 0).
-get_size('$end_of_table', _Segment, Acc)->
-  Acc;
-get_size(Key, Segment, Acc)->
-  Acc1=
-    case mnesia:dirty_read(Segment, Key) of
-      [ Record ] -> Acc + record_size( Record );
-      _ -> Acc
-    end,
-  get_size( mnesia:dirty_next( Segment, Key ), Segment, Acc1 ).
+  Memory = mnesia:table_info(Segment,memory),
+  case get_info(Segment) of
+    #{type := disc} -> Memory;
+    _ ->
+      % for ram and ramdisc tables the mnesia returns a number of allocated words
+      erlang:system_info(wordsize) * Memory
+  end.
 
 record_size(Term) ->
   size(term_to_binary(Term)).
@@ -330,11 +327,18 @@ handle_cast(_Request,State)->
 %%	The loop
 %%============================================================================
 handle_info(loop,#state{
-  segment = _Segment,
+  segment = Segment,
   cycle = Cycle
 }=State)->
-  {ok,_}=timer:send_after(Cycle,loop),
-  {noreply,State}.
+
+  case dlss_storage:segment_params(Segment) of
+    {ok, Params} ->
+      {ok,_}=timer:send_after(Cycle,loop),
+      loop( Segment, Params ),
+      {noreply,State};
+    { error, Error} ->
+      { stop, Error, State }
+  end.
 
 
 terminate(Reason,#state{segment = Segment})->
@@ -343,6 +347,16 @@ terminate(Reason,#state{segment = Segment})->
 
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
+
+
+%%============================================================================
+%%	The Loop
+%%============================================================================
+loop( Segment, #{ level := 0 } )->
+  % The segment is the root segment in its storage.
+  % We watch its size and when it reaches the limit we
+  % create a new root segment for the storage
+  {ok, Segment}.
 
 
 %%============================================================================
