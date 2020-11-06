@@ -54,6 +54,8 @@
 %%	STORAGE ITERATOR API
 %%=================================================================
 -export([
+  first/1,dirty_first/1,
+  last/1,dirty_last/1,
   next/2,dirty_next/2,
   prev/2,dirty_prev/2
 ]).
@@ -482,6 +484,91 @@ dirty_delete(Storage, Key)->
 %%=================================================================
 %%	Iterate
 %%=================================================================
+
+%---------FIRST-----------------------
+first(Storage)->
+  % Set a lock on the schema
+  dlss_backend:lock({table,dlss_schema},read),
+  % The scanning starts at the lowest level
+  Lowest = #sgm{ str = Storage, key = '~', lvl = '_' },
+  Segments = key_segments( parent_segment(Lowest),[]),
+  first(Segments,none).
+
+dirty_first(Storage)->
+  % The scanning starts at the lowest level
+  Lowest = #sgm{ str = Storage, key = '~', lvl = '_' },
+  Segments = key_segments( parent_segment(Lowest),[]),
+  dirty_first(Segments,none).
+
+first([],F)-> F;
+first([S1|Rest],none)->
+  % First iteration
+  first(Rest,dlss_segment:first(S1));
+first([S1|Rest],F)->
+  F1 = dlss_segment:first(S1),
+  F2 =
+    if
+      F1 =:= '$end_of_table' -> F;
+      F > F1 -> F1;
+      true -> F
+    end,
+  first(Rest,F2).
+
+dirty_first([],F)-> F;
+dirty_first([S1|Rest],none)->
+  % First iteration
+  dirty_first(Rest,dlss_segment:dirty_first(S1));
+dirty_first([S1|Rest],F)->
+  F1 = dlss_segment:dirty_first(S1),
+  F2 =
+    if
+      F1 =:= '$end_of_table' -> F;
+      F > F1 -> F1;
+      true -> F
+    end,
+  dirty_first(Rest,F2).
+
+%---------LAST------------------------
+last(Storage)->
+  % Set a lock on the schema
+  dlss_backend:lock({table,dlss_schema},read),
+  % The scanning starts at the lowest level
+  Highest = #sgm{ str = Storage, key = [], lvl = '_' },
+  Segments = key_segments( parent_segment(Highest),[]),
+  last(Segments,none).
+
+dirty_last(Storage)->
+  % The scanning starts at the lowest level
+  Highest = #sgm{ str = Storage, key = [], lvl = '_' },
+  Segments = key_segments( parent_segment(Highest),[]),
+  dirty_last(Segments,none).
+
+last([],L)-> L;
+last([S1|Rest],none)->
+  % First iteration
+  last(Rest,dlss_segment:last(S1));
+last([S1|Rest],L)->
+  L1 = dlss_segment:last(S1),
+  L2 =
+    if
+      L < L1 -> L1;
+      true -> L
+    end,
+  last(Rest,L2).
+
+dirty_last([],L)-> L;
+dirty_last([S1|Rest],none)->
+  % First iteration
+  dirty_last(Rest,dlss_segment:dirty_last(S1));
+dirty_last([S1|Rest],L)->
+  L1 = dlss_segment:dirty_last(S1),
+  L2 =
+    if
+      L < L1 -> L1;
+      true -> L
+    end,
+  dirty_last(Rest,L2).
+
 %---------NEXT------------------------
 next( Storage, Key )->
   % Set a lock on the schema
