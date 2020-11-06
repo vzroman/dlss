@@ -82,6 +82,8 @@
 
 -define(MAX_SCAN_INTERVAL_BATCH,1000).
 
+-define(MB,1048576).
+
 -define(PROCESS(Segment), list_to_atom( atom_to_list(Segment) ++ "_sup" ) ).
 
 %%=================================================================
@@ -278,7 +280,7 @@ get_split_key( Key , _Segment, _Size, _Acc)->
   % If we are here then the Acc is bigger than the Size.
   % It means we reached the requested size limit and the Key
   % is the sought key
-  Key.
+  {ok, Key}.
 
 %%=================================================================
 %%	API
@@ -352,11 +354,57 @@ code_change(_OldVsn, State, _Extra) ->
 %%============================================================================
 %%	The Loop
 %%============================================================================
-loop( Segment, #{ level := 0 } )->
+loop( Segment, #{ level := 0, storage := Storage } )->
   % The segment is the root segment in its storage.
   % We watch its size and when it reaches the limit we
   % create a new root segment for the storage
-  {ok, Segment}.
+  Size = get_size( Segment ) / ?MB, % MB
+  Limit = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT),
+  if
+    Size >= Limit ->
+      ?LOGINFO("the root segment ~p in storage ~p reached the limit, size ~p",[ Segment, Storage, Size ]),
+      dlss_storage:new_root_segment(Storage);
+    true -> ok
+  end;
+
+loop( Segment, #{ storage := Storage, level := Level } )->
+  case dlss_storage:get_children( Segment ) of
+    [] ->
+      % The segment is at the lowest level.
+      % Check its size and if it has reached the limit split the segment
+      Size = get_size( Segment ) / ?MB, % MB
+      Limit = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT),
+      if
+        Size >= Limit ->
+          ?LOGINFO("the segment ~p in storage ~p reached the limit, size ~p",[ Segment, Storage, Size ]),
+          % Calculate the median key
+          { ok, Median } = get_split_key( Segment, Size div 2 ),
+          % Create the left segment
+          dlss_storage:spawn_segment(Segment),
+          % Create the right segment
+          dlss_storage:spawn_segment(Segment,Median);
+        true ->
+          if
+            Level > 1->
+              % The segment is below the desired level. To take place in upper level it
+              % must hog its parent
+              ok;
+            true ->
+              % the segment is at the respectable level and is not overwhelmed.
+              % This is a stable state
+              ok
+          end
+      end;
+    _->
+      % The segment has children, that are at the level lower than 1.
+      % They are to hog their parent to take a place at its level.
+      case is_empty( Segment ) of
+        true ->
+          % The segment has been absorbed by the children
+          ?LOGINFO("the segment ~p in storage ~p is aready to be absorbed"),
+          dlss_storage:absorb_segment( Segment )
+      end
+  end.
 
 
 %%============================================================================

@@ -246,7 +246,7 @@ absorb_segment(_Config)->
     {_,dlss_storage1_6}
   ] = dlss_storage:get_children(dlss_storage1_1),
 
-  { error, root_segment } = dlss_storage:absorb_segment(dlss_storage1_1),
+  ?assertError( root_segment ,dlss_storage:absorb_segment(dlss_storage1_1)),
 
   %-----------------------------------------------------------------
   % Absorb the segment from the level 1

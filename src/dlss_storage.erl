@@ -36,6 +36,7 @@
   remove/1,
   get_type/1,
   spawn_segment/1,spawn_segment/2,
+  hog_parent/1,
   absorb_segment/1,
   get_children/1,
   parent_segment/1
@@ -314,15 +315,57 @@ spawn_segment(#sgm{str = Str, lvl = Lvl, key = Key} = Sgm, SplitKey)->
     Error -> Error
   end.
 
+%---------Hog parent segment----------------------------------------
+hog_parent(Segment)->
+  case segment_by_name(Segment) of
+    { ok, #sgm{ lvl = Lvl } } when Lvl =< 1->
+      ?ERROR( not_low_level_segment );
+    { ok, #sgm{ key = Key } = Sgm }->
+      Parent = parent_segment( Segment ),
+      % Start key
+      Start=
+        case Key of
+          '_' -> dlss_segment:dirty_first(Parent);
+          { K } -> K
+        end,
+      % End Key
+      Stop=
+        case next_sibling( Sgm ) of
+          #sgm{ key = { Next } }-> dlss_segment:dirty_prev( Parent, Next );
+          _-> dlss_segment:dirty_last(Parent)
+        end,
+      hog_parent( Start, Stop, Parent, Segment )
+  end.
+
+hog_parent( '$end_of_table', _Stop, _Parent, _Segment )->
+  ok;
+hog_parent( Key, Stop, Parent, Segment )
+  when Key =/='$end_of_table',Key < Stop->
+
+  case dlss_segment:dirty_read( Parent, Key ) of
+    '@deleted@' ->
+      ok = dlss_segment:dirty_delete( Segment, Key ),
+      ok = dlss_segment:dirty_delete( Parent, Key );
+    not_found->
+      % Can we really get here?
+      ok = dlss_segment:dirty_delete( Parent, Key );
+    Value ->
+      ok = dlss_segment:dirty_write( Segment, Key, Value ),
+      ok = dlss_segment:dirty_delete( Parent, Key )
+  end,
+  hog_parent( dlss_segment:dirty_next(Parent,Key), Stop, Parent, Segment );
+hog_parent( _Key, _Stop, _Parent, _Segment )->
+  ok.
+
 %---------Absorb a segment----------------------------------------
 absorb_segment(Name) when is_atom(Name)->
   case segment_by_name(Name) of
     { ok, Segment }-> absorb_segment( Segment );
-    Error -> Error
+    Error -> ?ERROR(Error)
   end;
 absorb_segment(#sgm{lvl = 0})->
   % The root segment cannot be absorbed
-  { error, root_segment };
+  ?ERROR(root_segment);
 absorb_segment(#sgm{str = Str} = Sgm)->
 
   % Obtain the segment name
@@ -361,7 +404,8 @@ absorb_segment(#sgm{str = Str} = Sgm)->
         Name,
         Str,
         Error
-      ])
+      ]),
+      ?ERROR(Error)
   end.
 
 %------------Get children segments-----------------------------------------
