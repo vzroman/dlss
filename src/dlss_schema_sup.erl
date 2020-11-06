@@ -60,7 +60,7 @@ stop_segment(Segment)->
 %%=================================================================
 init([]) ->
 
-  ?LOGINFO("starting schema supervisor",[self()]),
+  ?LOGINFO("starting schema supervisor ~p",[self()]),
 
   ChildConfig = #{
     id=>dlss_segment,

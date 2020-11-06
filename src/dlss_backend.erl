@@ -127,9 +127,6 @@ init([])->
   % Subscribe to mnesia events
   mnesia:subscribe( system ),
 
-  % Enter the loop
-  self()!loop,
-
   {ok,#state{cycle = Cycle}}.
 
 handle_call(Request, From, State) ->
