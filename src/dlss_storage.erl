@@ -373,13 +373,14 @@ get_children(Name) when is_atom(Name)->
 get_children(Sgm)->
   get_children(dlss_segment:dirty_next(dlss_schema,Sgm),Sgm,[]).
 
-get_children(#sgm{ lvl = NextLvl },#sgm{lvl = Lvl}, Acc)
+get_children(#sgm{ str = S, lvl = NextLvl },#sgm{ str = S, lvl = Lvl}, Acc)
   when NextLvl =< Lvl->
   lists:reverse(Acc);
-get_children(#sgm{} = Next,Sgm,Acc)->
+get_children(#sgm{ str = S } = Next, #sgm{str = S} = Sgm,Acc)->
   Table = dlss_segment:dirty_read( dlss_schema, Next ),
   get_children(dlss_segment:dirty_next(dlss_schema,Next),Sgm,[{Next,Table}|Acc]);
-get_children('$end_of_table',_Sgm,Acc)->
+get_children(_Other,_Sgm,Acc)->
+  % next storage or '$end_of_table'
   lists:reverse(Acc).
 
 %------------Get parent segment-----------------------------------------
@@ -390,19 +391,27 @@ parent_segment(Name) when is_atom(Name)->
       dlss_segment:dirty_read(dlss_schema,Parent);
     Error -> Error
   end;
-parent_segment(#sgm{lvl = Lvl} = Sgm)->
-  parent_segment( dlss_segment:dirty_prev(dlss_schema, Sgm ), Lvl ).
-parent_segment( #sgm{ lvl = 0 } = Sgm, _Lvl )->
+parent_segment(#sgm{str = Str, lvl = Lvl} = Sgm)->
+  parent_segment( dlss_segment:dirty_prev(dlss_schema, Sgm ), Str, Lvl ).
+parent_segment( #sgm{ str = Str, lvl = 0 } = Sgm, Str, _Lvl )->
   % The root segment
   Sgm;
-parent_segment( #sgm{ lvl = LvlUp } = Sgm, Lvl ) when LvlUp < Lvl->
+parent_segment( #sgm{ str = Str, lvl = LvlUp } = Sgm, Str, Lvl ) when LvlUp < Lvl->
   % The level has changed. It means we have stepped level up
   % and this is the closest to the Key segment at this level
   Sgm;
-parent_segment( Sgm, Lvl )->
+parent_segment( #sgm{str = Str } = Sgm, Str, Lvl )->
   % if the level is the same it means that we are running through the level
   % towards the common Key. Skip
-  parent_segment( dlss_segment:dirty_prev(dlss_schema, Sgm ), Lvl ).
+  parent_segment( dlss_segment:dirty_prev(dlss_schema, Sgm ),Str ,Lvl );
+parent_segment( Other, Str, Lvl )->
+  % '$end_of_table' or different storage.
+  % Do we really can get here? Only in case of absent root segment.
+  % Theoretically it is possible in dirty mode when a new root segment
+  % is being created.
+  % Wait a bit until a new root is in the schema
+  timer:sleep(10),
+  parent_segment( dlss_segment:dirty_next(dlss_schema, Other ),Str ,Lvl ).
 
 %%=================================================================
 %%	Read/Write
@@ -473,7 +482,7 @@ dirty_write(Storage, Key, Value)->
 delete(Storage, Key)->
   delete( Storage, Key, _Lock = none).
 delete(Storage, Key, Lock)->
-  % The value is replaces with the special flag,
+  % The value is replaced with the special flag,
   % Actual delete is performed during rebalancing
   write( Storage, Key, '@deleted@', Lock ).
 dirty_delete(Storage, Key)->
@@ -543,18 +552,16 @@ safe_next(Segment,Key)->
       end
   end.
 
-next_sibling(#sgm{ lvl = Lvl } = Sgm)->
-  next_sibling( dlss_segment:dirty_next(dlss_schema, Sgm), Lvl ).
-next_sibling(#sgm{ lvl = LvlDown } = Sgm, Lvl) when LvlDown > Lvl->
+next_sibling(#sgm{ str = Str, lvl = Lvl } = Sgm)->
+  next_sibling( dlss_segment:dirty_next(dlss_schema, Sgm), Str, Lvl ).
+next_sibling(#sgm{ str = Str,  lvl = LvlDown } = Sgm, Str, Lvl) when LvlDown > Lvl->
   % Running through sub-levels
-  next_sibling( dlss_segment:dirty_next(dlss_schema, Sgm), Lvl );
-next_sibling(#sgm{ lvl = Lvl } = Sgm, Lvl)->
+  next_sibling( dlss_segment:dirty_next(dlss_schema, Sgm), Str, Lvl );
+next_sibling(#sgm{ str = Str, lvl = Lvl } = Sgm, Str, Lvl)->
   % The segment is at the same level. This is the sibling
   Sgm;
-next_sibling(#sgm{ lvl = LvlUp }, Lvl) when LvlUp < Lvl->
-  % The next segment is only at the upper level
-  undefined;
-next_sibling('$end_of_table', _Lvl)->
+next_sibling(_Other, _Str, _Lvl)->
+  % Lower level or different storage
   undefined.
 
 %---------PREVIOUS------------------------
@@ -618,18 +625,16 @@ safe_prev(Segment,Key)->
       end
   end.
 
-prev_sibling(#sgm{ lvl = Lvl } = Sgm)->
-  prev_sibling( dlss_segment:dirty_prev(dlss_schema, Sgm), Lvl ).
-prev_sibling(#sgm{ lvl = LvlDown } = Sgm, Lvl) when LvlDown > Lvl->
+prev_sibling(#sgm{ str = Str, lvl = Lvl } = Sgm)->
+  prev_sibling( dlss_segment:dirty_prev(dlss_schema, Sgm), Str, Lvl ).
+prev_sibling(#sgm{ str = Str, lvl = LvlDown } = Sgm, Str, Lvl) when LvlDown > Lvl->
   % Running through sub-levels
-  prev_sibling( dlss_segment:dirty_prev(dlss_schema, Sgm), Lvl );
-prev_sibling(#sgm{ lvl = Lvl } = Sgm, Lvl)->
+  prev_sibling( dlss_segment:dirty_prev(dlss_schema, Sgm), Str, Lvl );
+prev_sibling(#sgm{ str = Str, lvl = Lvl } = Sgm, Str, Lvl)->
   % The segment is at the same level. This is the sibling
   Sgm;
-prev_sibling(#sgm{ lvl = LvlUp }, Lvl) when LvlUp < Lvl->
-  % The next segment is only at the upper level
-  undefined;
-prev_sibling('$end_of_table', _Lvl)->
+prev_sibling(_Other, _Str, _Lvl)->
+  % Higher level or different storage
   undefined.
 
 %%=================================================================
