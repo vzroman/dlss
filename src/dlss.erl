@@ -19,10 +19,9 @@
 -module(dlss).
 
 %%=================================================================
-%%	APPLICATION API
+%%	Service API
 %%=================================================================
 -export([
-  %-----Service API-------
   add_node/1,remove_node/1,
   get_storages/0, get_storage_type/1,
   get_segments/0,get_segments/1,
@@ -32,9 +31,11 @@
   remove_storage/1
 ]).
 
+%%=================================================================
+%%	Data API
+%%=================================================================
 -export([
-  %-----Data API-------
-  transaction/1,sync_transaction/1,
+  transaction/1, sync_transaction/1,
   read/2, read/3, dirty_read/2,
   write/3, write/4, dirty_write/3,
   delete/2, delete/3, dirty_delete/2,

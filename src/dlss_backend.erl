@@ -26,8 +26,6 @@
 %%	API
 %%=================================================================
 -export([
-  start_link/0,
-  stop/0,
   init_backend/0,init_backend/1,
   add_node/1,
   remove_node/1,
@@ -41,6 +39,8 @@
 %%	OTP
 %%=================================================================
 -export([
+  start_link/0,
+  stop/0,
   init/1,
   handle_call/3,
   handle_cast/2,
