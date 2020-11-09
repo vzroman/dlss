@@ -26,11 +26,27 @@
 %%	API
 %%=================================================================
 -export([
-  set_status/2
+  set_status/2,
+  get_status/1,
+  get_ready_nodes/0
 ]).
 
 %%=================================================================
 %%	API
 %%=================================================================
 set_status(Node,Status)->
-  dlss_segment:dirty_write(dlss_schema,#node{node=Node},Status).
+  dlss_segment:dirty_write(dlss_schema, #node{node=Node},Status).
+
+get_status(Node)->
+  case dlss_segment:dirty_read(dlss_schema, #node{node=Node}) of
+    not_found->{ error, invalid_node };
+    Status -> Status
+  end.
+
+get_ready_nodes()->
+  MS=[{
+    #kv{key = #node{node = '$1' }, value = ready },
+    [],
+    ['$1']
+  }],
+  dlss_segment:dirty_select(dlss_schema,MS).

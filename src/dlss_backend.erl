@@ -124,8 +124,8 @@ init([])->
 
   Cycle=?ENV(master_node_cycle,?DEFAULT_MASTER_CYCLE),
 
-  % Enter the loop
-  self()!loop,
+  % Subscribe to mnesia events
+  mnesia:subscribe( system ),
 
   {ok,#state{cycle = Cycle}}.
 
@@ -141,6 +141,15 @@ handle_cast(Request,State)->
 %%============================================================================
 %%	The loop
 %%============================================================================
+%STOP. Fatal error
+handle_info({mnesia_system_event,{mnesia_fatal,Format,Args,_BinaryCore}},_State) ->
+  ?LOGERROR("FATAL ERROR: mnesia error. Format ~p, args - ~p",[Format,Args]),
+  {stop,mnesia_fatal,Args};
+
+handle_info({mnesia_system_event,Event},State) ->
+  on_mnesia_event( Event ),
+  {noreply,State};
+
 handle_info(Message,State)->
   ?LOGWARNING("backend got an unexpected message ~p",[Message]),
   {noreply,State}.
@@ -309,6 +318,31 @@ wait_for_master()->
       % If there are more than one node in the schema then the schema has arrived
       ok
   end.
+
+on_mnesia_event({inconsistent_database, Context, Node})->
+  % TODO. Implement network partitioning auto healing algorithm
+  ?LOGERROR("mnesia inconsistent database: context ~p, node - ~p",[Context,Node]);
+
+on_mnesia_event({mnesia_down, Node})->
+  ?LOGWARNING( "~p node is down", [Node] ),
+  dlss_node:set_status( Node, down );
+on_mnesia_event({mnesia_up, Node})->
+  ?LOGINFO( "~p node is up", [Node] );
+
+
+on_mnesia_event({mnesia_overload, Details})->
+  ?LOGWARNING("mnesia overload ~p",[Details]);
+
+on_mnesia_event({mnesia_error,Format,Args})->
+  ?LOGERROR("mnesia error: format ~p, args - ~p",[Format,Args]);
+
+on_mnesia_event({mnesia_info,Format,Args})->
+  ?LOGINFO("mnesia info: format ~p, args - ~p",[Format,Args]);
+
+on_mnesia_event(Other)->
+  ?LOGINFO("mnesia event: ~p",[Other]).
+
+
 
 table_attributes(#{
   type:=Type,

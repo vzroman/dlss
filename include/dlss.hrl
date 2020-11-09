@@ -19,6 +19,8 @@
 -ifndef(DLSS_STRUCT).
 -define(DLSS_STRUCT,1).
 
+-define(DEFAULT_SEGMENT_LIMIT,4096). % MB
+
 -record(kv,{key,value}).
 
 -define(ERROR(Error),erlang:error(Error)).

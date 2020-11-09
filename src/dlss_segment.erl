@@ -60,7 +60,9 @@
 %%	API
 %%=================================================================
 -export([
-  start_link/1
+  start/1,
+  start_link/1,
+  stop/1
 ]).
 %%=================================================================
 %%	OTP
@@ -79,6 +81,10 @@
 -define(DEFAULT_SCAN_CYCLE,5000).
 
 -define(MAX_SCAN_INTERVAL_BATCH,1000).
+
+-define(MB,1048576).
+
+-define(PROCESS(Segment), list_to_atom( atom_to_list(Segment) ++ "_sup" ) ).
 
 %%=================================================================
 %%	STORAGE SEGMENT API
@@ -247,16 +253,13 @@ remove_node(Segment,Node)->
 
 %----------Calculate the size (bytes) occupied by the segment-------
 get_size(Segment)->
-  get_size( mnesia:dirty_first(Segment), Segment, 0).
-get_size('$end_of_table', _Segment, Acc)->
-  Acc;
-get_size(Key, Segment, Acc)->
-  Acc1=
-    case mnesia:dirty_read(Segment, Key) of
-      [ Record ] -> Acc + record_size( Record );
-      _ -> Acc
-    end,
-  get_size( mnesia:dirty_next( Segment, Key ), Segment, Acc1 ).
+  Memory = mnesia:table_info(Segment,memory),
+  case get_info(Segment) of
+    #{type := disc} -> Memory;
+    _ ->
+      % for ram and ramdisc tables the mnesia returns a number of allocated words
+      erlang:system_info(wordsize) * Memory
+  end.
 
 record_size(Term) ->
   size(term_to_binary(Term)).
@@ -277,18 +280,24 @@ get_split_key( Key , _Segment, _Size, _Acc)->
   % If we are here then the Acc is bigger than the Size.
   % It means we reached the requested size limit and the Key
   % is the sought key
-  Key.
+  {ok, Key}.
 
 %%=================================================================
 %%	API
 %%=================================================================
+start(Segment)->
+  dlss_schema_sup:start_segment(Segment).
+
 start_link(Segment)->
-  % The process is registered locally to not to conflict
-  % with the processes that handle the same segment on  other nodes.
-  % This gives us a more explicit way to address a segment handler
-  % of the explicitly defined node and do a load balancing for dirty
-  % mode operations
-  gen_server:start_link({local,?MODULE}, ?MODULE, [Segment], []).
+  gen_server:start_link({local, ?PROCESS(Segment) }, ?MODULE, [Segment], []).
+
+stop(Segment)->
+  case whereis(?PROCESS(Segment)) of
+    PID when is_pid(PID)->
+      dlss_schema_sup:stop_segment(PID);
+    _ ->
+      { error, not_started }
+  end.
 
 %%=================================================================
 %%	OTP
@@ -310,11 +319,9 @@ init([Segment])->
 handle_call(_Params, _From, State) ->
   {reply, {ok,undefined}, State}.
 
-
 handle_cast({stop,From},State)->
   From!{stopped,self()},
   {stop, normal, State};
-
 handle_cast(_Request,State)->
   {noreply,State}.
 
@@ -322,11 +329,19 @@ handle_cast(_Request,State)->
 %%	The loop
 %%============================================================================
 handle_info(loop,#state{
-  segment = _Segment,
+  segment = Segment,
   cycle = Cycle
 }=State)->
-  {ok,_}=timer:send_after(Cycle,loop),
-  {noreply,State}.
+
+  case dlss_storage:segment_params(Segment) of
+    {ok, Params} ->
+      {ok,_}=timer:send_after(Cycle,loop),
+      loop( Segment, Params ),
+      {noreply,State};
+    { error, Error} ->
+      { stop, Error, State }
+  end.
+
 
 terminate(Reason,#state{segment = Segment})->
   ?LOGINFO("terminating segment server ~p, reason ~p",[Segment,Reason]),
@@ -334,6 +349,64 @@ terminate(Reason,#state{segment = Segment})->
 
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
+
+
+%%============================================================================
+%%	The Loop
+%%============================================================================
+loop( Segment, #{ level := 0, storage := Storage } )->
+  % The segment is the root segment in its storage.
+  % We watch its size and when it reaches the limit we
+  % create a new root segment for the storage
+  Size = get_size( Segment ) / ?MB, % MB
+  Limit = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT),
+  if
+    Size >= Limit ->
+      ?LOGINFO("the root segment ~p in storage ~p reached the limit, size ~p",[ Segment, Storage, Size ]),
+      dlss_storage:new_root_segment(Storage);
+    true -> ok
+  end;
+
+loop( Segment, #{ storage := Storage, level := Level } )->
+  case dlss_storage:get_children( Segment ) of
+    [] ->
+      % The segment is at the lowest level.
+      % Check its size and if it has reached the limit split the segment
+      Size = get_size( Segment ) / ?MB, % MB
+      Limit = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT),
+      if
+        Size >= Limit ->
+          ?LOGINFO("the segment ~p in storage ~p reached the limit, size ~p",[ Segment, Storage, Size ]),
+          % Calculate the median key
+          { ok, Median } = get_split_key( Segment, Size div 2 ),
+          % First create the right segment, then create the left segment.
+          % We need the right segment first because if there is no next sibling the left
+          % segment can hog not its keys while the right is starting
+          dlss_storage:spawn_segment(Segment,Median),
+          % Then create the left segment
+          dlss_storage:spawn_segment(Segment);
+        true ->
+          if
+            Level > 1->
+              % The segment is below the desired level. To take place in upper level it
+              % must hog its parent
+              ok;
+            true ->
+              % the segment is at the respectable level and is not overwhelmed.
+              % This is a stable state
+              ok
+          end
+      end;
+    _->
+      % The segment has children, that are at the level lower than 1.
+      % They are to hog their parent to take a place at its level.
+      case is_empty( Segment ) of
+        true ->
+          % The segment has been absorbed by the children
+          ?LOGINFO("the segment ~p in storage ~p is aready to be absorbed"),
+          dlss_storage:absorb_segment( Segment )
+      end
+  end.
 
 
 %%============================================================================
