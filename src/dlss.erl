@@ -46,7 +46,6 @@
 -type write_locks() :: write | sticky_write.
 -type read_locks() :: read.
 -type lock_type() :: write_locks() | read_locks().
--export_type([lock_type/0]).
 
 %%---------------------------------------------------------------
 %%	SERVICE API
@@ -79,7 +78,10 @@ remove_node(Node)->
 get_storages()->
   dlss_storage:get_storages().
 
--spec get_storage_type(Storage :: atom()) -> ram | ramdisc | disc | no_return().
+%-----------------------------------------------------------------
+%	Get storage type
+%-----------------------------------------------------------------
+-spec get_storage_type(Storage :: atom()) -> storage_type() | no_return().
 get_storage_type(Storage) ->
   dlss_storage:get_type(Storage).
 
