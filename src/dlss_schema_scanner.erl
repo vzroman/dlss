@@ -43,10 +43,7 @@
 
 -define(DEFAULT_SCAN_CYCLE,5000).
 
--record(state,{
-  cycle,
-  processes
-}).
+-record(state,{ cycle, segments }).
 
 %%=================================================================
 %%	API
@@ -68,7 +65,7 @@ init([])->
 
   {ok,#state{
     cycle = Cycle,
-    processes = #{}
+    segments = []
   }}.
 
 handle_call(Request, From, State) ->
@@ -85,23 +82,23 @@ handle_cast(Request,State)->
 %%============================================================================
 handle_info(loop,#state{
   cycle = Cycle,
-  processes = Processes
+  segments = Started
 }=State)->
 
   % Keep the loop
   {ok,_}=timer:send_after(Cycle,loop),
 
   % Scanning procedure
-  Processes1=
+  Started1=
     try
-      scan_segments(Processes)
+      scan_segments(Started)
     catch
         _:Error:Stack->
           ?LOGERROR("schema scanner error ~p, stack ~p",[Error,Stack]),
-          Processes
+          Started
     end,
 
-  {noreply,State#state{processes = Processes1}}.
+  {noreply,State#state{segments = Started1}}.
 
 terminate(Reason,_State)->
   ?LOGINFO("terminating schema scanner reason ~p",[Reason]),
@@ -113,11 +110,37 @@ code_change(_OldVsn, State, _Extra) ->
 %%============================================================================
 %%	The loop
 %%============================================================================
-scan_segments(_Started)->
+scan_segments(Started)->
   ?LOGDEBUG("start schema scanning"),
 
   % The service checks a schema on segments hosted by this node.
   % Each hosted segment must have a serving process that is responsible
   % for its balancing
 
-  ok.
+  Segments = get_supervised_segemnts( node() ),
+
+  % Start new segments
+  [ dlss_segment:start(S) || S <- Segments -- Started ],
+
+  % Stop no longer supervised segments
+  [ dlss_segment:stop(S) || S <- Started -- Segments ],
+
+  Segments.
+
+get_supervised_segemnts(Node)->
+  % Get list of attached nodes
+  ReadyNodes = dlss_node:get_ready_nodes(),
+  All = dlss_storage:get_segments(),
+  % Filter segment for which the Node is the master
+  Filter=
+    fun(S)->
+      #{ nodes := Nodes } = dlss_segment:get_info(S),
+      case Nodes -- ( Nodes -- ReadyNodes ) of
+        [ Node|_ ] ->
+          % If the Node is the first node in the list of hosting nodes for the segment
+          % then the Node is the master and should supervise the segment
+          true;
+        _ -> false
+      end
+    end,
+  [ S || S <- All, Filter(S) ].

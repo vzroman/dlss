@@ -143,17 +143,13 @@ test_order(Config)->
 test_median(Config)->
   Segment = ?GET(segment, Config),
 
-  0 = dlss_segment:get_size( Segment ),
-
   { error, { total_size, 0 } } = dlss_segment:get_split_key( Segment, 10 ),
 
   ok = dlss_segment:dirty_write( Segment, {10,0}, <<"some_long_name">> ),
-  ItemSize = dlss_segment:get_size( Segment ),
+  { error, { total_size, ItemSize } } = dlss_segment:get_split_key( Segment, 4096*1024*1024 ),
 
   [ dlss_segment:dirty_write(Segment, {10, I}, <<"some_long_name">>) || I <- lists:seq(1,9) ],
   Size10 = ItemSize * 10,
-
-  Size10 = dlss_segment:get_size( Segment ),
 
   { error, { total_size, Size10 } } = dlss_segment:get_split_key( Segment, ItemSize * 11 ),
 
@@ -161,7 +157,7 @@ test_median(Config)->
   { error, { total_size, Size10 } } = dlss_segment:get_split_key( Segment, ItemSize * 10 ),
 
 
-  { 10, 7 } = dlss_segment:get_split_key( Segment, ItemSize * 7 ),
+  {ok, { 10, 7 }} = dlss_segment:get_split_key( Segment, ItemSize * 7 ),
 
   ok.
 

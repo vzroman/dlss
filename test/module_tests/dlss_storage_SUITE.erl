@@ -43,6 +43,7 @@
   storage_prev/1,
   storage_first/1,
   storage_last/1,
+  hog_parent/1,
   create_root_segment/1,
   write_data_to_storage/1
 ]).
@@ -60,6 +61,7 @@ all()->
     storage_prev,
     storage_first,
     storage_last,
+    hog_parent,
     {group, add_root_segment}
   ].
 
@@ -250,7 +252,7 @@ absorb_segment(_Config)->
     {_,dlss_storage1_6}
   ] = dlss_storage:get_children(dlss_storage1_1),
 
-  { error, root_segment } = dlss_storage:absorb_segment(dlss_storage1_1),
+  ?assertError( root_segment ,dlss_storage:absorb_segment(dlss_storage1_1)),
 
   %-----------------------------------------------------------------
   % Absorb the segment from the level 1
@@ -828,6 +830,79 @@ storage_last(_Config)->
   dlss_storage:remove(storage1),
   []=dlss_storage:get_storages(),
   []=dlss_storage:get_segments().
+
+hog_parent(_Config)->
+
+  ok=dlss_storage:add(storage1,disc),
+  [dlss_storage1_1]=dlss_storage:get_segments(storage1),
+
+  Count = 50000,
+
+  % Fill the root
+  [dlss_storage:dirty_write(storage1,{x,I},{value,I}) || I <- lists:seq(1,Count) ],
+
+  %------------------------------------------------------
+  % The root is full
+  %------------------------------------------------------
+  ok = dlss_storage:new_root_segment(storage1),
+  [
+    dlss_storage1_2,
+    dlss_storage1_1
+  ]=dlss_storage:get_segments(storage1),
+
+  % The former root has no children yet, but its full.
+  % It wants to split
+  { error, { total_size, Size } } = dlss_segment:get_split_key( dlss_storage1_1, 4096*1024*1024 ),
+  ct:pal("Root size ~p",[Size]),
+
+  {ok,Median} = dlss_segment:get_split_key( dlss_storage1_1, Size div 2 ),
+  ct:pal("root median ~p",[Median]),
+  dlss_storage:spawn_segment(dlss_storage1_1,Median),
+  dlss_storage:spawn_segment(dlss_storage1_1),
+  [
+    dlss_storage1_2,
+    dlss_storage1_1,
+    dlss_storage1_4,dlss_storage1_3
+  ]=dlss_storage:get_segments(storage1),
+
+  [begin
+     {value,N} = dlss_storage:dirty_read(storage1,{x,N})
+   end || N <- lists:seq(1,Count)],
+
+  ok = dlss_storage:hog_parent(dlss_storage1_4),
+  { error, { total_size, LeftSize } } = dlss_segment:get_split_key( dlss_storage1_4, 4096*1024*1024 ),
+  ct:pal("left size ~p",[LeftSize]),
+
+  [begin
+     {value,N} = dlss_storage:dirty_read(storage1,{x,N})
+   end || N <- lists:seq(1,Count)],
+
+  ok = dlss_storage:hog_parent(dlss_storage1_3),
+  { error, { total_size, RightSize } } = dlss_segment:get_split_key( dlss_storage1_3, 4096*1024*1024 ),
+  ct:pal("right size ~p",[RightSize]),
+
+  [begin
+     {value,N} = dlss_storage:dirty_read(storage1,{x,N})
+   end || N <- lists:seq(1,Count)],
+
+  { error, { total_size, 0 } } = dlss_segment:get_split_key( dlss_storage1_1, 4096*1024*1024 ),
+  dlss_storage:absorb_segment(dlss_storage1_1),
+
+  [
+    dlss_storage1_2,
+    dlss_storage1_4,dlss_storage1_3
+  ]=dlss_storage:get_segments(storage1),
+
+  [begin
+     {value,N} = dlss_storage:dirty_read(storage1,{x,N})
+   end || N <- lists:seq(1,Count)],
+
+  % Clean up
+  dlss_storage:remove(storage1),
+  []=dlss_storage:get_storages(),
+  []=dlss_storage:get_segments(),
+
+  ok.
 
 
 create_root_segment(_Config)->

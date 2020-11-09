@@ -27,6 +27,7 @@
 %%=================================================================
 -export([
   %-----Service API-------
+  is_storage/1,
   get_storages/0,
   get_segments/0,get_segments/1,
   new_root_segment/1,
@@ -36,6 +37,7 @@
   remove/1,
   get_type/1,
   spawn_segment/1,spawn_segment/2,
+  hog_parent/1,
   absorb_segment/1,
   get_children/1,
   parent_segment/1
@@ -73,6 +75,11 @@
 %%-----------------------------------------------------------------
 %%  Service API
 %%-----------------------------------------------------------------
+is_storage(Storage)->
+  case dlss_segment:dirty_read( dlss_schema, { id, Storage } ) of
+    not_found -> false;
+    _-> true
+  end.
 get_storages()->
   MS=[{
     #kv{key = #sgm{str = '$1',key = '_',lvl = 0},value = '_'},
@@ -101,12 +108,12 @@ get_segments(Storage)->
 root_segment(Storage)->
   case dlss_segment:dirty_next(dlss_schema,#sgm{str=Storage,key = '_',lvl = -1 }) of
     #sgm{ str = Storage } = Sgm->
-      { ok, dlss_segment:dirty_read(dlss_schema,Sgm) };
-    _->{error,invalid_storage}
+      dlss_segment:dirty_read(dlss_schema,Sgm);
+    _->?ERROR(invalid_storage)
   end.
 
 get_type(Storage)->
-  {ok,Root}=root_segment(Storage),
+  Root=root_segment(Storage),
   #{ type:= T }=dlss_segment:get_info(Root),
   T.
 
@@ -130,8 +137,8 @@ add(Name,Type)->
 add(Name,Type,Options)->
 
   % Check if the occupied
-  case root_segment(Name) of
-    {ok,_}->?ERROR(already_exists);
+  case is_storage(Name) of
+    true->?ERROR(already_exists);
     _->ok
   end,
 
@@ -211,7 +218,7 @@ remove(_Storage,_Sgm)->
 
 new_root_segment(Storage) ->
   %% Get Root segment
-  {ok,Root} = root_segment(Storage),
+  Root = root_segment(Storage),
 
   %% Get Root table info
   Params = dlss_segment:get_info(Root),
@@ -316,15 +323,57 @@ spawn_segment(#sgm{str = Str, lvl = Lvl, key = Key} = Sgm, SplitKey)->
     Error -> Error
   end.
 
+%---------Hog parent segment----------------------------------------
+hog_parent(Segment)->
+  case segment_by_name(Segment) of
+    { ok, #sgm{ lvl = Lvl } } when Lvl =< 1->
+      ?ERROR( not_low_level_segment );
+    { ok, #sgm{ key = Key } = Sgm }->
+      Parent = parent_segment( Segment ),
+      % Start key
+      Start=
+        case Key of
+          '_' -> dlss_segment:dirty_first(Parent);
+          { K } -> K
+        end,
+      % End Key
+      Stop=
+        case next_sibling( Sgm ) of
+          #sgm{ key = { Next } }-> dlss_segment:dirty_prev( Parent, Next );
+          _-> dlss_segment:dirty_last(Parent)
+        end,
+      hog_parent( Start, Stop, Parent, Segment )
+  end.
+
+hog_parent( '$end_of_table', _Stop, _Parent, _Segment )->
+  ok;
+hog_parent( Key, Stop, Parent, Segment )
+  when Key =/='$end_of_table',Key =< Stop->
+
+  case dlss_segment:dirty_read( Parent, Key ) of
+    '@deleted@' ->
+      ok = dlss_segment:dirty_delete( Segment, Key ),
+      ok = dlss_segment:dirty_delete( Parent, Key );
+    not_found->
+      % Can we really get here?
+      ok = dlss_segment:dirty_delete( Parent, Key );
+    Value ->
+      ok = dlss_segment:dirty_write( Segment, Key, Value ),
+      ok = dlss_segment:dirty_delete( Parent, Key )
+  end,
+  hog_parent( dlss_segment:dirty_next(Parent,Key), Stop, Parent, Segment );
+hog_parent( _Key, _Stop, _Parent, _Segment )->
+  ok.
+
 %---------Absorb a segment----------------------------------------
 absorb_segment(Name) when is_atom(Name)->
   case segment_by_name(Name) of
     { ok, Segment }-> absorb_segment( Segment );
-    Error -> Error
+    Error -> ?ERROR(Error)
   end;
 absorb_segment(#sgm{lvl = 0})->
   % The root segment cannot be absorbed
-  { error, root_segment };
+  ?ERROR(root_segment);
 absorb_segment(#sgm{str = Str} = Sgm)->
 
   % Obtain the segment name
@@ -363,7 +412,8 @@ absorb_segment(#sgm{str = Str} = Sgm)->
         Name,
         Str,
         Error
-      ])
+      ]),
+      ?ERROR(Error)
   end.
 
 %------------Get children segments-----------------------------------------
@@ -375,13 +425,14 @@ get_children(Name) when is_atom(Name)->
 get_children(Sgm)->
   get_children(dlss_segment:dirty_next(dlss_schema,Sgm),Sgm,[]).
 
-get_children(#sgm{ lvl = NextLvl },#sgm{lvl = Lvl}, Acc)
+get_children(#sgm{ str = S, lvl = NextLvl },#sgm{ str = S, lvl = Lvl}, Acc)
   when NextLvl =< Lvl->
   lists:reverse(Acc);
-get_children(#sgm{} = Next,Sgm,Acc)->
+get_children(#sgm{ str = S } = Next, #sgm{str = S} = Sgm,Acc)->
   Table = dlss_segment:dirty_read( dlss_schema, Next ),
   get_children(dlss_segment:dirty_next(dlss_schema,Next),Sgm,[{Next,Table}|Acc]);
-get_children('$end_of_table',_Sgm,Acc)->
+get_children(_Other,_Sgm,Acc)->
+  % next storage or '$end_of_table'
   lists:reverse(Acc).
 
 %------------Get parent segment-----------------------------------------
@@ -392,19 +443,30 @@ parent_segment(Name) when is_atom(Name)->
       dlss_segment:dirty_read(dlss_schema,Parent);
     Error -> Error
   end;
-parent_segment(#sgm{lvl = Lvl} = Sgm)->
-  parent_segment( dlss_segment:dirty_prev(dlss_schema, Sgm ), Lvl ).
-parent_segment( #sgm{ lvl = 0 } = Sgm, _Lvl )->
+parent_segment(#sgm{str = Str, lvl = Lvl} = Sgm)->
+  case is_storage(Str) of
+    true-> parent_segment( dlss_segment:dirty_prev(dlss_schema, Sgm ), Str, Lvl );
+    _-> ?ERROR( invalid_storage )
+  end.
+parent_segment( #sgm{ str = Str, lvl = 0 } = Sgm, Str, _Lvl )->
   % The root segment
   Sgm;
-parent_segment( #sgm{ lvl = LvlUp } = Sgm, Lvl ) when LvlUp < Lvl->
+parent_segment( #sgm{ str = Str, lvl = LvlUp } = Sgm, Str, Lvl ) when LvlUp < Lvl->
   % The level has changed. It means we have stepped level up
   % and this is the closest to the Key segment at this level
   Sgm;
-parent_segment( Sgm, Lvl )->
+parent_segment( #sgm{str = Str } = Sgm, Str, Lvl )->
   % if the level is the same it means that we are running through the level
   % towards the common Key. Skip
-  parent_segment( dlss_segment:dirty_prev(dlss_schema, Sgm ), Lvl ).
+  parent_segment( dlss_segment:dirty_prev(dlss_schema, Sgm ),Str ,Lvl );
+parent_segment( Other, Str, Lvl )->
+  % '$end_of_table' or different storage.
+  % Do we really can get here? Only in case of absent root segment.
+  % Theoretically it is possible in dirty mode when a new root segment
+  % is being created.
+  % Wait a bit until a new root is in the schema
+  timer:sleep(10),
+  parent_segment( dlss_segment:dirty_next(dlss_schema, Other ),Str ,Lvl ).
 
 %%=================================================================
 %%	Read/Write
@@ -445,9 +507,13 @@ segments_dirty_read([], _Key)->
   not_found.
 
 get_key_segments(Storage, Key)->
-  % The scanning starts at the lowest level
-  Lowest = #sgm{ str = Storage, key = { Key }, lvl = '_' },
-  key_segments( parent_segment(Lowest),[]).
+  case is_storage(Storage) of
+    true->
+      % The scanning starts at the lowest level
+      Lowest = #sgm{ str = Storage, key = { Key }, lvl = '_' },
+      key_segments( parent_segment(Lowest),[]);
+    _->?ERROR(invalid_storage)
+  end.
 key_segments( #sgm{ lvl = 0 } = Sgm, Acc )->
   % The level 0 is the final
   [ dlss_segment:dirty_read(dlss_schema, Sgm)| Acc ];
@@ -464,18 +530,18 @@ write(Storage, Key, Value, Lock)->
   % Set a lock on the schema while performing the operation
   dlss_backend:lock({table,dlss_schema},read),
   % All write operations are performed to the Root segment only
-  {ok,Root} = root_segment(Storage),
+  Root = root_segment(Storage),
   dlss_segment:write( Root, Key, Value, Lock ).
 dirty_write(Storage, Key, Value)->
   % All write operations are performed to the Root segment only
-  {ok,Root} = root_segment(Storage),
+  Root = root_segment(Storage),
   dlss_segment:dirty_write( Root, Key, Value ).
 
 %---------------------Delete-----------------------------------------
 delete(Storage, Key)->
   delete( Storage, Key, _Lock = none).
 delete(Storage, Key, Lock)->
-  % The value is replaces with the special flag,
+  % The value is replaced with the special flag,
   % Actual delete is performed during rebalancing
   write( Storage, Key, '@deleted@', Lock ).
 dirty_delete(Storage, Key)->
@@ -600,18 +666,16 @@ safe_next(Segment,Key)->
       end
   end.
 
-next_sibling(#sgm{ lvl = Lvl } = Sgm)->
-  next_sibling( dlss_segment:dirty_next(dlss_schema, Sgm), Lvl ).
-next_sibling(#sgm{ lvl = LvlDown } = Sgm, Lvl) when LvlDown > Lvl->
+next_sibling(#sgm{ str = Str, lvl = Lvl } = Sgm)->
+  next_sibling( dlss_segment:dirty_next(dlss_schema, Sgm), Str, Lvl ).
+next_sibling(#sgm{ str = Str,  lvl = LvlDown } = Sgm, Str, Lvl) when LvlDown > Lvl->
   % Running through sub-levels
-  next_sibling( dlss_segment:dirty_next(dlss_schema, Sgm), Lvl );
-next_sibling(#sgm{ lvl = Lvl } = Sgm, Lvl)->
+  next_sibling( dlss_segment:dirty_next(dlss_schema, Sgm), Str, Lvl );
+next_sibling(#sgm{ str = Str, lvl = Lvl } = Sgm, Str, Lvl)->
   % The segment is at the same level. This is the sibling
   Sgm;
-next_sibling(#sgm{ lvl = LvlUp }, Lvl) when LvlUp < Lvl->
-  % The next segment is only at the upper level
-  undefined;
-next_sibling('$end_of_table', _Lvl)->
+next_sibling(_Other, _Str, _Lvl)->
+  % Lower level or different storage
   undefined.
 
 %---------PREVIOUS------------------------
@@ -675,18 +739,16 @@ safe_prev(Segment,Key)->
       end
   end.
 
-prev_sibling(#sgm{ lvl = Lvl } = Sgm)->
-  prev_sibling( dlss_segment:dirty_prev(dlss_schema, Sgm), Lvl ).
-prev_sibling(#sgm{ lvl = LvlDown } = Sgm, Lvl) when LvlDown > Lvl->
+prev_sibling(#sgm{ str = Str, lvl = Lvl } = Sgm)->
+  prev_sibling( dlss_segment:dirty_prev(dlss_schema, Sgm), Str, Lvl ).
+prev_sibling(#sgm{ str = Str, lvl = LvlDown } = Sgm, Str, Lvl) when LvlDown > Lvl->
   % Running through sub-levels
-  prev_sibling( dlss_segment:dirty_prev(dlss_schema, Sgm), Lvl );
-prev_sibling(#sgm{ lvl = Lvl } = Sgm, Lvl)->
+  prev_sibling( dlss_segment:dirty_prev(dlss_schema, Sgm), Str, Lvl );
+prev_sibling(#sgm{ str = Str, lvl = Lvl } = Sgm, Str, Lvl)->
   % The segment is at the same level. This is the sibling
   Sgm;
-prev_sibling(#sgm{ lvl = LvlUp }, Lvl) when LvlUp < Lvl->
-  % The next segment is only at the upper level
-  undefined;
-prev_sibling('$end_of_table', _Lvl)->
+prev_sibling(_Other, _Str, _Lvl)->
+  % Higher level or different storage
   undefined.
 
 %%=================================================================

@@ -10,11 +10,11 @@
   0},
  {<<"mnesia_eleveldb">>,
   {git,"https://github.com/vzroman/mnesia_eleveldb.git",
-       {ref,"2e8675e14f8e89bbe3f385ad0dd5c4ded5e29da7"}},
+       {ref,"f2604c5e190a3cbf8d47b704ad8ff2fb2142d908"}},
   0},
  {<<"proper">>,
   {git,"https://github.com/manopapad/proper.git",
-       {ref,"8bed46993a3bd908ba9631ee8699071a2c0f0aa0"}},
+       {ref,"c4648c07ffeb8da51ba4129e04af0f1efb3705b4"}},
   1}]}.
 [
 {pkg_hash,[
