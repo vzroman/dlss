@@ -41,6 +41,8 @@
   storage_read/1,
   storage_next/1,
   storage_prev/1,
+  storage_first/1,
+  storage_last/1,
   hog_parent/1,
   create_root_segment/1,
   write_data_to_storage/1
@@ -57,6 +59,8 @@ all()->
     storage_read,
     storage_next,
     storage_prev,
+    storage_first,
+    storage_last,
     hog_parent,
     {group, add_root_segment}
   ].
@@ -664,6 +668,168 @@ storage_prev(_Config)->
 
   ok.
 
+storage_first(_Config)->
+
+  ok=dlss_storage:add(storage1,disc),
+  [dlss_storage1_1]=dlss_storage:get_segments(storage1),
+
+  %------------------------------------------------------
+  % Two levels
+  %------------------------------------------------------
+  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  [
+    dlss_storage1_1,
+    dlss_storage1_2
+  ]=dlss_storage:get_segments(storage1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_1,{x,50}),
+
+  [
+    dlss_storage1_1,
+    dlss_storage1_2,
+    dlss_storage1_3
+  ]=dlss_storage:get_segments(storage1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_2),
+  [
+    {_,dlss_storage1_2},{_,dlss_storage1_4},
+    {_,dlss_storage1_3}
+  ] = dlss_storage:get_children(dlss_storage1_1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_2, {x,25} ),
+  [
+    {_,dlss_storage1_2},
+    {_,dlss_storage1_4},{_,dlss_storage1_5},
+    {_,dlss_storage1_3}
+  ] = dlss_storage:get_children(dlss_storage1_1),
+
+  % Fill in the root
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,20},l0),
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,26},l0),
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,49},l0),
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,52},l0),
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,53},l0),
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,130},l0),
+
+  % Fill in the level 1
+  ok = dlss_segment:dirty_write(dlss_storage1_2,{x,10},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_2,{x,12},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_2,{x,26},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_2,{x,27},l1),
+
+  {ok,{x,10}}  =  dlss:transaction(fun()->
+    dlss_storage:first(storage1)
+  end ),
+
+  {x,10} = dlss_storage:dirty_first(storage1),
+
+  ok = dlss_segment:dirty_write(dlss_storage1_3,{x,50},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_3,{x,53},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_3,{x,57},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_3,{x,170},l1),
+
+  % Fill in the level 2
+  ok = dlss_segment:dirty_write(dlss_storage1_4,{x,5},l2),
+  ok = dlss_segment:dirty_write(dlss_storage1_4,{x,10},l2),
+  ok = dlss_segment:dirty_write(dlss_storage1_4,{x,13},l2),
+
+  ok = dlss_segment:dirty_write(dlss_storage1_5,{x,25},l2),
+  ok = dlss_segment:dirty_write(dlss_storage1_5,{x,26},l2),
+  ok = dlss_segment:dirty_write(dlss_storage1_5,{x,47},l2),
+
+  {ok,{x,5}}  =  dlss:transaction(fun()->
+    dlss_storage:first(storage1)
+  end ),
+
+  {x,5} = dlss_storage:dirty_first(storage1),
+
+
+  % Clean up
+  dlss_storage:remove(storage1),
+  []=dlss_storage:get_storages(),
+  []=dlss_storage:get_segments().
+
+
+
+storage_last(_Config)->
+
+  ok=dlss_storage:add(storage1,disc),
+  [dlss_storage1_1]=dlss_storage:get_segments(storage1),
+
+  %------------------------------------------------------
+  % Two levels
+  %------------------------------------------------------
+  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  [
+    dlss_storage1_1,
+    dlss_storage1_2
+  ]=dlss_storage:get_segments(storage1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_1,{x,50}),
+
+  [
+    dlss_storage1_1,
+    dlss_storage1_2,
+    dlss_storage1_3
+  ]=dlss_storage:get_segments(storage1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_2),
+  [
+    {_,dlss_storage1_2},{_,dlss_storage1_4},
+    {_,dlss_storage1_3}
+  ] = dlss_storage:get_children(dlss_storage1_1),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_2, {x,25} ),
+  [
+    {_,dlss_storage1_2},
+    {_,dlss_storage1_4},{_,dlss_storage1_5},
+    {_,dlss_storage1_3}
+  ] = dlss_storage:get_children(dlss_storage1_1),
+
+  % Fill in the root
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,20},l0),
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,26},l0),
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,49},l0),
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,52},l0),
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,53},l0),
+  ok = dlss_segment:dirty_write(dlss_storage1_1,{x,130},l0),
+
+  {ok,{x,130}}  =  dlss:transaction(fun()->
+    dlss_storage:last(storage1)
+  end ),
+
+  {x,130} = dlss_storage:dirty_last(storage1),
+
+  % Fill in the level 1
+  ok = dlss_segment:dirty_write(dlss_storage1_2,{x,10},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_2,{x,12},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_2,{x,26},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_2,{x,27},l1),
+
+  ok = dlss_segment:dirty_write(dlss_storage1_3,{x,50},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_3,{x,53},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_3,{x,57},l1),
+  ok = dlss_segment:dirty_write(dlss_storage1_3,{x,170},l1),
+
+  % Fill in the level 2
+  ok = dlss_segment:dirty_write(dlss_storage1_4,{x,5},l2),
+  ok = dlss_segment:dirty_write(dlss_storage1_4,{x,10},l2),
+  ok = dlss_segment:dirty_write(dlss_storage1_4,{x,13},l2),
+
+  ok = dlss_segment:dirty_write(dlss_storage1_5,{x,25},l2),
+  ok = dlss_segment:dirty_write(dlss_storage1_5,{x,26},l2),
+  ok = dlss_segment:dirty_write(dlss_storage1_5,{x,47},l2),
+
+  {ok,{x,170}}  =  dlss:transaction(fun()->
+    dlss_storage:last(storage1)
+  end ),
+
+  {x,170} = dlss_storage:dirty_last(storage1),
+
+  % Clean up
+  dlss_storage:remove(storage1),
+  []=dlss_storage:get_storages(),
+  []=dlss_storage:get_segments().
 
 hog_parent(_Config)->
 
