@@ -28,6 +28,7 @@
   get_segments/0,get_segments/1,
   get_segment_info/1,
   add_storage/2,add_storage/3,
+  add_segment_copy/2, remove_segment_copy/2,
   remove_storage/1
 ]).
 
@@ -158,6 +159,26 @@ add_storage(Name,Type,Options)->
 -spec remove_storage(Name :: atom()) -> ok | no_return().
 remove_storage(Name)->
   dlss_storage:remove(Name).
+
+%-----------------------------------------------------------------
+% Add segment_copy to node
+% Function copies the Segment (table) and puts to Node.
+% As input function gets Name of segment (atom), and Node
+% Returns ok, or { error, Reason}.
+%-----------------------------------------------------------------
+-spec add_segment_copy(Segment :: atom(), Node :: node()) -> ok | { error, Reason :: any() }.
+add_segment_copy(Segment,Node)->
+  dlss_segment:add_node(Segment,Node).
+
+%-----------------------------------------------------------------
+% Remove segment_copy from node
+% Function removes the Segment (table) from Node.
+% As input function gets Name of segment (atom), and Node
+% Returns ok, or { error, Reason}.
+%-----------------------------------------------------------------
+-spec remove_segment_copy(Segment :: atom(), Node :: node()) -> ok | { error, Reason :: any() }.
+remove_segment_copy(Segment,Node)->
+  dlss_segment:remove_node(Segment,Node).
 
 %%---------------------------------------------------------------
 %%	DATA API
