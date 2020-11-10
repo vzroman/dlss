@@ -94,3 +94,6 @@ Run Tests
 
 API
 -----
+
+<table width="100%" border="0" summary="list of modules">
+<tr><td><a href="https://github.com/vzroman/dlss/blob/master/doc/dlss.md" class="module">dlss</a></td></tr>
