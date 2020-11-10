@@ -46,9 +46,7 @@
 
 -type storage_type() :: ram | ramdisc | disc.
 -type segment_info() :: #{ type => storage_type(), local => true | false, nodes => list()}.
--type write_locks() :: write | sticky_write.
--type read_locks() :: read.
--type lock_type() :: write_locks() | read_locks().
+-type lock_type() :: write | sticky_write | read | none.
 
 %%---------------------------------------------------------------
 %%	SERVICE API
@@ -256,7 +254,7 @@ write(Storage, Key, Value)->
 % The function needs to be wrapped in transaction.
 % Returns ok or throws Error.
 %------------------------------------------------------------------
--spec write(Storage :: atom(), Key :: any(), Value :: any(), Lock :: write_locks()) -> ok | no_return().
+-spec write(Storage :: atom(), Key :: any(), Value :: any(), Lock :: lock_type()) -> ok | no_return().
 write(Storage, Key, Value, Lock)->
   dlss_storage:write(Storage, Key, Value, Lock).
 
@@ -287,7 +285,7 @@ delete(Storage, Key)->
 % The function needs to be wrapped in transaction.
 % Returns ok or throws Error.
 %------------------------------------------------------------------
--spec delete(Storage :: atom(), Key :: any(), Lock :: write_locks()) -> ok | no_return().
+-spec delete(Storage :: atom(), Key :: any(), Lock :: lock_type()) -> ok | no_return().
 delete(Storage, Key, Lock)->
   dlss_storage:delete(Storage, Key, Lock).
 
