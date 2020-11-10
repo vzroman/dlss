@@ -30,5 +30,6 @@ start(_StartType, _StartArgs) ->
     dlss_sup:start_link().
 
 stop(_State) ->
+    dlss_backend:stop(),
     ok.
 

@@ -28,7 +28,8 @@
   get_segment_info/1,
   add_storage/2,add_storage/3,
   add_segment_copy/2, remove_segment_copy/2,
-  remove_storage/1
+  remove_storage/1,
+  stop/0
 ]).
 
 %%=================================================================
@@ -160,6 +161,14 @@ add_storage(Name,Type,Options)->
 -spec remove_storage(Name :: atom()) -> ok | no_return().
 remove_storage(Name)->
   dlss_storage:remove(Name).
+
+%-----------------------------------------------------------------
+%	Stop the DLSS
+% Returns ok, or { error, Reason}.
+%-----------------------------------------------------------------
+-spec stop() -> ok | {error, Reason :: any() }.
+stop()->
+  application:stop(dlss).
 
 %-----------------------------------------------------------------
 % Add segment_copy to node
