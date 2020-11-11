@@ -45,7 +45,8 @@
   storage_last/1,
   hog_parent/1,
   create_root_segment/1,
-  write_data_to_storage/1
+  write_data_to_storage/1,
+  storage_scan/1
 ]).
 
 
@@ -62,7 +63,8 @@ all()->
     storage_first,
     storage_last,
     hog_parent,
-    {group, add_root_segment}
+    {group, add_root_segment},
+    storage_scan
   ].
 
 groups()->
@@ -968,7 +970,31 @@ write_data_to_storage(_Config)->
    end || N <- lists:seq(1,200000)],
   ok.
 
+storage_scan(_Config) ->
+  ok=dlss_storage:add(storage1, disc),
+  ?assertEqual(
+    [dlss_storage1_1],
+    dlss_storage:get_segments(storage1)
+  ),
 
+  % Put old value into the storage
+  [ ok = dlss_segment:dirty_write(dlss_storage1_1, X, new_value) || X <- lists:seq(1, 5) ],
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_1, 5),
+
+  % Put new value into the storage
+  [ ok = dlss_segment:dirty_write(dlss_storage1_2, X, old_value) || X <- lists:seq(4, 7) ],
+
+  ?assertEqual(
+    [dlss_storage1_1, dlss_storage1_2],
+    dlss_storage:get_segments(storage1)
+  ),
+
+  ?assertEqual(
+    [{4, new_value}, {5, new_value}, {6, old_value}, {7, old_value}],
+    dlss_storage:scan_interval(storage1, 3, 7, _Limit = 4)
+  ),
+  ok.
 
 
 

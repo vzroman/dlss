@@ -49,7 +49,8 @@
 -export([
   read/2,read/3,dirty_read/2,
   write/3,write/4,dirty_write/3,
-  delete/2,delete/3,dirty_delete/2
+  delete/2,delete/3,dirty_delete/2,
+  scan_interval/3, scan_interval/4
 ]).
 
 %%=================================================================
@@ -546,6 +547,72 @@ delete(Storage, Key, Lock)->
   write( Storage, Key, '@deleted@', Lock ).
 dirty_delete(Storage, Key)->
   dirty_write( Storage, Key, '@deleted@' ).
+
+%-------------Interval scan----------------------------------------------
+scan_interval(Storage, StartKey, EndKey) ->
+  scan_interval(Storage, StartKey, EndKey, infinity).
+
+scan_interval(_Storage, StartKey, EndKey, _Limit) when StartKey > EndKey ->
+  [];
+scan_interval(Storage, StartKey, EndKey, _Limit) when StartKey == EndKey ->
+  case read(Storage, StartKey) of
+    not_found ->
+      [];
+    Value ->
+      [Value]
+  end;
+scan_interval(Storage, StartKey, EndKey, Limit) when StartKey < EndKey ->
+  Segments = find_all_segments(Storage, StartKey, EndKey),
+  SortedSegments = lists:sort(fun level_sort_fun/2, Segments),
+  SortedValues = lists:map(
+    fun([S, _Level]) -> 
+      R = dlss_segment:dirty_scan(S, StartKey, EndKey),
+      R
+    end,
+    SortedSegments
+  ),
+  Full = orddict:to_list(lists:foldl(
+    fun(Values, OrddictAcc) ->
+      lists:foldl(
+        fun({Key, Value}, DictIn) ->
+          orddict:store(Key, Value, DictIn)
+        end,
+        OrddictAcc,
+        Values
+      )
+    end,
+    orddict:new(),
+    SortedValues
+  )),
+  {First, _} = lists:split(min(Limit, length(Full)), Full),
+  First.
+
+level_sort_fun([_, Level0], [_, Level1]) ->
+  Level1 < Level0.
+
+find_all_segments(Storage, StartKey, EndKey) ->
+  Transaction1Fun = fun() ->
+    MatchHead = #kv{key = #sgm{str=Storage, key={'$2'}, lvl='$3'}, value='$1'},
+    GuardMore = {'>=', '$2', StartKey},
+    GuardLess = {'=<', '$2', EndKey},
+    Result = ['$1', '$3'],
+    MatchSpec = [{MatchHead, [GuardMore, GuardLess], [Result]}],
+    mnesia:select(dlss_schema, MatchSpec, read)
+  end,
+  Transaction2Fun = fun() ->
+    MatchHead = #kv{key = #sgm{str=Storage, key='_', lvl='$3'}, value='$1'},
+    Result = ['$1', '$3'],
+    MatchSpec = [{MatchHead, [], [Result]}],
+    mnesia:select(dlss_schema, MatchSpec, read)
+  end,
+  case {mnesia:transaction(Transaction1Fun), mnesia:transaction(Transaction2Fun)} of
+    {{atomic, ResultOfFun1}, {atomic, ResultOfFun2}} ->
+      lists:append(ResultOfFun1, ResultOfFun2);
+    {{aborted, Reason}, _} ->
+      {error, Reason};
+    {_, {aborted, Reason}} ->
+      {error, Reason}
+  end.
 
 %%=================================================================
 %%	Iterate
