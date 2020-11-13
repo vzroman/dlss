@@ -591,27 +591,16 @@ level_sort_fun([_, Level0], [_, Level1]) ->
   Level1 < Level0.
 
 find_all_segments(Storage, StartKey, EndKey) ->
-  Transaction1Fun = fun() ->
-    MatchHead = #kv{key = #sgm{str=Storage, key={'$2'}, lvl='$3'}, value='$1'},
-    GuardMore = {'>=', '$2', StartKey},
-    GuardLess = {'=<', '$2', EndKey},
-    Result = ['$1', '$3'],
-    MatchSpec = [{MatchHead, [GuardMore, GuardLess], [Result]}],
-    mnesia:select(dlss_schema, MatchSpec, read)
-  end,
-  Transaction2Fun = fun() ->
-    MatchHead = #kv{key = #sgm{str=Storage, key='_', lvl='$3'}, value='$1'},
-    Result = ['$1', '$3'],
-    MatchSpec = [{MatchHead, [], [Result]}],
-    mnesia:select(dlss_schema, MatchSpec, read)
-  end,
-  case {mnesia:transaction(Transaction1Fun), mnesia:transaction(Transaction2Fun)} of
-    {{atomic, ResultOfFun1}, {atomic, ResultOfFun2}} ->
-      lists:append(ResultOfFun1, ResultOfFun2);
-    {{aborted, Reason}, _} ->
-      {error, Reason};
-    {_, {aborted, Reason}} ->
-      {error, Reason}
+  MatchHead1 = #kv{key = #sgm{str=Storage, key={'$2'}, lvl='$3'}, value='$1'},
+  GuardMore = {'>=', '$2', StartKey},
+  GuardLess = {'=<', '$2', EndKey},
+  Result = ['$1', '$3'],
+  MatchSpec1 = [{MatchHead1, [GuardMore, GuardLess], [Result]}],
+  MatchHead2 = #kv{key = #sgm{str=Storage, key='_', lvl='$3'}, value='$1'},
+  MatchSpec2 = [{MatchHead2, [], [Result]}],
+  case {mnesia:dirty_select(dlss_schema, MatchSpec1), mnesia:dirty_select(dlss_schema, MatchSpec2)} of
+    {ResultOfFun1, ResultOfFun2} ->
+      lists:append(ResultOfFun1, ResultOfFun2)
   end.
 
 %%=================================================================
