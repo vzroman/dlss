@@ -594,14 +594,45 @@ find_all_segments(Storage, StartKey, EndKey) ->
   MatchHead1 = #kv{key = #sgm{str=Storage, key={'$2'}, lvl='$3'}, value='$1'},
   GuardMore = {'>=', '$2', StartKey},
   GuardLess = {'=<', '$2', EndKey},
-  Result = ['$1', '$3'],
-  MatchSpec1 = [{MatchHead1, [GuardMore, GuardLess], [Result]}],
+  Result1 = ['$1', '$2', '$3'],
+  MatchSpec1 = [{MatchHead1, [GuardMore, GuardLess], [Result1]}],
   MatchHead2 = #kv{key = #sgm{str=Storage, key='_', lvl='$3'}, value='$1'},
-  MatchSpec2 = [{MatchHead2, [], [Result]}],
-  case {mnesia:dirty_select(dlss_schema, MatchSpec1), mnesia:dirty_select(dlss_schema, MatchSpec2)} of
+  Result2 = ['$1', '_', '$3'],
+  MatchSpec2 = [{MatchHead2, [], [Result2]}],
+  Segments = case {mnesia:dirty_select(dlss_schema, MatchSpec1), mnesia:dirty_select(dlss_schema, MatchSpec2)} of
     {ResultOfFun1, ResultOfFun2} ->
       lists:append(ResultOfFun1, ResultOfFun2)
-  end.
+  end,
+  SegmentsMeta = lists:foldl(
+    fun([_SegmentName, Key, Lvl], Acc) ->
+        maps:update_with(
+          Lvl,
+          fun(ListOfKeys) -> [Key | ListOfKeys] end,
+          [Key],
+          Acc
+        )
+    end,
+    #{},
+    Segments
+  ),
+  SegmentsMetaSorted = maps:map(
+    fun(_Key, Values) -> lists:sort(Values) end,
+    SegmentsMeta
+  ),
+  lists:filtermap(
+    fun
+      ([SegmentName, '_', Lvl]) ->
+        case maps:get(Lvl, SegmentsMetaSorted) of
+          ['_', NextKey | _] when StartKey > NextKey->
+            false;
+          _ ->
+            {true, [SegmentName, Lvl]}
+        end;
+      ([SegmentName, _Key, Lvl]) ->
+        {true, [SegmentName, Lvl]}
+    end,
+    Segments
+  ).
 
 %%=================================================================
 %%	Iterate
