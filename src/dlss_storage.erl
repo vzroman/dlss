@@ -591,48 +591,49 @@ level_sort_fun([_, Level0], [_, Level1]) ->
   Level1 < Level0.
 
 find_all_segments(Storage, StartKey, EndKey) ->
-  MatchHead1 = #kv{key = #sgm{str=Storage, key={'$2'}, lvl='$3'}, value='$1'},
-  GuardMore = {'>=', '$2', StartKey},
-  GuardLess = {'=<', '$2', EndKey},
-  Result1 = ['$1', '$2', '$3'],
-  MatchSpec1 = [{MatchHead1, [GuardMore, GuardLess], [Result1]}],
-  MatchHead2 = #kv{key = #sgm{str=Storage, key='_', lvl='$3'}, value='$1'},
-  Result2 = ['$1', '_', '$3'],
-  MatchSpec2 = [{MatchHead2, [], [Result2]}],
-  Segments = case {mnesia:dirty_select(dlss_schema, MatchSpec1), mnesia:dirty_select(dlss_schema, MatchSpec2)} of
-    {ResultOfFun1, ResultOfFun2} ->
-      lists:append(ResultOfFun1, ResultOfFun2)
-  end,
-  SegmentsMeta = lists:foldl(
-    fun([_SegmentName, Key, Lvl], Acc) ->
+  MatchHead = #kv{key = #sgm{str=Storage, key='$2', lvl='$3'}, value='$1'},
+  Result = ['$1', '$2', '$3'],
+  MatchSpec = [{MatchHead, [], [Result]}],
+  AllSegments = mnesia:dirty_select(dlss_schema, MatchSpec),
+  SegmentsPerLvl = lists:foldl(
+    fun([SegmentName, Key, Lvl], Acc) ->
         maps:update_with(
           Lvl,
-          fun(ListOfKeys) -> [Key | ListOfKeys] end,
-          [Key],
+          fun(ExistingSet) -> ordsets:add_element({SegmentName, Key}, ExistingSet) end,
+          ordsets:from_list([{SegmentName, Key}]),
           Acc
         )
     end,
     #{},
-    Segments
+    AllSegments
   ),
-  SegmentsMetaSorted = maps:map(
-    fun(_Key, Values) -> lists:sort(Values) end,
-    SegmentsMeta
-  ),
-  lists:filtermap(
-    fun
-      ([SegmentName, '_', Lvl]) ->
-        case maps:get(Lvl, SegmentsMetaSorted) of
-          ['_', NextKey | _] when StartKey > NextKey->
-            false;
-          _ ->
-            {true, [SegmentName, Lvl]}
-        end;
-      ([SegmentName, _Key, Lvl]) ->
-        {true, [SegmentName, Lvl]}
+  maps:fold(
+    fun(Lvl, OrdSet, AccIn) ->
+      OrderedKeys = ordsets:to_list(OrdSet),
+      FilteredSegments = filter_segments(OrderedKeys, {StartKey}, {EndKey}, [], Lvl),
+      lists:append(FilteredSegments, AccIn)
     end,
-    Segments
+    [],
+    SegmentsPerLvl
   ).
+
+filter_segments([], _, _, [], _Lvl) ->
+  [];
+filter_segments([{Segment, LastKey}], _, EndKey, AccIn, Lvl) 
+    when EndKey >= LastKey ->
+  lists:reverse([[Segment, Lvl] | AccIn]);
+filter_segments([_], _, _, AccIn, _) ->
+  lists:reverse(AccIn);
+filter_segments([{FSeg, FKey}, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl)
+    when StartKey =< SKey, StartKey >= FKey ->
+  NewAcc = [[FSeg, Lvl] | AccIn],
+  filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, NewAcc, Lvl);
+filter_segments([{FSeg, FKey}, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl)
+    when EndKey =< SSeg, EndKey >= FKey ->
+  NewAcc = [[FSeg, Lvl] | AccIn],
+  filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, NewAcc, Lvl);
+filter_segments([_, SecondKey | RestKeys], StartKey, EndKey, AccIn, Lvl) ->
+  filter_segments([SecondKey | RestKeys], StartKey, EndKey, AccIn, Lvl).
 
 %%=================================================================
 %%	Iterate
