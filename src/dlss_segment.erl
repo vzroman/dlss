@@ -41,7 +41,7 @@
   prev/2,dirty_prev/2,
   %----OPTIMIZED SCANNING------------------
   select/2,dirty_select/2,
-  dirty_scan/3
+  dirty_scan/3, dirty_scan/4
 ]).
 
 %%=================================================================
@@ -129,7 +129,7 @@ dirty_scan(Segment,From,To,Limit)->
 
   % Initialize the continuation
   case mnesia_lib:db_select_init(StorageType,Segment,MS,1) of
-    {[],'$end_of_table'}->[]; % The segment is empty or there are no keys less than To
+    '$end_of_table'->[]; % The segment is empty or there are no keys less than To
 
     {[{FirstKey,FirstValue}],Cont}->
 
@@ -162,20 +162,24 @@ run_continuation(_Cont,_StorageType,_MS,Limit,Acc) when Limit=<0->
   lists:append(lists:reverse(Acc));
 run_continuation(Cont,StorageType,MS,Limit,Acc)->
   % Run the search
-  {Result,Cont1}=mnesia_lib:db_select_cont(StorageType,Cont,MS),
-  % Update the acc
-  Acc1=
-    case Result of
-      []->Acc;
-      _->[Result|Acc]
-    end,
-  % Update the limit
-  Limit1=
-    if
-      is_integer(Limit)-> Limit-length(Result);
-      true -> Limit
-    end,
-  run_continuation(Cont1,StorageType,MS,Limit1,Acc1).
+  case mnesia_lib:db_select_cont(StorageType,Cont,MS) of
+    {Result,Cont1} ->
+      % Update the acc
+      Acc1=
+        case Result of
+          []->Acc;
+          _->[Result|Acc]
+        end,
+      % Update the limit
+      Limit1=
+        if
+          is_integer(Limit)-> Limit-length(Result);
+          true -> Limit
+        end,
+      run_continuation(Cont1,StorageType,MS,Limit1,Acc1);
+    '$end_of_table' ->
+      lists:reverse(Acc)
+    end.
 
 %-------------SELECT----------------------------------------------
 select(Segment,MS)->

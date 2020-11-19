@@ -552,30 +552,36 @@ dirty_delete(Storage, Key)->
 scan_interval(Storage, StartKey, EndKey) ->
   scan_interval(Storage, StartKey, EndKey, infinity).
 
-scan_interval(_Storage, StartKey, EndKey, _Limit) when StartKey > EndKey ->
+scan_interval(_Storage, StartKey, EndKey, _Limit)
+    when StartKey > EndKey andalso
+        (StartKey =/= '$start_of_table' andalso StartKey =/= '$end_of_table') ->
   [];
-scan_interval(Storage, StartKey, EndKey, _Limit) when StartKey == EndKey ->
-  case read(Storage, StartKey) of
+scan_interval(Storage, StartKey, EndKey, _Limit)
+    when StartKey == EndKey andalso
+        (StartKey =/= '$start_of_table' andalso StartKey =/= '$end_of_table') ->
+  case dirty_read(Storage, StartKey) of
     not_found ->
       [];
     Value ->
-      [Value]
+      [{StartKey, Value}]
   end;
-scan_interval(Storage, StartKey, EndKey, Limit) when StartKey < EndKey ->
+scan_interval(Storage, StartKey, EndKey, Limit) ->
   Segments = find_all_segments(Storage, StartKey, EndKey),
   SortedSegments = lists:sort(fun level_sort_fun/2, Segments),
   SortedValues = lists:map(
     fun([S, _Level]) -> 
-      R = dlss_segment:dirty_scan(S, StartKey, EndKey),
-      R
+      dlss_segment:dirty_scan(S, StartKey, EndKey, Limit)
     end,
     SortedSegments
   ),
-  Full = orddict:to_list(lists:foldl(
+  Full = lists:foldl(
     fun(Values, OrddictAcc) ->
       lists:foldl(
-        fun({Key, Value}, DictIn) ->
-          orddict:store(Key, Value, DictIn)
+        fun
+          ({DeletedKey, '@deleted@'}, DictIn) ->
+            orddict:erase(DeletedKey, DictIn);
+          ({Key, Value}, DictIn) ->
+            orddict:store(Key, Value, DictIn)
         end,
         OrddictAcc,
         Values
@@ -583,8 +589,13 @@ scan_interval(Storage, StartKey, EndKey, Limit) when StartKey < EndKey ->
     end,
     orddict:new(),
     SortedValues
-  )),
-  {First, _} = lists:split(min(Limit, length(Full)), Full),
+  ),
+  limit_output(orddict:to_list(Full), Limit).
+
+limit_output(Values, infinity) ->
+  Values;
+limit_output(Values, Limit) when Limit > 0 ->
+  {First, _} = lists:split(min(Limit, length(Values)), Values),
   First.
 
 level_sort_fun([_, Level0], [_, Level1]) ->
@@ -624,16 +635,19 @@ filter_segments([{Segment, LastKey}], _, EndKey, AccIn, Lvl)
   lists:reverse([[Segment, Lvl] | AccIn]);
 filter_segments([_], _, _, AccIn, _) ->
   lists:reverse(AccIn);
+filter_segments([{FSeg, _} | RestKeys], '$start_of_table', '$end_of_table', AccIn, Lvl) ->
+  NewAcc = [[FSeg, Lvl] | AccIn],
+  filter_segments(RestKeys, '$start_of_table', '$end_of_table', NewAcc, Lvl);
 filter_segments([{FSeg, FKey}, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl)
-    when StartKey =< SKey, StartKey >= FKey ->
+    when StartKey =< SKey andalso StartKey >= FKey ->
   NewAcc = [[FSeg, Lvl] | AccIn],
   filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, NewAcc, Lvl);
 filter_segments([{FSeg, FKey}, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl)
-    when EndKey =< SSeg, EndKey >= FKey ->
+    when EndKey =< SKey andalso EndKey >= FKey ->
   NewAcc = [[FSeg, Lvl] | AccIn],
   filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, NewAcc, Lvl);
-filter_segments([_, SecondKey | RestKeys], StartKey, EndKey, AccIn, Lvl) ->
-  filter_segments([SecondKey | RestKeys], StartKey, EndKey, AccIn, Lvl).
+filter_segments([_, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl) ->
+  filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl).
 
 %%=================================================================
 %%	Iterate
