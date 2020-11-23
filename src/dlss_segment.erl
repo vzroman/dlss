@@ -129,32 +129,57 @@ dirty_scan(Segment,From,To,Limit)->
 
   % Initialize the continuation
   case mnesia_lib:db_select_init(StorageType,Segment,MS,1) of
-    '$end_of_table'->[]; % The segment is empty or there are no keys less than To
+    {[],'$end_of_table'}->[]; % The segment is empty or there are no keys less than To
+    '$end_of_table'->[]; % this format is returned by the ets backend
 
     {[{FirstKey,FirstValue}],Cont}->
 
       % Define the from which to start
       {StartKey,Head}=
         if
-          From=:='$start_of_table' ->{FirstKey,[{FirstKey,FirstValue}]} ;
-          true ->{From,[]}
+          From=:='$start_of_table';From=:=FirstKey ->{FirstKey,[{FirstKey,FirstValue}]} ;
+          true ->
+            case mnesia:dirty_read(Segment,From) of
+              [#kv{value = FromValue}]->
+                { From, [{From,FromValue}] };
+              _->
+                {From,[]}
+            end
         end,
+      if
+        Limit =:=1,length(Head)=:=1 -> Head ;
+        true ->
+          Limit1=
+            if
+              is_integer(Limit) -> Limit - length(Head) ;
+              true -> Limit
+            end,
+          % Initialize the continuation with the key to start from
+          Cont1=init_continuation(Cont,StartKey,Limit1),
 
-      % Initialize the continuation with the key to start from
-      Cont1=init_continuation(Cont,StartKey,Limit),
-
-      % Run the search
-      Head++run_continuation(Cont1,StorageType,MS,Limit,[])
+          % Run the search
+          Head++run_continuation(Cont1,StorageType,MS,Limit1,[])
+      end
   end.
 
 init_continuation('$end_of_table',_StartKey,_Limit)->
   '$end_of_table';
 init_continuation({Segment,_LastKey,Par3,_Limit,Ref,Par6,Par7,Par8},StartKey,Limit)->
+  Limit1 =
+    if
+      Limit=:=infinity -> ?MAX_SCAN_INTERVAL_BATCH;
+      true -> Limit
+    end,
   % This is the form of ets ordered_set continuation
-  {Segment,StartKey,Par3,Limit,Ref,Par6,Par7,Par8};
+  {Segment,StartKey,Par3,Limit1,Ref,Par6,Par7,Par8};
 init_continuation({_LastKey,_Limit,Fun},StartKey,Limit)->
+  Limit1 =
+    if
+      Limit=:=infinity -> ?MAX_SCAN_INTERVAL_BATCH;
+      true -> Limit
+    end,
   % This is the form of mnesia_leveldb continuation
-  {StartKey,Limit,Fun}.
+  {StartKey,Limit1,Fun}.
 
 run_continuation('$end_of_table',_StorageType,_MS,_Limit,Acc)->
   lists:append(lists:reverse(Acc));
@@ -162,24 +187,24 @@ run_continuation(_Cont,_StorageType,_MS,Limit,Acc) when Limit=<0->
   lists:append(lists:reverse(Acc));
 run_continuation(Cont,StorageType,MS,Limit,Acc)->
   % Run the search
-  case mnesia_lib:db_select_cont(StorageType,Cont,MS) of
-    {Result,Cont1} ->
-      % Update the acc
-      Acc1=
-        case Result of
-          []->Acc;
-          _->[Result|Acc]
-        end,
-      % Update the limit
-      Limit1=
-        if
-          is_integer(Limit)-> Limit-length(Result);
-          true -> Limit
-        end,
-      run_continuation(Cont1,StorageType,MS,Limit1,Acc1);
-    '$end_of_table' ->
-      lists:reverse(Acc)
-    end.
+  {Result,Cont1}=
+    case mnesia_lib:db_select_cont(StorageType,Cont,MS) of
+      {R,C} -> {R,C};
+      '$end_of_table'->{[],'$end_of_table'}
+    end,
+  % Update the acc
+  Acc1=
+    case Result of
+      []->Acc;
+      _->[Result|Acc]
+    end,
+  % Update the limit
+  Limit1=
+    if
+      is_integer(Limit)-> Limit-length(Result);
+      true -> Limit
+    end,
+  run_continuation(Cont1,StorageType,MS,Limit1,Acc1).
 
 %-------------SELECT----------------------------------------------
 select(Segment,MS)->

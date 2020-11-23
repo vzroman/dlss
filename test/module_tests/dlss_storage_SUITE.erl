@@ -989,7 +989,7 @@ storage_scan(_Config) ->
   [ ok = dlss_segment:dirty_write(dlss_storage1_2, X, old_value) || X <- lists:seq(4, 7) ],
 
   ?assertEqual(
-    [{4, new_value}, {5, new_value}, {6, old_value}, {7, old_value}],
+    [{3, new_value}, {4, new_value}, {5, new_value}, {6, old_value}],
     dlss_storage:scan_interval(storage1, 3, 7, _Limit = 4)
   ),
 
@@ -1023,7 +1023,7 @@ storage_scan_infinity(_Config) ->
 
   ?assertEqual(
     [{3, value}],
-    dlss_storage:scan_interval(storage1, 2, '$end_of_table', 10)
+    dlss_storage:scan_interval(storage1, 3, '$end_of_table', 10)
   ),
 
   dlss_storage:remove(storage1),
@@ -1048,9 +1048,30 @@ storage_scan_boundaries(_Config) ->
   [ ok = dlss_segment:dirty_write(dlss_storage1_4, X, value4) || X <- lists:seq(25, 26) ],
 
   ?assertEqual(
-    [{11, value2}, {12, value2}, {15, value3}, {16, value3}, {17, value3}],
+    [{10, value2}, {11, value2}, {12, value2}, {15, value3}, {16, value3}, {17, value3}],
     dlss_storage:scan_interval(storage1, 10, 17, 100)
   ),
+
+  % TODO
+  StartOfTable =
+    [{I,value1}||I<-lists:seq(1,3)] ++
+    [{I,value2}||I<-lists:seq(5,12)] ++
+    [{I,value3}||I<-lists:seq(15,20)],
+  ?assertEqual(
+    StartOfTable,
+    dlss_storage:scan_interval(storage1, '$start_of_table', 20, 100)
+  ),
+
+  % TODO
+  EndOfTable =
+    [{I,value2}||I<-lists:seq(5,12)] ++
+    [{I,value3}||I<-lists:seq(15,20)]++
+    [{I,value4}||I<-lists:seq(25,26)],
+  ?assertEqual(
+    EndOfTable,
+    dlss_storage:scan_interval(storage1, 5, '$end_of_table', 100)
+  ),
+
 
   dlss_storage:remove(storage1),
   []=dlss_storage:get_storages(),
@@ -1071,14 +1092,14 @@ storage_scan_deleted(_Config) ->
   ok = dlss_segment:dirty_write(dlss_storage1_2, 4, old_value),
 
   ?assertEqual(
-    [{4, value}, {5, value}],
+    [{3, value}, {4, value}, {5, value}],
     dlss_storage:scan_interval(storage1, 3, 7, _Limit = 4)
   ),
 
   ok = dlss_storage:dirty_delete(storage1, 4),
 
   ?assertEqual(
-    [{5, value}],
+    [{3, value}, {5, value}],
     dlss_storage:scan_interval(storage1, 3, 7, _Limit = 4)
   ),
 
