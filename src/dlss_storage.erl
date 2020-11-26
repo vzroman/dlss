@@ -33,7 +33,7 @@
   new_root_segment/1,
   root_segment/1,
   segment_params/1,
-  add/2,
+  add/2,add/3,
   remove/1,
   get_type/1,
   spawn_segment/1,spawn_segment/2,
