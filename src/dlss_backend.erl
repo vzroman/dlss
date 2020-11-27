@@ -156,6 +156,7 @@ handle_info(Message,State)->
 
 terminate(Reason,_State)->
   ?LOGINFO("terminating backend reason ~p",[Reason]),
+  stop(),
   ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -271,7 +272,10 @@ create_schema()->
   ]).
 
 stop()->
-  mnesia:stop().
+  % TODO. Why doesn't it stop in the context of the calling process?
+  spawn_link(fun()->
+    mnesia:stop()
+  end).
 
 
 wait_segments(Timeout)->
@@ -325,7 +329,11 @@ on_mnesia_event({inconsistent_database, Context, Node})->
 
 on_mnesia_event({mnesia_down, Node})->
   ?LOGWARNING( "~p node is down", [Node] ),
-  dlss_node:set_status( Node, down );
+  try
+    dlss_node:set_status( Node, down )
+  catch
+    _:_->?LOGWARNING("unable to set node status to 'down'")
+  end;
 on_mnesia_event({mnesia_up, Node})->
   ?LOGINFO( "~p node is up", [Node] );
 
