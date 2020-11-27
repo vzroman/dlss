@@ -36,6 +36,7 @@
   add/2,add/3,
   remove/1,
   get_type/1,
+  is_local/1,
   spawn_segment/1,spawn_segment/2,
   hog_parent/1,
   absorb_segment/1,
@@ -117,6 +118,11 @@ get_type(Storage)->
   Root=root_segment(Storage),
   #{ type:= T }=dlss_segment:get_info(Root),
   T.
+
+is_local(Storage)->
+  Root=root_segment(Storage),
+  #{ local:= IsLocal }=dlss_segment:get_info(Root),
+  IsLocal.
 
 segment_params(Name)->
   case segment_by_name(Name) of

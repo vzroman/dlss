@@ -23,7 +23,9 @@
 %%=================================================================
 -export([
   add_node/1,remove_node/1,
-  get_storages/0, get_storage_type/1,
+  get_storages/0,
+  get_storage_type/1,
+  is_local_storage/1,
   get_segments/0,get_segments/1,
   get_segment_info/1,
   add_storage/2,add_storage/3,
@@ -85,6 +87,13 @@ get_storages()->
 -spec get_storage_type(Storage :: atom()) -> storage_type() | no_return().
 get_storage_type(Storage) ->
   dlss_storage:get_type(Storage).
+
+%-----------------------------------------------------------------
+% Check if the storage has local only content
+%-----------------------------------------------------------------
+-spec is_local_storage(Storage :: atom()) -> boolean() | no_return().
+is_local_storage(Storage) ->
+  dlss_storage:is_local(Storage).
 
 %-----------------------------------------------------------------
 %	Get list of all dlss segments
