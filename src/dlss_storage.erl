@@ -627,33 +627,50 @@ find_all_segments(Storage, StartKey, EndKey) ->
   maps:fold(
     fun(Lvl, OrdSet, AccIn) ->
       OrderedKeys = ordsets:to_list(OrdSet),
-      FilteredSegments = filter_segments(OrderedKeys, {StartKey}, {EndKey}, [], Lvl),
+      FilteredSegments = filter_segments(OrderedKeys, {StartKey}, {EndKey}, Lvl),
       lists:append(FilteredSegments, AccIn)
     end,
     [],
     SegmentsPerLvl
   ).
 
-filter_segments([], _, _, [], _Lvl) ->
-  [];
-filter_segments([{Segment, LastKey}], _, EndKey, AccIn, Lvl) 
+filter_segments([{Segment, _Key} | Rest], {'$start_of_table'}, EndKey, Lvl) ->
+  do_filter_segments(Rest, {'$start_of_table'}, EndKey, [[Segment, Lvl]], Lvl);
+filter_segments(Segments, StartKey, EndKey, Lvl) ->
+  do_filter_segments(Segments, StartKey, EndKey, [], Lvl).
+  
+do_filter_segments([{Segment, _LastKey}], _, {'$end_of_table'}, AccIn, Lvl) ->
+  lists:reverse([[Segment, Lvl] | AccIn]);
+do_filter_segments([{Segment, LastKey}], _, EndKey, AccIn, Lvl) 
     when EndKey >= LastKey ->
   lists:reverse([[Segment, Lvl] | AccIn]);
-filter_segments([_], _, _, AccIn, _) ->
+do_filter_segments([_], _, _, AccIn, _) ->
   lists:reverse(AccIn);
-filter_segments([{FSeg, _} | RestKeys], '$start_of_table', '$end_of_table', AccIn, Lvl) ->
+do_filter_segments([{FSeg, _} | RestKeys], {'$start_of_table'}, {'$end_of_table'}, AccIn, Lvl) ->
   NewAcc = [[FSeg, Lvl] | AccIn],
-  filter_segments(RestKeys, '$start_of_table', '$end_of_table', NewAcc, Lvl);
-filter_segments([{FSeg, FKey}, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl)
+  do_filter_segments(RestKeys, {'$start_of_table'}, {'$end_of_table'}, NewAcc, Lvl);
+do_filter_segments([{FSeg, FKey}, {SSeg, SKey} | RestKeys], {'$start_of_table'}, EndKey, AccIn, Lvl)
+    when EndKey >= FKey ->
+  NewAcc = [[FSeg, Lvl] | AccIn],
+  do_filter_segments([{SSeg, SKey} | RestKeys], {'$start_of_table'}, EndKey, NewAcc, Lvl);
+do_filter_segments(_, {'$start_of_table'}, _EndKey, AccIn, _Lvl) ->
+  lists:reverse(AccIn);
+do_filter_segments([_, {SSeg, SKey} | RestKeys], StartKey, {'$end_of_table'}, AccIn, Lvl)
+    when StartKey >= SKey ->
+  do_filter_segments([{SSeg, SKey} | RestKeys], StartKey, {'$end_of_table'}, AccIn, Lvl);
+do_filter_segments([{FSeg, _FKey} | RestKeys], StartKey, {'$end_of_table'}, AccIn, Lvl) ->
+  NewAcc = [[FSeg, Lvl] | AccIn],
+  do_filter_segments(RestKeys, StartKey, {'$end_of_table'}, NewAcc, Lvl);
+do_filter_segments([{FSeg, FKey}, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl)
     when StartKey =< SKey andalso StartKey >= FKey ->
   NewAcc = [[FSeg, Lvl] | AccIn],
-  filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, NewAcc, Lvl);
-filter_segments([{FSeg, FKey}, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl)
+  do_filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, NewAcc, Lvl);
+do_filter_segments([{FSeg, FKey}, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl)
     when EndKey =< SKey andalso EndKey >= FKey ->
   NewAcc = [[FSeg, Lvl] | AccIn],
-  filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, NewAcc, Lvl);
-filter_segments([_, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl) ->
-  filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl).
+  do_filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, NewAcc, Lvl);
+do_filter_segments([_, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl) ->
+  do_filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl).
 
 %%=================================================================
 %%	Iterate

@@ -1052,7 +1052,6 @@ storage_scan_boundaries(_Config) ->
     dlss_storage:scan_interval(storage1, 10, 17, 100)
   ),
 
-  % TODO
   StartOfTable =
     [{I,value1}||I<-lists:seq(1,3)] ++
     [{I,value2}||I<-lists:seq(5,12)] ++
@@ -1062,7 +1061,6 @@ storage_scan_boundaries(_Config) ->
     dlss_storage:scan_interval(storage1, '$start_of_table', 20, 100)
   ),
 
-  % TODO
   EndOfTable =
     [{I,value2}||I<-lists:seq(5,12)] ++
     [{I,value3}||I<-lists:seq(15,20)]++
