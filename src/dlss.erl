@@ -24,6 +24,7 @@
 -export([
   add_node/1,remove_node/1,
   get_nodes/0,
+  get_ready_nodes/0,
   get_storages/0,
   get_storage_type/1,
   is_local_storage/1,
@@ -73,14 +74,24 @@ remove_node(Node)->
   dlss_backend:remove_node(Node).
 
 %-----------------------------------------------------------------
-%	Get list of all dlss storages
+%	Get list of all dlss nodes
 % Returns
-% [storage1,storage2 ..]
-% where the type of name of storage is the atom
+% [node1,node2 ..]
+% where the type of a name of a node is an atom
 %-----------------------------------------------------------------
 -spec get_nodes() -> ListOfNode :: list().
 get_nodes()->
   dlss_backend:get_nodes().
+
+%-----------------------------------------------------------------
+%	Get list of ready dlss nodes
+% Returns
+% [node1,node2 ..]
+% where the type of a name of a node is an atom
+%-----------------------------------------------------------------
+-spec get_ready_nodes() -> ListOfNode :: list().
+get_ready_nodes()->
+  dlss_node:get_ready_nodes().
 
 %-----------------------------------------------------------------
 %	Get list of all dlss storages
