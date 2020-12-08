@@ -29,6 +29,7 @@
   init_backend/0,init_backend/1,
   add_node/1,
   remove_node/1,
+  get_nodes/0,
   create_segment/2,
   delete_segment/1,
   transaction/1,sync_transaction/1,
@@ -68,13 +69,18 @@ start_link()->
 % Add a new node to the schema
 add_node(Node)->
   case mnesia:change_config(extra_db_nodes,[Node]) of
-    []->false;
-    _->true
+    {ok,Nodes} when is_list(Nodes)->
+      lists:member(Node,Nodes);
+    _->
+      false
   end.
 
 % Remove a node from the schema
 remove_node(Node)->
   mnesia:del_table_copy(schema,Node).
+
+get_nodes()->
+  mnesia:system_info(db_nodes).
 
 create_segment(Name,Params)->
   Attributes = table_attributes(Params),

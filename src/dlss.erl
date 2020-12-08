@@ -23,6 +23,7 @@
 %%=================================================================
 -export([
   add_node/1,remove_node/1,
+  get_nodes/0,
   get_storages/0,
   get_storage_type/1,
   is_local_storage/1,
@@ -70,6 +71,16 @@ add_node(Node)->
 -spec remove_node(Node :: node()) -> {atomic, ok} | {aborted, Reason :: term()}.
 remove_node(Node)->
   dlss_backend:remove_node(Node).
+
+%-----------------------------------------------------------------
+%	Get list of all dlss storages
+% Returns
+% [storage1,storage2 ..]
+% where the type of name of storage is the atom
+%-----------------------------------------------------------------
+-spec get_nodes() -> ListOfNode :: list().
+get_nodes()->
+  dlss_backend:get_nodes().
 
 %-----------------------------------------------------------------
 %	Get list of all dlss storages
