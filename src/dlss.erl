@@ -57,101 +57,90 @@
 %%---------------------------------------------------------------
 
 %-----------------------------------------------------------------
-%% @doc Add a new node to the schema.
-%% Returns true when a new node is added or false in other case
-%% @end
+% Add a new node to the schema
+% Returns true when a new node is added or false in other case
 %-----------------------------------------------------------------
 -spec add_node(Node :: node()) -> true | false.
 add_node(Node)->
   dlss_backend:add_node(Node).
 
 %-----------------------------------------------------------------
-%% @doc  Remove a node from the schema.
+% Remove a node from the schema
 % Returns {atomic, ok} when node is removed or {aborted, Reason}
 % in negative case
-%% @end
 %-----------------------------------------------------------------
 -spec remove_node(Node :: node()) -> {atomic, ok} | {aborted, Reason :: term()}.
 remove_node(Node)->
   dlss_backend:remove_node(Node).
 
 %-----------------------------------------------------------------
-%% @doc	Get list of all dlss nodes
+%	Get list of all dlss nodes
 % Returns
 % [node1,node2 ..]
 % where the type of a name of a node is an atom
-%% @end
 %-----------------------------------------------------------------
 -spec get_nodes() -> ListOfNode :: list().
 get_nodes()->
   dlss_backend:get_nodes().
 
 %-----------------------------------------------------------------
-%% @doc	Get list of ready dlss nodes
+%	Get list of ready dlss nodes
 % Returns
 % [node1,node2 ..]
 % where the type of a name of a node is an atom
-%% @end
 %-----------------------------------------------------------------
 -spec get_ready_nodes() -> ListOfNode :: list().
 get_ready_nodes()->
   dlss_node:get_ready_nodes().
 
 %-----------------------------------------------------------------
-%% @doc	Get list of all dlss storages.
-% Returns:
+%	Get list of all dlss storages
+% Returns
 % [storage1,storage2 ..]
 % where the type of name of storage is the atom
-%% @end
 %-----------------------------------------------------------------
 -spec get_storages() -> ListOfStorage :: list().
 get_storages()->
   dlss_storage:get_storages().
 
 %-----------------------------------------------------------------
-%% @doc	Get storage type.
-%% Returns: ram | ramdisc | disc.
-%% Each type defines where is the storage was added.
-%% @end
+%	Get storage type
 %-----------------------------------------------------------------
 -spec get_storage_type(Storage :: atom()) -> storage_type() | no_return().
 get_storage_type(Storage) ->
   dlss_storage:get_type(Storage).
 
 %-----------------------------------------------------------------
-%% @doc Check if the storage has local only content
-%% @end
+% Check if the storage has local only content
 %-----------------------------------------------------------------
 -spec is_local_storage(Storage :: atom()) -> boolean() | no_return().
 is_local_storage(Storage) ->
   dlss_storage:is_local(Storage).
 
 %-----------------------------------------------------------------
-%% @doc Get list of all dlss segments.
-% Returns:
-% [dlss_storage1_1,dlss_storage1_2,dlss_storage2_1 ..],
+%	Get list of all dlss segments
+% Returns
+% [dlss_storage1_1,dlss_storage1_2,dlss_storage2_1 ..]
 % where the element of list is the name of segments and has type
 % of atom
-%% @end
 %-----------------------------------------------------------------
 -spec get_segments() -> AllSegments :: list().
 get_segments()->
   dlss_storage:get_segments().
 
 %-----------------------------------------------------------------
-%% @doc Get list of dlss segments for the Storage.
-% Returns:
+%	Get list of dlss segments for the Storage
+% Returns
 % [dlss_storage1_1,dlss_storage1_2,dlss_storage1_3 ..]
 % where the element of list is the name of segments of storage storage1
 % and has type of atom
-%% @end
 %-----------------------------------------------------------------
 -spec get_segments(Storage :: atom()) -> StorageSegments :: list().
 get_segments(Storage)->
   dlss_storage:get_segments(Storage).
 
 %-----------------------------------------------------------------
-%% @doc  Get segment info.
+% Get segment info
 % Returns map:
 % #{
 %   type => Type,      :: disc | ram | ramdisc
@@ -159,25 +148,23 @@ get_segments(Storage)->
 %   nodes => Nodes     :: list of atom() [node(),..]
 %   }
 % or throws Error
-%% @end
 %-----------------------------------------------------------------
 -spec get_segment_info(Segment :: atom()) -> SegmentInfo :: segment_info() | no_return().
 get_segment_info(Segment) ->
   dlss_segment:get_info(Segment).
 
 %-----------------------------------------------------------------
-%% @doc 	Add storage.
+%	Add storage
 % It adds a new storage to dlss_schema with creating a new Root Segment (table)
 % As input function gets Name of storage as atom and Type as atom.
 % Returns ok, or throws Error
-%% @end
 %-----------------------------------------------------------------
 -spec add_storage(Name :: atom(), Type :: storage_type()) -> ok | no_return().
 add_storage(Name,Type)->
   dlss_storage:add(Name,Type).
 
 %-----------------------------------------------------------------
-%% @doc  Add storage with Options.
+% Add storage with Options
 % Function adds a new storage to dlss_schema with creating a new Root Segment (table)
 % As input function gets Name of storage as atom,
 % Type as atom, and Options as map of
@@ -187,52 +174,46 @@ add_storage(Name,Type)->
 %   local:=IsLocal        :: true | false
 % }
 % Options might be used to change default values of nodes and local.
-% Returns: ok, or throws Error
-%% @end
+% Returns ok, or throws Error
 %-----------------------------------------------------------------
 -spec add_storage(Name :: atom(), Type :: storage_type(), Options :: segment_info()) -> ok | no_return().
 add_storage(Name,Type,Options)->
   dlss_storage:add(Name,Type,Options).
 
 %-----------------------------------------------------------------
-%% @doc 	Remove storage.
+%	Remove storage
 % Function removes the storage from dlss_schema and deletes all related
 % segments (tables)
 % As input function gets Name of storage as atom
 % Returns ok, or throws Error
-%% @end
 %-----------------------------------------------------------------
 -spec remove_storage(Name :: atom()) -> ok | no_return().
 remove_storage(Name)->
   dlss_storage:remove(Name).
 
 %-----------------------------------------------------------------
-%% @doc
 %	Stop the DLSS
 % Returns ok, or { error, Reason}.
-%% @end
 %-----------------------------------------------------------------
 -spec stop() -> ok | {error, Reason :: any() }.
 stop()->
   application:stop(dlss).
 
 %-----------------------------------------------------------------
-%% @doc Add segment_copy to node.
+% Add segment_copy to node
 % Function copies the Segment (table) and puts to Node.
 % As input function gets Name of segment (atom), and Node
 % Returns ok, or { error, Reason}.
-%% @end
 %-----------------------------------------------------------------
 -spec add_segment_copy(Segment :: atom(), Node :: node()) -> ok | { error, Reason :: any() }.
 add_segment_copy(Segment,Node)->
   dlss_segment:add_node(Segment,Node).
 
 %-----------------------------------------------------------------
-%% @doc Remove segment_copy from node.
+% Remove segment_copy from node
 % Function removes the Segment (table) from Node.
 % As input function gets Name of segment (atom), and Node
 % Returns ok, or { error, Reason}.
-%% @end
 %-----------------------------------------------------------------
 -spec remove_segment_copy(Segment :: atom(), Node :: node()) -> ok | { error, Reason :: any() }.
 remove_segment_copy(Segment,Node)->
@@ -242,19 +223,14 @@ remove_segment_copy(Segment,Node)->
 %%	DATA API
 %%---------------------------------------------------------------
 %-----------------------------------------------------------------
-%% @doc	Wrap the procedure into the ACID transaction.
-%% @end
+%	Wrap the procedure into the ACID transaction
 %-----------------------------------------------------------------
 -spec transaction(Fun :: fun()) -> {ok, FunResult :: any()} | {error, Reason :: any()}.
 transaction(Fun)->
   % We use the backend transaction engine
   dlss_backend:transaction(Fun).
 
-%-----------------------------------------------------------------
-%% @doc	Wrap the procedure into the ACID transaction.
-%% Sync transaction wait all changes are applied
-%% @end
-%-----------------------------------------------------------------
+% Sync transaction wait all changes are applied
 -spec sync_transaction(Fun :: fun()) -> {ok, FunResult :: any()} | {error, Reason :: any()}.
 sync_transaction(Fun)->
   dlss_backend:sync_transaction(Fun).
@@ -264,33 +240,27 @@ sync_transaction(Fun)->
 %%=================================================================
 
 %---------------------Read-----------------------------------------
-%% @doc Read.
-%% Function reads the value from Storage with Key.
+% Function reads the value from Storage with Key.
 % The function needs to be wrapped in transaction.
 % Returns Value or not_found.
-%% @end
 %------------------------------------------------------------------
 -spec read(Storage :: atom(), Key :: any()) -> Value :: any() | not_found.
 read(Storage, Key ) ->
     dlss_storage:read(Storage, Key).
 
 %---------------------Read with lock-------------------------------
-%% @doc Read.
-%% Function reads the value from Storage with Key and lock_type.
+% Function reads the value from Storage with Key and lock_type.
 % The function needs to be wrapped in transaction.
 % Returns Value or not_found.
-%% @end
 %------------------------------------------------------------------
 -spec read(Storage :: atom(), Key :: any(), Lock :: lock_type()) -> Value :: any() | not_found.
 read(Storage, Key, Lock) ->
   dlss_storage:read(Storage, Key, Lock).
 
 %---------------------Dirty Read-----------------------------------
-%% @doc Dirty Read.
 % Function reads the value from Storage with Key.
 % There is no needs of wrapping in transaction, when using dirty_read
 % Returns Value or not_found.
-%% @end
 %------------------------------------------------------------------
 -spec dirty_read(Storage :: atom(), Key :: any()) -> Value :: any() | not_found.
 dirty_read(Storage, Key ) ->
@@ -298,75 +268,63 @@ dirty_read(Storage, Key ) ->
 
 
 %---------------------Write---------------------------------------
-%% @doc Write.
 % Function writes the Value to the Storage with Key.
 % If there is a Key in Storage it just updates,
 % else it adds new #kv{key:=Key,value:=Value} to the Storage.
 % The function needs to be wrapped in transaction.
 % Returns ok or throws Error.
-%% @end
 %------------------------------------------------------------------
 -spec write(Storage :: atom(), Key :: any(), Value :: any()) -> ok | no_return().
 write(Storage, Key, Value)->
   dlss_storage:write(Storage, Key, Value).
 
 %---------------------Write with lock------------------------------
-%% @doc Write.
 % Function writes the Value to the Storage with Key and write_locks.
 % If there is a Key in Storage it just updates,
 % else it adds new #kv{key:=Key,value:=Value} to the Storage.
 % The function needs to be wrapped in transaction.
 % Returns ok or throws Error.
-%% @end
 %------------------------------------------------------------------
 -spec write(Storage :: atom(), Key :: any(), Value :: any(), Lock :: lock_type()) -> ok | no_return().
 write(Storage, Key, Value, Lock)->
   dlss_storage:write(Storage, Key, Value, Lock).
 
 %---------------------Dirty Write----------------------------------
-%% @doc Dirty Write.
 % Function writes the Value to the Storage with Key.
 % If there is a Key in Storage it just updates,
 % else it adds new #kv{key:=Key,value:=Value} to the Storage.
 % There is no needs of wrapping in transaction, when using dirty_write
 % Returns ok or throws Error.
-%% @end
 %------------------------------------------------------------------
 -spec dirty_write(Storage :: atom(), Key :: any(), Value :: any()) -> ok | no_return().
 dirty_write(Storage, Key, Value)->
   dlss_storage:dirty_write(Storage, Key, Value).
 
 %---------------------Delete---------------------------------------
-%% @doc Delete.
 % Function updates the Value to the '@deleted@' in the Storage with Key,
 % which will be ignored on read().
 % The function needs to be wrapped in transaction.
 % Returns ok or throws Error.
-%% @end
 %------------------------------------------------------------------
 -spec delete(Storage :: atom(), Key :: any()) -> ok | no_return().
 delete(Storage, Key)->
   dlss_storage:delete(Storage, Key).
 
 %---------------------Delete---------------------------------------
-%% @doc Delete.
 % Function updates the Value to the '@deleted@' in the Storage with Key
 % and write_lock, which will be ignored on read().
 % The function needs to be wrapped in transaction.
 % Returns ok or throws Error.
-%% @end
 %------------------------------------------------------------------
 -spec delete(Storage :: atom(), Key :: any(), Lock :: lock_type()) -> ok | no_return().
 delete(Storage, Key, Lock)->
   dlss_storage:delete(Storage, Key, Lock).
 
 %---------------------Dirty Delete---------------------------------
-%% @doc Dirty Delete.
 % Function updates the Value to the '@deleted@' in the Storage with Key
 % which will be ignored on read().
 % There is no needs of wrapping in transaction, when using dirty_delete
 % Returns ok or throws Error.
-%% @end
 %------------------------------------------------------------------
 -spec dirty_delete(Storage :: atom(), Key :: any()) -> ok | no_return().
 dirty_delete(Storage, Key)->
@@ -377,96 +335,88 @@ dirty_delete(Storage, Key)->
 %%	Iterate
 %%=================================================================
 %-----------------------------------------------------------------
-%% @doc First.
+%	FIRST
 % Function gets the first Key of the Storage
 % As input function gets Name of storage as atom
 % The function needs to be wrapped in transaction.
 % Returns Key, or throws Error
-%% @end
 %-----------------------------------------------------------------
 -spec first(Storage :: atom()) -> Key :: any() | no_return().
 first(Storage)->
   dlss_storage:first(Storage).
 
 %-----------------------------------------------------------------
-%% @doc	Dirty First.
+%	DIRTY FIRST
 % Function gets the first Key of the Storage
 % As input function gets Name of storage as atom
 % There is no needs of wrapping in transaction, when using dirty_first
 % Returns Key, or throws Error
-%% @end
 %-----------------------------------------------------------------
 -spec dirty_first(Storage :: atom()) -> Key :: any() | no_return().
 dirty_first(Storage)->
   dlss_storage:dirty_first(Storage).
 
 %-----------------------------------------------------------------
-%% @doc	Last.
+%	LAST
 % Function gets the last Key of the Storage
 % As input function gets Name of storage as atom
 % The function needs to be wrapped in transaction.
 % Returns Key, or throws Error
-%% @end
 %-----------------------------------------------------------------
 -spec last(Storage :: atom()) -> Key :: any() | no_return().
 last(Storage)->
   dlss_storage:last(Storage).
 
 %-----------------------------------------------------------------
-%% @doc	Dirty Last.
+%	DIRTY LAST
 % Function gets the last Key of the Storage
 % As input function gets Name of storage as atom
 % There is no needs of wrapping in transaction, when using dirty_last
 % Returns Key, or throws Error
-%% @end
 %-----------------------------------------------------------------
 -spec dirty_last(Storage :: atom()) -> Key :: any() | no_return().
 dirty_last(Storage)->
   dlss_storage:dirty_last(Storage).
 
 %-----------------------------------------------------------------
-%% @doc	Next.
+%	NEXT
 % Function gets the next key of the Storage, from given Key
 % As input function gets Name of storage as atom and pivot Key
 % The function needs to be wrapped in transaction.
 % Returns RetKey, or '$end_of_table' or  throws Error
-%% @end
 %-----------------------------------------------------------------
 -spec next(Storage :: atom(), Key :: any()) -> RetKey :: any() | '$end_of_table' | no_return().
 next( Storage, Key )->
   dlss_storage:next( Storage, Key ).
 
 %-----------------------------------------------------------------
-%% @doc	Dirty Next.
+%	DIRTY NEXT
 % Function gets the next key of the Storage, from given Key
 % As input function gets Name of storage as atom and pivot Key
 % There is no needs of wrapping in transaction, when using dirty_next
 % Returns RetKey, or '$end_of_table' or  throws Error
-%% @end
 %-----------------------------------------------------------------
 -spec dirty_next(Storage :: atom(), Key :: any()) -> RetKey :: any() | '$end_of_table' | no_return().
 dirty_next(Storage,Key)->
   dlss_storage:dirty_next(Storage,Key).
 
 %-----------------------------------------------------------------
-%% @doc	Previous.
+%	PREVIOUS
 % Function gets the previous key of the Storage, from given Key
 % As input function gets Name of storage as atom and pivot Key
 % The function needs to be wrapped in transaction.
 % Returns RetKey, or '$end_of_table' or  throws Error
-%% @end
 %-----------------------------------------------------------------
 -spec prev(Storage :: atom(), Key :: any()) -> RetKey :: any() | '$end_of_table' | no_return().
 prev( Storage, Key )->
   dlss_storage:prev( Storage, Key ).
 
 %-----------------------------------------------------------------
-%% @doc	Dirty Previous.
+%	DIRTY PREVIOUS
 % Function gets the previous key of the Storage, from given Key
 % As input function gets Name of storage as atom and pivot Key
 % There is no needs of wrapping in transaction, when using dirty_previous
 % Returns RetKey, or '$end_of_table' or  throws Error
-%% @end
 %-----------------------------------------------------------------
 -spec dirty_prev(Storage :: atom(), Key :: any()) -> RetKey :: any() | '$end_of_table' | no_return().
 dirty_prev(Storage,Key)->

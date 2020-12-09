@@ -45,7 +45,11 @@
   storage_last/1,
   hog_parent/1,
   create_root_segment/1,
-  write_data_to_storage/1
+  write_data_to_storage/1,
+  storage_scan/1,
+  storage_scan_boundaries/1,
+  storage_scan_infinity/1,
+  storage_scan_deleted/1
 ]).
 
 
@@ -62,7 +66,11 @@ all()->
     storage_first,
     storage_last,
     hog_parent,
-    {group, add_root_segment}
+    {group, add_root_segment},
+    storage_scan,
+    storage_scan_boundaries,
+    storage_scan_infinity,
+    storage_scan_deleted
   ].
 
 groups()->
@@ -968,7 +976,133 @@ write_data_to_storage(_Config)->
    end || N <- lists:seq(1,200000)],
   ok.
 
+storage_scan(_Config) ->
+  ok = dlss_storage:add(storage1, ram),
+  ok = dlss_storage:spawn_segment(dlss_storage1_1, 5),
+
+  ?assertEqual(
+    [dlss_storage1_1, dlss_storage1_2],
+    dlss_storage:get_segments(storage1)
+  ),
+
+  [ ok = dlss_segment:dirty_write(dlss_storage1_1, X, new_value) || X <- lists:seq(1, 5) ],
+  [ ok = dlss_segment:dirty_write(dlss_storage1_2, X, old_value) || X <- lists:seq(4, 7) ],
+
+  ?assertEqual(
+    [{3, new_value}, {4, new_value}, {5, new_value}, {6, old_value}],
+    dlss_storage:scan_interval(storage1, 3, 7, _Limit = 4)
+  ),
+
+  ?assertEqual([{3, new_value}], dlss_storage:scan_interval(storage1, 3, 3)),
+
+  dlss_storage:remove(storage1),
+  []=dlss_storage:get_storages(),
+  []=dlss_storage:get_segments(),
+
+  ok.
+
+storage_scan_infinity(_Config) ->
+  ok = dlss_storage:add(storage1, ram),
+  ?assertEqual(
+    [dlss_storage1_1],
+    dlss_storage:get_segments(storage1)
+  ),
+
+  % Put value into the storage
+  [ ok = dlss_segment:dirty_write(dlss_storage1_1, X, value) || X <- lists:seq(1, 3) ],
+
+  ?assertEqual(
+    [{1, value}, {2, value}, {3, value}],
+    dlss_storage:scan_interval(storage1, '$start_of_table', '$end_of_table', 10)
+  ),
+
+   ?assertEqual(
+    [{1, value}, {2, value}],
+    dlss_storage:scan_interval(storage1, '$start_of_table', 2, 10)
+  ),
+
+  ?assertEqual(
+    [{3, value}],
+    dlss_storage:scan_interval(storage1, 3, '$end_of_table', 10)
+  ),
+
+  dlss_storage:remove(storage1),
+  []=dlss_storage:get_storages(),
+  []=dlss_storage:get_segments(),
+
+  ok.
+
+storage_scan_boundaries(_Config) ->
+  ok = dlss_storage:add(storage1, ram),
+  ok = dlss_storage:spawn_segment(dlss_storage1_1, 5),
+  ok = dlss_storage:spawn_segment(dlss_storage1_1, 15),
+  ok = dlss_storage:spawn_segment(dlss_storage1_1, 25),
+  ?assertEqual(
+    [dlss_storage1_1, dlss_storage1_2, dlss_storage1_3, dlss_storage1_4],
+    dlss_storage:get_segments(storage1)
+  ),
+
+  [ ok = dlss_segment:dirty_write(dlss_storage1_1, X, value1) || X <- lists:seq(1, 3) ],
+  [ ok = dlss_segment:dirty_write(dlss_storage1_2, X, value2) || X <- lists:seq(5, 12) ],
+  [ ok = dlss_segment:dirty_write(dlss_storage1_3, X, value3) || X <- lists:seq(15, 20) ],
+  [ ok = dlss_segment:dirty_write(dlss_storage1_4, X, value4) || X <- lists:seq(25, 26) ],
+
+  ?assertEqual(
+    [{10, value2}, {11, value2}, {12, value2}, {15, value3}, {16, value3}, {17, value3}],
+    dlss_storage:scan_interval(storage1, 10, 17, 100)
+  ),
+
+  StartOfTable =
+    [{I,value1}||I<-lists:seq(1,3)] ++
+    [{I,value2}||I<-lists:seq(5,12)] ++
+    [{I,value3}||I<-lists:seq(15,20)],
+  ?assertEqual(
+    StartOfTable,
+    dlss_storage:scan_interval(storage1, '$start_of_table', 20, 100)
+  ),
+
+  EndOfTable =
+    [{I,value2}||I<-lists:seq(5,12)] ++
+    [{I,value3}||I<-lists:seq(15,20)]++
+    [{I,value4}||I<-lists:seq(25,26)],
+  ?assertEqual(
+    EndOfTable,
+    dlss_storage:scan_interval(storage1, 5, '$end_of_table', 100)
+  ),
 
 
+  dlss_storage:remove(storage1),
+  []=dlss_storage:get_storages(),
+  []=dlss_storage:get_segments(),
 
+  ok.
 
+storage_scan_deleted(_Config) ->
+  ok = dlss_storage:add(storage1, ram),
+  ok = dlss_storage:spawn_segment(dlss_storage1_1, 3),
+
+  ?assertEqual(
+    [dlss_storage1_1, dlss_storage1_2],
+    dlss_storage:get_segments(storage1)
+  ),
+
+  [ ok = dlss_segment:dirty_write(dlss_storage1_1, X, value) || X <- lists:seq(1, 5) ],
+  ok = dlss_segment:dirty_write(dlss_storage1_2, 4, old_value),
+
+  ?assertEqual(
+    [{3, value}, {4, value}, {5, value}],
+    dlss_storage:scan_interval(storage1, 3, 7, _Limit = 4)
+  ),
+
+  ok = dlss_storage:dirty_delete(storage1, 4),
+
+  ?assertEqual(
+    [{3, value}, {5, value}],
+    dlss_storage:scan_interval(storage1, 3, 7, _Limit = 4)
+  ),
+
+  dlss_storage:remove(storage1),
+  []=dlss_storage:get_storages(),
+  []=dlss_storage:get_segments(),
+
+  ok.

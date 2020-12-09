@@ -33,9 +33,10 @@
   new_root_segment/1,
   root_segment/1,
   segment_params/1,
-  add/2,
+  add/2,add/3,
   remove/1,
   get_type/1,
+  is_local/1,
   spawn_segment/1,spawn_segment/2,
   hog_parent/1,
   absorb_segment/1,
@@ -49,7 +50,8 @@
 -export([
   read/2,read/3,dirty_read/2,
   write/3,write/4,dirty_write/3,
-  delete/2,delete/3,dirty_delete/2
+  delete/2,delete/3,dirty_delete/2,
+  scan_interval/3, scan_interval/4
 ]).
 
 %%=================================================================
@@ -116,6 +118,11 @@ get_type(Storage)->
   Root=root_segment(Storage),
   #{ type:= T }=dlss_segment:get_info(Root),
   T.
+
+is_local(Storage)->
+  Root=root_segment(Storage),
+  #{ local:= IsLocal }=dlss_segment:get_info(Root),
+  IsLocal.
 
 segment_params(Name)->
   case segment_by_name(Name) of
@@ -546,6 +553,124 @@ delete(Storage, Key, Lock)->
   write( Storage, Key, '@deleted@', Lock ).
 dirty_delete(Storage, Key)->
   dirty_write( Storage, Key, '@deleted@' ).
+
+%-------------Interval scan----------------------------------------------
+scan_interval(Storage, StartKey, EndKey) ->
+  scan_interval(Storage, StartKey, EndKey, infinity).
+
+scan_interval(_Storage, StartKey, EndKey, _Limit)
+    when StartKey > EndKey andalso
+        (StartKey =/= '$start_of_table' andalso StartKey =/= '$end_of_table') ->
+  [];
+scan_interval(Storage, StartKey, EndKey, _Limit)
+    when StartKey == EndKey andalso
+        (StartKey =/= '$start_of_table' andalso StartKey =/= '$end_of_table') ->
+  case dirty_read(Storage, StartKey) of
+    not_found ->
+      [];
+    Value ->
+      [{StartKey, Value}]
+  end;
+scan_interval(Storage, StartKey, EndKey, Limit) ->
+  Segments = find_all_segments(Storage, StartKey, EndKey),
+  SortedSegments = lists:sort(fun level_sort_fun/2, Segments),
+  SortedValues = lists:map(
+    fun([S, _Level]) -> 
+      dlss_segment:dirty_scan(S, StartKey, EndKey, Limit)
+    end,
+    SortedSegments
+  ),
+  Full = lists:foldl(
+    fun(Values, OrddictAcc) ->
+      lists:foldl(
+        fun
+          ({DeletedKey, '@deleted@'}, DictIn) ->
+            orddict:erase(DeletedKey, DictIn);
+          ({Key, Value}, DictIn) ->
+            orddict:store(Key, Value, DictIn)
+        end,
+        OrddictAcc,
+        Values
+      )
+    end,
+    orddict:new(),
+    SortedValues
+  ),
+  limit_output(orddict:to_list(Full), Limit).
+
+limit_output(Values, infinity) ->
+  Values;
+limit_output(Values, Limit) when Limit > 0 ->
+  {First, _} = lists:split(min(Limit, length(Values)), Values),
+  First.
+
+level_sort_fun([_, Level0], [_, Level1]) ->
+  Level1 < Level0.
+
+find_all_segments(Storage, StartKey, EndKey) ->
+  MatchHead = #kv{key = #sgm{str=Storage, key='$2', lvl='$3'}, value='$1'},
+  Result = ['$1', '$2', '$3'],
+  MatchSpec = [{MatchHead, [], [Result]}],
+  AllSegments = mnesia:dirty_select(dlss_schema, MatchSpec),
+  SegmentsPerLvl = lists:foldl(
+    fun([SegmentName, Key, Lvl], Acc) ->
+        maps:update_with(
+          Lvl,
+          fun(ExistingSet) -> ordsets:add_element({SegmentName, Key}, ExistingSet) end,
+          ordsets:from_list([{SegmentName, Key}]),
+          Acc
+        )
+    end,
+    #{},
+    AllSegments
+  ),
+  maps:fold(
+    fun(Lvl, OrdSet, AccIn) ->
+      OrderedKeys = ordsets:to_list(OrdSet),
+      FilteredSegments = filter_segments(OrderedKeys, {StartKey}, {EndKey}, Lvl),
+      lists:append(FilteredSegments, AccIn)
+    end,
+    [],
+    SegmentsPerLvl
+  ).
+
+filter_segments([{Segment, _Key} | Rest], {'$start_of_table'}, EndKey, Lvl) ->
+  do_filter_segments(Rest, {'$start_of_table'}, EndKey, [[Segment, Lvl]], Lvl);
+filter_segments(Segments, StartKey, EndKey, Lvl) ->
+  do_filter_segments(Segments, StartKey, EndKey, [], Lvl).
+  
+do_filter_segments([{Segment, _LastKey}], _, {'$end_of_table'}, AccIn, Lvl) ->
+  lists:reverse([[Segment, Lvl] | AccIn]);
+do_filter_segments([{Segment, LastKey}], _, EndKey, AccIn, Lvl) 
+    when EndKey >= LastKey ->
+  lists:reverse([[Segment, Lvl] | AccIn]);
+do_filter_segments([_], _, _, AccIn, _) ->
+  lists:reverse(AccIn);
+do_filter_segments([{FSeg, _} | RestKeys], {'$start_of_table'}, {'$end_of_table'}, AccIn, Lvl) ->
+  NewAcc = [[FSeg, Lvl] | AccIn],
+  do_filter_segments(RestKeys, {'$start_of_table'}, {'$end_of_table'}, NewAcc, Lvl);
+do_filter_segments([{FSeg, FKey}, {SSeg, SKey} | RestKeys], {'$start_of_table'}, EndKey, AccIn, Lvl)
+    when EndKey >= FKey ->
+  NewAcc = [[FSeg, Lvl] | AccIn],
+  do_filter_segments([{SSeg, SKey} | RestKeys], {'$start_of_table'}, EndKey, NewAcc, Lvl);
+do_filter_segments(_, {'$start_of_table'}, _EndKey, AccIn, _Lvl) ->
+  lists:reverse(AccIn);
+do_filter_segments([_, {SSeg, SKey} | RestKeys], StartKey, {'$end_of_table'}, AccIn, Lvl)
+    when StartKey >= SKey ->
+  do_filter_segments([{SSeg, SKey} | RestKeys], StartKey, {'$end_of_table'}, AccIn, Lvl);
+do_filter_segments([{FSeg, _FKey} | RestKeys], StartKey, {'$end_of_table'}, AccIn, Lvl) ->
+  NewAcc = [[FSeg, Lvl] | AccIn],
+  do_filter_segments(RestKeys, StartKey, {'$end_of_table'}, NewAcc, Lvl);
+do_filter_segments([{FSeg, FKey}, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl)
+    when StartKey =< SKey andalso StartKey >= FKey ->
+  NewAcc = [[FSeg, Lvl] | AccIn],
+  do_filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, NewAcc, Lvl);
+do_filter_segments([{FSeg, FKey}, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl)
+    when EndKey =< SKey andalso EndKey >= FKey ->
+  NewAcc = [[FSeg, Lvl] | AccIn],
+  do_filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, NewAcc, Lvl);
+do_filter_segments([_, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl) ->
+  do_filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl).
 
 %%=================================================================
 %%	Iterate

@@ -29,6 +29,7 @@
   init_backend/0,init_backend/1,
   add_node/1,
   remove_node/1,
+  get_nodes/0,
   create_segment/2,
   delete_segment/1,
   transaction/1,sync_transaction/1,
@@ -68,13 +69,18 @@ start_link()->
 % Add a new node to the schema
 add_node(Node)->
   case mnesia:change_config(extra_db_nodes,[Node]) of
-    []->false;
-    _->true
+    {ok,Nodes} when is_list(Nodes)->
+      lists:member(Node,Nodes);
+    _->
+      false
   end.
 
 % Remove a node from the schema
 remove_node(Node)->
   mnesia:del_table_copy(schema,Node).
+
+get_nodes()->
+  mnesia:system_info(db_nodes).
 
 create_segment(Name,Params)->
   Attributes = table_attributes(Params),
@@ -156,6 +162,7 @@ handle_info(Message,State)->
 
 terminate(Reason,_State)->
   ?LOGINFO("terminating backend reason ~p",[Reason]),
+  stop(),
   ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -271,7 +278,10 @@ create_schema()->
   ]).
 
 stop()->
-  mnesia:stop().
+  % TODO. Why doesn't it stop in the context of the calling process?
+  spawn_link(fun()->
+    mnesia:stop()
+  end).
 
 
 wait_segments(Timeout)->
@@ -325,7 +335,11 @@ on_mnesia_event({inconsistent_database, Context, Node})->
 
 on_mnesia_event({mnesia_down, Node})->
   ?LOGWARNING( "~p node is down", [Node] ),
-  dlss_node:set_status( Node, down );
+  try
+    dlss_node:set_status( Node, down )
+  catch
+    _:_->?LOGWARNING("unable to set node status to 'down'")
+  end;
 on_mnesia_event({mnesia_up, Node})->
   ?LOGINFO( "~p node is up", [Node] );
 

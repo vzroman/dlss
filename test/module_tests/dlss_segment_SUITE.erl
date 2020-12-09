@@ -35,7 +35,8 @@
 -export([
   test_read/1,
   test_order/1,
-  test_median/1
+  test_median/1,
+  test_scan/1
 ]).
 
 
@@ -43,7 +44,8 @@ all()->
   [
     test_read,
     test_order,
-    test_median
+    test_median,
+    test_scan
   ].
 
 groups()->
@@ -158,6 +160,83 @@ test_median(Config)->
 
 
   {ok, { 10, 7 }} = dlss_segment:get_split_key( Segment, ItemSize * 7 ),
+
+  ok.
+
+test_scan(_Config)->
+
+  dlss:add_storage(ram_test, ram),
+  [Ram] = dlss:get_segments(ram_test),
+
+  dlss:add_storage(ramdisc_test, ramdisc),
+  [RamDisc] = dlss:get_segments(ramdisc_test),
+
+  dlss:add_storage(disc_test, disc),
+  [Disc] = dlss:get_segments(disc_test),
+
+  % Fill in the storage
+  Count = 23456,
+  [ [ dlss_segment:dirty_write( S, {key,I}, {value,I} ) || S<-[Ram,RamDisc,Disc] ]||I<-lists:seq(1,Count) ],
+
+  %--------No items---------------
+  R0= [ ],
+  % Including
+  R0 = dlss_segment:dirty_scan( Ram, [], '$end_of_table' ),
+  R0 = dlss_segment:dirty_scan( RamDisc, [], '$end_of_table' ),
+  R0 = dlss_segment:dirty_scan( Disc, [], '$end_of_table' ),
+  % Limit
+  R0 = dlss_segment:dirty_scan( Ram, [], 1 ),
+  R0 = dlss_segment:dirty_scan( RamDisc, [], 1 ),
+  R0 = dlss_segment:dirty_scan( Disc, [], 1 ),
+
+  %---------Single item---------------
+  R1= [ { {key,1}, {value,1}} ],
+  % Including
+  R1 = dlss_segment:dirty_scan( Ram, {key,0}, {key,1} ),
+  R1 = dlss_segment:dirty_scan( RamDisc, {key,0}, {key,1} ),
+  R1 = dlss_segment:dirty_scan( Disc, {key,0}, {key,1} ),
+  % Edge
+  R1 = dlss_segment:dirty_scan( Ram, {key,1}, {key,1} ),
+  R1 = dlss_segment:dirty_scan( RamDisc, {key,1}, {key,1} ),
+  R1 = dlss_segment:dirty_scan( Disc, {key,1}, {key,1} ),
+  % Limit
+  R1 = dlss_segment:dirty_scan( Ram, '$start_of_table', '$end_of_table', 1 ),
+  R1 = dlss_segment:dirty_scan( RamDisc, '$start_of_table', '$end_of_table', 1 ),
+  R1 = dlss_segment:dirty_scan( Disc, '$start_of_table', '$end_of_table', 1 ),
+
+  %--------Less than the minimal batch-----------
+  R123= [ {{key,I}, {value,I}} || I<- lists:seq(1,123)],
+  % Including
+  R123 = dlss_segment:dirty_scan( Ram, {key,0}, {key,123} ),
+  R123 = dlss_segment:dirty_scan( RamDisc, {key,0}, {key,123} ),
+  R123 = dlss_segment:dirty_scan( Disc, {key,0}, {key,123} ),
+  % Edge
+  R123 = dlss_segment:dirty_scan( Ram, {key,1}, {key,123} ),
+  R123 = dlss_segment:dirty_scan( RamDisc, {key,1}, {key,123} ),
+  R123 = dlss_segment:dirty_scan( Disc, {key,1}, {key,123} ),
+  % Limit
+  R123 = dlss_segment:dirty_scan( Ram, '$start_of_table', '$end_of_table', 123 ),
+  R123 = dlss_segment:dirty_scan( RamDisc, '$start_of_table', '$end_of_table', 123 ),
+  R123 = dlss_segment:dirty_scan( Disc, '$start_of_table', '$end_of_table', 123 ),
+
+  %--------More than the minimal batch-----------
+  R2345= [ {{key,I}, {value,I}} || I<- lists:seq(123,2345)],
+  % By key
+  R2345 = dlss_segment:dirty_scan( Ram, {key,123}, {key,2345} ),
+  R2345 = dlss_segment:dirty_scan( RamDisc, {key,123}, {key,2345} ),
+  R2345 = dlss_segment:dirty_scan( Disc, {key,123}, {key,2345} ),
+  % Limit
+  R2345 = dlss_segment:dirty_scan( Ram, {key,123}, '$end_of_table', 2345 - 123 + 1 ),
+  R2345 = dlss_segment:dirty_scan( RamDisc, {key,123}, '$end_of_table', 2345 - 123 + 1 ),
+  R2345 = dlss_segment:dirty_scan( Disc, {key,123}, '$end_of_table', 2345 - 123 + 1 ),
+  % Infinity
+  R2345 = dlss_segment:dirty_scan( Ram, {key,123}, {key,2345}, infinity ),
+  R2345 = dlss_segment:dirty_scan( RamDisc, {key,123}, {key,2345}, infinity ),
+  R2345 = dlss_segment:dirty_scan( Disc, {key,123}, {key,2345}, infinity ),
+
+  dlss:remove_storage(ram_test),
+  dlss:remove_storage(ramdisc_test),
+  dlss:remove_storage(disc_test),
 
   ok.
 
