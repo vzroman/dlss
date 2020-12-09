@@ -16,11 +16,7 @@
 <h2><a name="types">Data Types</a></h2>
 
 <h3 class="typedecl"><a name="type-lock_type">lock_type()</a></h3>
-<p><tt>lock_type() = <a href="#type-write_locks">write_locks()</a> | <a href="#type-read_locks">read_locks()</a></tt></p>
-
-
-<h3 class="typedecl"><a name="type-read_locks">read_locks()</a></h3>
-<p><tt>read_locks() = read</tt></p>
+<p><tt>lock_type() = write | sticky_write | read | none</tt></p>
 
 
 <h3 class="typedecl"><a name="type-segment_info">segment_info()</a></h3>
@@ -29,10 +25,6 @@
 
 <h3 class="typedecl"><a name="type-storage_type">storage_type()</a></h3>
 <p><tt>storage_type() = ram | ramdisc | disc</tt></p>
-
-
-<h3 class="typedecl"><a name="type-write_locks">write_locks()</a></h3>
-<p><tt>write_locks() = write | sticky_write</tt></p>
 
 
 <h2><a name="index">Function Index</a></h2>
@@ -50,11 +42,20 @@
 <tr><td valign="top"><a href="#dirty_read-2">dirty_read/2</a></td><td>Dirty Read.</td></tr>
 <tr><td valign="top"><a href="#dirty_write-3">dirty_write/3</a></td><td>Dirty Write.</td></tr>
 <tr><td valign="top"><a href="#first-1">first/1</a></td><td>First.</td></tr>
+<tr><td valign="top"><a href="#get_nodes-0">get_nodes/0</a></td><td>Get list of all dlss nodes
+ Returns
+ [node1,node2 ..]
+ where the type of a name of a node is an atom.</td></tr>
+<tr><td valign="top"><a href="#get_ready_nodes-0">get_ready_nodes/0</a></td><td>Get list of ready dlss nodes
+ Returns
+ [node1,node2 ..]
+ where the type of a name of a node is an atom.</td></tr>
 <tr><td valign="top"><a href="#get_segment_info-1">get_segment_info/1</a></td><td> Get segment info.</td></tr>
 <tr><td valign="top"><a href="#get_segments-0">get_segments/0</a></td><td>Get list of all dlss segments.</td></tr>
 <tr><td valign="top"><a href="#get_segments-1">get_segments/1</a></td><td>Get list of dlss segments for the Storage.</td></tr>
 <tr><td valign="top"><a href="#get_storage_type-1">get_storage_type/1</a></td><td>Get storage type.</td></tr>
 <tr><td valign="top"><a href="#get_storages-0">get_storages/0</a></td><td>Get list of all dlss storages.</td></tr>
+<tr><td valign="top"><a href="#is_local_storage-1">is_local_storage/1</a></td><td>Check if the storage has local only content.</td></tr>
 <tr><td valign="top"><a href="#last-1">last/1</a></td><td>Last.</td></tr>
 <tr><td valign="top"><a href="#next-2">next/2</a></td><td>Next.</td></tr>
 <tr><td valign="top"><a href="#prev-2">prev/2</a></td><td>Previous.</td></tr>
@@ -63,6 +64,9 @@
 <tr><td valign="top"><a href="#remove_node-1">remove_node/1</a></td><td> Remove a node from the schema.</td></tr>
 <tr><td valign="top"><a href="#remove_segment_copy-2">remove_segment_copy/2</a></td><td>Remove segment_copy from node.</td></tr>
 <tr><td valign="top"><a href="#remove_storage-1">remove_storage/1</a></td><td>	Remove storage.</td></tr>
+<tr><td valign="top"><a href="#stop-0">stop/0</a></td><td>
+	Stop the DLSS
+ Returns ok, or { error, Reason}.</td></tr>
 <tr><td valign="top"><a href="#sync_transaction-1">sync_transaction/1</a></td><td>Wrap the procedure into the ACID transaction.</td></tr>
 <tr><td valign="top"><a href="#transaction-1">transaction/1</a></td><td>Wrap the procedure into the ACID transaction.</td></tr>
 <tr><td valign="top"><a href="#write-3">write/3</a></td><td>Write.</td></tr>
@@ -124,7 +128,7 @@
 
 <h3 class="function"><a name="delete-3">delete/3</a></h3>
 <div class="spec">
-<p><tt>delete(Storage::atom(), Key::any(), Lock::<a href="#type-write_locks">write_locks()</a>) -&gt; ok | no_return()</tt><br></p>
+<p><tt>delete(Storage::atom(), Key::any(), Lock::<a href="#type-lock_type">lock_type()</a>) -&gt; ok | no_return()</tt><br></p>
 <p> </p>
 </div><p>Delete.
  Function updates the Value to the '@deleted@' in the Storage with Key
@@ -212,6 +216,24 @@
  The function needs to be wrapped in transaction.
  Returns Key, or throws Error</p>
 
+<h3 class="function"><a name="get_nodes-0">get_nodes/0</a></h3>
+<div class="spec">
+<p><tt>get_nodes() -&gt; ListOfNode::list()</tt><br></p>
+<p> </p>
+</div><p>Get list of all dlss nodes
+ Returns
+ [node1,node2 ..]
+ where the type of a name of a node is an atom</p>
+
+<h3 class="function"><a name="get_ready_nodes-0">get_ready_nodes/0</a></h3>
+<div class="spec">
+<p><tt>get_ready_nodes() -&gt; ListOfNode::list()</tt><br></p>
+<p> </p>
+</div><p>Get list of ready dlss nodes
+ Returns
+ [node1,node2 ..]
+ where the type of a name of a node is an atom</p>
+
 <h3 class="function"><a name="get_segment_info-1">get_segment_info/1</a></h3>
 <div class="spec">
 <p><tt>get_segment_info(Segment::atom()) -&gt; SegmentInfo::<a href="#type-segment_info">segment_info()</a> | no_return()</tt><br></p>
@@ -261,6 +283,12 @@
  Returns:
  [storage1,storage2 ..]
  where the type of name of storage is the atom</p>
+
+<h3 class="function"><a name="is_local_storage-1">is_local_storage/1</a></h3>
+<div class="spec">
+<p><tt>is_local_storage(Storage::atom()) -&gt; boolean() | no_return()</tt><br></p>
+<p> </p>
+</div><p>Check if the storage has local only content</p>
 
 <h3 class="function"><a name="last-1">last/1</a></h3>
 <div class="spec">
@@ -337,6 +365,14 @@
  As input function gets Name of storage as atom
  Returns ok, or throws Error</p>
 
+<h3 class="function"><a name="stop-0">stop/0</a></h3>
+<div class="spec">
+<p><tt>stop() -&gt; ok | {error, Reason::any()}</tt><br></p>
+<p> </p>
+</div><p>
+	Stop the DLSS
+ Returns ok, or { error, Reason}.</p>
+
 <h3 class="function"><a name="sync_transaction-1">sync_transaction/1</a></h3>
 <div class="spec">
 <p><tt>sync_transaction(Fun::function()) -&gt; {ok, FunResult::any()} | {error, Reason::any()}</tt><br></p>
@@ -363,7 +399,7 @@
 
 <h3 class="function"><a name="write-4">write/4</a></h3>
 <div class="spec">
-<p><tt>write(Storage::atom(), Key::any(), Value::any(), Lock::<a href="#type-write_locks">write_locks()</a>) -&gt; ok | no_return()</tt><br></p>
+<p><tt>write(Storage::atom(), Key::any(), Value::any(), Lock::<a href="#type-lock_type">lock_type()</a>) -&gt; ok | no_return()</tt><br></p>
 <p> </p>
 </div><p>Write.
  Function writes the Value to the Storage with Key and write_locks.
