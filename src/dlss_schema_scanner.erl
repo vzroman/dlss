@@ -134,13 +134,19 @@ get_supervised_segemnts(Node)->
   % Filter segment for which the Node is the master
   Filter=
     fun(S)->
-      #{ nodes := Nodes } = dlss_segment:get_info(S),
-      case Nodes -- ( Nodes -- ReadyNodes ) of
-        [ Node|_ ] ->
-          % If the Node is the first node in the list of hosting nodes for the segment
-          % then the Node is the master and should supervise the segment
-          true;
-        _ -> false
+      case dlss_segment:get_info(S) of
+        #{ local:=true }->
+          % Local only segments are never supervised (split).
+          % IMPORTANT! Local only storage can have only root segment
+          false;
+        #{ nodes := Nodes }->
+          case Nodes -- ( Nodes -- ReadyNodes ) of
+            [ Node|_ ] ->
+              % If the Node is the first node in the list of hosting nodes for the segment
+              % then the Node is the master and should supervise the segment
+              true;
+            _ -> false
+          end
       end
     end,
   [ S || S <- All, Filter(S) ].

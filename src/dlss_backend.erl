@@ -214,6 +214,9 @@ init_backend(#{
           ?LOGINFO("waiting for the schema from the master node..."),
           wait_for_schema(),
 
+          ?LOGINFO("add local only segments"),
+          add_local_only_segments(),
+
           ?LOGINFO("waiting for segemnts availability..."),
           wait_segments(StartTimeout);
         true ->
@@ -242,6 +245,9 @@ init_backend(#{
 
           ?LOGINFO("waiting for schema availability..."),
           mnesia:wait_for_tables([schema,dlss_schema],?WAIT_SCHEMA_TIMEOUT),
+
+          ?LOGINFO("add local only segments"),
+          add_local_only_segments(),
 
           ?LOGINFO("waiting for segemnts availability..."),
           wait_segments(StartTimeout)
@@ -316,6 +322,24 @@ wait_for_schema()->
       ?LOGERROR("unable to copy dlss schema ~p",[Reason2]),
       ?ERROR(Reason2)
   end.
+
+add_local_only_segments()->
+  [ case dlss_segment:get_info(S) of
+      #{local:=true,nodes:=Nodes}->
+        case lists:member(node(),Nodes) of
+          false->
+            case dlss_segment:add_node(S,node()) of
+              ok->ok;
+              {error,Error}->
+                ?LOGERROR("unable to copy local only segment ~p, error ~p",[S,Error]),
+                ?ERROR(Error)
+            end;
+          _->ok
+        end;
+      _->ok
+    end|| S <- dlss_storage:get_segments()],
+  ok.
+
 
 wait_for_master()->
   Node=node(),
