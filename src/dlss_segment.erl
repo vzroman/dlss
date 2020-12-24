@@ -401,7 +401,7 @@ loop( Segment, #{ storage := Storage, level := Level } )->
     [] ->
       % The segment is at the lowest level.
       % Check its size and if it has reached the limit split the segment
-      Size = get_size( Segment ) / ?MB, % MB
+      Size = round (get_size( Segment ) / ?MB), % MB
       Limit = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT),
       if
         Size >= Limit ->
@@ -433,7 +433,9 @@ loop( Segment, #{ storage := Storage, level := Level } )->
         true ->
           % The segment has been absorbed by the children
           ?LOGINFO("the segment ~p in storage ~p is aready to be absorbed"),
-          dlss_storage:absorb_segment( Segment )
+          dlss_storage:absorb_segment( Segment );
+        _->
+          ok
       end
   end.
 
