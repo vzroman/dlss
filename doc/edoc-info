@@ -1,2 +1,4 @@
 %% encoding: UTF-8
-{modules,[dlss]}.
+{application,dlss}.
+{modules,[dlss,dlss_app,dlss_backend,dlss_node,dlss_schema_scanner,
+          dlss_schema_sup,dlss_segment,dlss_storage,dlss_sup]}.

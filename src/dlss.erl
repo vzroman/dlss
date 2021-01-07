@@ -30,6 +30,7 @@
   is_local_storage/1,
   get_segments/0,get_segments/1,
   get_segment_info/1,
+  get_segment_size/1,
   add_storage/2,add_storage/3,
   add_segment_copy/2, remove_segment_copy/2,
   remove_storage/1,
@@ -164,6 +165,16 @@ get_segments(Storage)->
 -spec get_segment_info(Segment :: atom()) -> SegmentInfo :: segment_info() | no_return().
 get_segment_info(Segment) ->
   dlss_segment:get_info(Segment).
+
+%-----------------------------------------------------------------
+%% @doc  Get segment size.
+% Returns number of bytes occupied by the segment
+% or throws Error
+%% @end
+%-----------------------------------------------------------------
+-spec get_segment_size(Segment :: atom()) -> Size :: integer() | no_return().
+get_segment_size(Segment) ->
+  dlss_segment:get_size(Segment).
 
 %-----------------------------------------------------------------
 %% @doc 	Add storage.
