@@ -54,6 +54,7 @@
 <tr><td valign="top"><a href="#get_segment_size-1">get_segment_size/1</a></td><td> Get segment size.</td></tr>
 <tr><td valign="top"><a href="#get_segments-0">get_segments/0</a></td><td>Get list of all dlss segments.</td></tr>
 <tr><td valign="top"><a href="#get_segments-1">get_segments/1</a></td><td>Get list of dlss segments for the Storage.</td></tr>
+<tr><td valign="top"><a href="#get_storage_root-1">get_storage_root/1</a></td><td>Get storage root segment.</td></tr>
 <tr><td valign="top"><a href="#get_storage_type-1">get_storage_type/1</a></td><td>Get storage type.</td></tr>
 <tr><td valign="top"><a href="#get_storages-0">get_storages/0</a></td><td>Get list of all dlss storages.</td></tr>
 <tr><td valign="top"><a href="#is_local_storage-1">is_local_storage/1</a></td><td>Check if the storage has local only content.</td></tr>
@@ -255,6 +256,12 @@
  [dlss_storage1_1,dlss_storage1_2,dlss_storage1_3 ..]
  where the element of list is the name of segments of storage storage1
  and has type of atom</p>
+
+<h3 class="function"><a name="get_storage_root-1">get_storage_root/1</a></h3>
+<div class="spec">
+<p><tt>get_storage_root(Storage::atom()) -&gt; <a href="#type-storage_type">storage_type()</a> | no_return()</tt><br></p>
+</div><p>Get storage root segment.
+  Returns: the name of the current root segment of the storage.</p>
 
 <h3 class="function"><a name="get_storage_type-1">get_storage_type/1</a></h3>
 <div class="spec">

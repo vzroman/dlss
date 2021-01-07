@@ -27,6 +27,7 @@
   get_ready_nodes/0,
   get_storages/0,
   get_storage_type/1,
+  get_storage_root/1,
   is_local_storage/1,
   get_segments/0,get_segments/1,
   get_segment_info/1,
@@ -119,6 +120,14 @@ get_storages()->
 get_storage_type(Storage) ->
   dlss_storage:get_type(Storage).
 
+%-----------------------------------------------------------------
+%% @doc	Get storage root segment.
+%% Returns: the name of the current root segment of the storage.
+%% @end
+%-----------------------------------------------------------------
+-spec get_storage_root(Storage :: atom()) -> storage_type() | no_return().
+get_storage_root(Storage) ->
+  dlss_storage:root_segment(Storage).
 %-----------------------------------------------------------------
 %% @doc Check if the storage has local only content
 %% @end
