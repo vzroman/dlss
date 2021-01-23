@@ -58,7 +58,7 @@ init([])->
 
   ?LOGINFO("starting schema scanner ~p",[self()]),
 
-  Cycle=?ENV(segment_scan_cycle, ?DEFAULT_SCAN_CYCLE),
+  Cycle=?ENV(supervisor_scan_cycle, ?DEFAULT_SCAN_CYCLE),
 
   % Enter the loop
   self()!loop,

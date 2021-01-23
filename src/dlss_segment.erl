@@ -290,26 +290,35 @@ get_size(Segment)->
       erlang:system_info(wordsize) * Memory
   end.
 
-record_size(Term) ->
-  size(term_to_binary(Term)).
-
 %----------Calculate the size (bytes) occupied by the segment-------
 get_split_key(Segment,Size)->
-  get_split_key( mnesia:dirty_first(Segment), Segment, Size, 0).
-get_split_key( '$end_of_table' , _Segment, _Size, Acc)->
-  { error, { total_size, Acc } };
-get_split_key( Key , Segment, Size, Acc) when Acc < Size->
-  Acc1=
-    case mnesia:dirty_read(Segment,Key) of
-      [ Item ] -> Acc + record_size( Item );
-      _ -> Acc
-    end,
-  get_split_key( mnesia:dirty_next( Segment, Key ), Segment, Size, Acc1 );
-get_split_key( Key , _Segment, _Size, _Acc)->
-  % If we are here then the Acc is bigger than the Size.
-  % It means we reached the requested size limit and the Key
-  % is the sought key
-  {ok, Key}.
+  get_split_key( Segment, '$start_of_table' , Size, 0).
+get_split_key( Segment, From, Size, Acc)->
+  Rows = dlss_segment:dirty_scan(Segment,From,'$end_of_table',?MAX_SCAN_INTERVAL_BATCH),
+  case split_rows(Rows,Size,Acc) of
+    {stop,Key}-> {ok,Key};
+    Acc1->
+      if
+        length(Rows)>=?MAX_SCAN_INTERVAL_BATCH ->
+          {Last,_}=lists:last(Rows),
+          case mnesia:dirty_next(Segment,Last) of
+            '$end_of_table'->
+              { error, { total_size, Acc1 } };
+            Next->
+              get_split_key( Segment, Next, Size, Acc1 )
+          end;
+        true ->
+          { error, { total_size, Acc } }
+      end
+  end.
+
+split_rows([{K,_V}|_Rest],Size,Acc) when Acc>=Size ->
+  {stop,K};
+split_rows([{K,V}|Rest],Size,Acc) ->
+  S = size(term_to_binary(#kv{key = K,value = V})),
+  split_rows(Rest,Size,Acc+S);
+split_rows([],_Size,Acc)->
+  Acc.
 
 %%=================================================================
 %%	API
@@ -405,9 +414,10 @@ loop( Segment, #{ storage := Storage, level := Level } )->
       Limit = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT),
       if
         Size >= Limit ->
-          ?LOGINFO("the segment ~p in storage ~p reached the limit, size ~p",[ Segment, Storage, Size ]),
+          ?LOGINFO("the segment ~p in storage ~p reached the limit, size ~p, calculating the median...",[ Segment, Storage, Size ]),
           % Calculate the median key
-          { ok, Median } = get_split_key( Segment, Size div 2 ),
+          { ok, Median } = get_split_key( Segment, (Size * ?MB) / 2 ),
+          ?LOGINFO("the segment ~p in storage ~p is to be split by median ~p",[ Segment, Storage, Median ]),
           % First create the right segment, then create the left segment.
           % We need the right segment first because if there is no next sibling the left
           % segment can hog not its keys while the right is starting
@@ -419,7 +429,7 @@ loop( Segment, #{ storage := Storage, level := Level } )->
             Level > 1->
               % The segment is below the desired level. To take place in upper level it
               % must hog its parent
-              ok;
+              dlss_storage:hog_parent(Segment);
             true ->
               % the segment is at the respectable level and is not overwhelmed.
               % This is a stable state

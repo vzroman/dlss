@@ -22,6 +22,8 @@
 
 -record(sgm,{str,key,lvl}).
 
+-define(BATCH_SIZE,1000).
+
 %%=================================================================
 %%	STORAGE SERVICE API
 %%=================================================================
@@ -349,7 +351,16 @@ hog_parent(Segment)->
           #sgm{ key = { Next } }-> dlss_segment:dirty_prev( Parent, Next );
           _-> dlss_segment:dirty_last(Parent)
         end,
-      hog_parent( Start, Stop, Parent, Segment )
+      if
+        Stop=:='$end_of_table' ->
+          % if we are here the the parent is either empty or there are
+          % only the next sibling's keys
+          ok;
+        true ->
+          ?LOGINFO("~p hog parent ~p from ~p to ~p",[ Segment, Parent, Start, Stop ]),
+          hog_parent( Start, Stop, Parent, Segment ),
+          ?LOGINFO("~p hog has finished hogging the parent ~p from ~p to ~p",[ Segment, Parent, Start, Stop ])
+      end
   end.
 
 hog_parent( '$end_of_table', _Stop, _Parent, _Segment )->
@@ -357,18 +368,21 @@ hog_parent( '$end_of_table', _Stop, _Parent, _Segment )->
 hog_parent( Key, Stop, Parent, Segment )
   when Key =/='$end_of_table',Key =< Stop->
 
-  case dlss_segment:dirty_read( Parent, Key ) of
-    '@deleted@' ->
-      ok = dlss_segment:dirty_delete( Segment, Key ),
-      ok = dlss_segment:dirty_delete( Parent, Key );
-    not_found->
-      % Can we really get here?
-      ok = dlss_segment:dirty_delete( Parent, Key );
-    Value ->
-      ok = dlss_segment:dirty_write( Segment, Key, Value ),
-      ok = dlss_segment:dirty_delete( Parent, Key )
-  end,
-  hog_parent( dlss_segment:dirty_next(Parent,Key), Stop, Parent, Segment );
+  Rows = dlss_segment:dirty_scan(Parent,Key,Stop,?BATCH_SIZE),
+  [if
+     V=:='@deleted@' ->
+       ok = dlss_segment:dirty_delete( Segment, K ),
+       ok = dlss_segment:dirty_delete( Parent, K );
+     true ->
+       ok = dlss_segment:dirty_write( Segment, K, V ),
+       ok = dlss_segment:dirty_delete( Parent, K )
+   end || {K,V} <-Rows],
+  if
+    length(Rows)>=?BATCH_SIZE ->
+      {LastKey,_}=lists:last(Rows),
+      hog_parent(LastKey,Stop,Parent,Segment);
+    true -> ok
+  end;
 hog_parent( _Key, _Stop, _Parent, _Segment )->
   ok.
 
