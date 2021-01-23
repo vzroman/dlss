@@ -358,16 +358,17 @@ hog_parent(Segment)->
           ok;
         true ->
           ?LOGINFO("~p hog parent ~p from ~p to ~p",[ Segment, Parent, Start, Stop ]),
-          hog_parent( Start, Stop, Parent, Segment ),
+          hog_parent( Start, Stop, Parent, Segment, 0 ),
           ?LOGINFO("~p hog has finished hogging the parent ~p from ~p to ~p",[ Segment, Parent, Start, Stop ])
       end
   end.
 
-hog_parent( '$end_of_table', _Stop, _Parent, _Segment )->
+hog_parent( '$end_of_table', _Stop, _Parent, _Segment, _Count )->
   ok;
-hog_parent( Key, Stop, Parent, Segment )
+hog_parent( Key, Stop, Parent, Segment, Count )
   when Key =/='$end_of_table',Key =< Stop->
 
+  if Count rem (?BATCH_SIZE*10) =:=0->?LOGINFO("segment ~p parent ~p, count ~p",[Segment,Parent,Count]); true->ok end,
   Rows = dlss_segment:dirty_scan(Parent,Key,Stop,?BATCH_SIZE),
   [if
      V=:='@deleted@' ->
@@ -380,10 +381,10 @@ hog_parent( Key, Stop, Parent, Segment )
   if
     length(Rows)>=?BATCH_SIZE ->
       {LastKey,_}=lists:last(Rows),
-      hog_parent(LastKey,Stop,Parent,Segment);
+      hog_parent(LastKey,Stop,Parent,Segment, Count + length(Rows) );
     true -> ok
   end;
-hog_parent( _Key, _Stop, _Parent, _Segment )->
+hog_parent( _Key, _Stop, _Parent, _Segment, _Count )->
   ok.
 
 %---------Absorb a segment----------------------------------------

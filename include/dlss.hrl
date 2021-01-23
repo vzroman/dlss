@@ -19,7 +19,7 @@
 -ifndef(DLSS_STRUCT).
 -define(DLSS_STRUCT,1).
 
--define(DEFAULT_SEGMENT_LIMIT,4096). % MB
+-define(DEFAULT_SEGMENT_LIMIT,100). % MB
 
 -record(kv,{key,value}).
 
