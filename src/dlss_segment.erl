@@ -52,8 +52,7 @@
   is_empty/1,
   add_node/2,
   remove_node/2,
-  get_size/1,
-  get_split_key/2
+  get_size/1
 ]).
 
 %%=================================================================
@@ -290,35 +289,39 @@ get_size(Segment)->
       erlang:system_info(wordsize) * Memory
   end.
 
-%----------Calculate the size (bytes) occupied by the segment-------
-get_split_key(Segment,Size)->
-  get_split_key( Segment, '$start_of_table' , Size, 0).
-get_split_key( Segment, From, Size, Acc)->
-  Rows = dlss_segment:dirty_scan(Segment,From,'$end_of_table',?MAX_SCAN_INTERVAL_BATCH),
-  case split_rows(Rows,Size,Acc) of
-    {stop,Key}-> {ok,Key};
-    Acc1->
-      if
-        length(Rows)>=?MAX_SCAN_INTERVAL_BATCH ->
-          {Last,_}=lists:last(Rows),
-          case mnesia:dirty_next(Segment,Last) of
-            '$end_of_table'->
-              { error, { total_size, Acc1 } };
-            Next->
-              get_split_key( Segment, Next, Size, Acc1 )
-          end;
-        true ->
-          { error, { total_size, Acc } }
-      end
+get_median(Segment)->
+  KeyPoints = find_points(Segment,'$start_of_table',0,[]),
+  Total =
+    lists:foldl(fun({_,Size},Acc)->Acc+Size end,0,KeyPoints),
+  get_median(KeyPoints, Total/2 ).
+get_median([{K,_}|_],Size) when Size=<0->
+  K;
+get_median([{_K,S}|Rest],Size)->
+  get_median(Rest,Size-S).
+
+find_points(Segment,Key,Size,Acc) when Size >= ?MB ->
+  find_points(Segment,Key,0,[{Key,Size}|Acc]);
+find_points(Segment,Key,Size,Acc)->
+  Rows = dlss_segment:dirty_scan(Segment,Key,'$end_of_table',?MAX_SCAN_INTERVAL_BATCH),
+  BatchSize = rows_size(Rows),
+  if
+    length(Rows)>=?MAX_SCAN_INTERVAL_BATCH ->
+      {Last,_}=lists:last(Rows),
+      case mnesia:dirty_next(Segment,Last) of
+        '$end_of_table'->
+          lists:reverse([{Last,Size+BatchSize}|Acc]);
+        Next->
+          find_points( Segment, Next, Size+BatchSize, Acc )
+      end;
+    true ->
+      {Last,_}=lists:last(Rows),
+      lists:reverse([{Last,Size+BatchSize}|Acc])
   end.
 
-split_rows([{K,_V}|_Rest],Size,Acc) when Acc>=Size ->
-  {stop,K};
-split_rows([{K,V}|Rest],Size,Acc) ->
-  S = size(term_to_binary(#kv{key = K,value = V})),
-  split_rows(Rest,Size,Acc+S);
-split_rows([],_Size,Acc)->
-  Acc.
+rows_size([{K,V}|Rest])->
+  size(term_to_binary(#kv{key = K,value = V})) + rows_size(Rest);
+rows_size([])->
+  0.
 
 %%=================================================================
 %%	API
@@ -416,7 +419,7 @@ loop( Segment, #{ storage := Storage, level := Level } )->
         Size >= Limit ->
           ?LOGINFO("the segment ~p in storage ~p reached the limit, size ~p, calculating the median...",[ Segment, Storage, Size ]),
           % Calculate the median key
-          { ok, Median } = get_split_key( Segment, (Size * ?MB) / 2 ),
+          Median  = get_median( Segment ),
           ?LOGINFO("the segment ~p in storage ~p is to be split by median ~p",[ Segment, Storage, Median ]),
           % First create the right segment, then create the left segment.
           % We need the right segment first because if there is no next sibling the left
