@@ -289,40 +289,6 @@ get_size(Segment)->
       erlang:system_info(wordsize) * Memory
   end.
 
-get_median(Segment)->
-  KeyPoints = find_points(Segment,'$start_of_table',0,[]),
-  Total =
-    lists:foldl(fun({_,Size},Acc)->Acc+Size end,0,KeyPoints),
-  get_median(KeyPoints, Total/2 ).
-get_median([{K,_}|_],Size) when Size=<0->
-  K;
-get_median([{_K,S}|Rest],Size)->
-  get_median(Rest,Size-S).
-
-find_points(Segment,Key,Size,Acc) when Size >= ?MB ->
-  find_points(Segment,Key,0,[{Key,Size}|Acc]);
-find_points(Segment,Key,Size,Acc)->
-  Rows = dlss_segment:dirty_scan(Segment,Key,'$end_of_table',?MAX_SCAN_INTERVAL_BATCH),
-  BatchSize = rows_size(Rows),
-  if
-    length(Rows)>=?MAX_SCAN_INTERVAL_BATCH ->
-      {Last,_}=lists:last(Rows),
-      case mnesia:dirty_next(Segment,Last) of
-        '$end_of_table'->
-          lists:reverse([{Last,Size+BatchSize}|Acc]);
-        Next->
-          find_points( Segment, Next, Size+BatchSize, Acc )
-      end;
-    true ->
-      {Last,_}=lists:last(Rows),
-      lists:reverse([{Last,Size+BatchSize}|Acc])
-  end.
-
-rows_size([{K,V}|Rest])->
-  size(term_to_binary(#kv{key = K,value = V})) + rows_size(Rest);
-rows_size([])->
-  0.
-
 %%=================================================================
 %%	API
 %%=================================================================
@@ -377,7 +343,12 @@ handle_info(loop,#state{
   case dlss_storage:segment_params(Segment) of
     {ok, Params} ->
       {ok,_}=timer:send_after(Cycle,loop),
-      loop( Segment, Params ),
+      case lists:member(Segment,dlss_storage:get_segments(maps:get(storage,Params))) of
+        true->
+          loop( Segment, Params );
+        _->
+          ok
+      end,
       {noreply,State};
     { error, Error} ->
       { stop, Error, State }
@@ -403,7 +374,7 @@ loop( Segment, #{ level := 0, storage := Storage } )->
   Limit = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT),
   if
     Size >= Limit ->
-      ?LOGINFO("the root segment ~p in storage ~p reached the limit, size ~p",[ Segment, Storage, Size ]),
+      ?LOGINFO("the root segment ~p in storage ~p reached the limit ~p, size ~p",[ Segment, Storage, Limit, Size ]),
       dlss_storage:new_root_segment(Storage);
     true -> ok
   end;
@@ -417,22 +388,36 @@ loop( Segment, #{ storage := Storage, level := Level } )->
       Limit = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT),
       if
         Size >= Limit ->
-          ?LOGINFO("the segment ~p in storage ~p reached the limit, size ~p, calculating the median...",[ Segment, Storage, Size ]),
-          % Calculate the median key
-          Median  = get_median( Segment ),
-          ?LOGINFO("the segment ~p in storage ~p is to be split by median ~p",[ Segment, Storage, Median ]),
-          % First create the right segment, then create the left segment.
-          % We need the right segment first because if there is no next sibling the left
-          % segment can hog not its keys while the right is starting
-          dlss_storage:spawn_segment(Segment,Median),
-          % Then create the left segment
-          dlss_storage:spawn_segment(Segment);
+          ?LOGINFO("the segment ~p in storage ~p reached the limit ~p, size ~p, split...",[ Segment, Storage, Limit, Size ]),
+
+          % Create a child segment
+          dlss_storage:spawn_segment(Segment),
+          ok;
         true ->
           if
             Level > 1->
               % The segment is below the desired level. To take place in upper level it
-              % must hog its parent
-              dlss_storage:hog_parent(Segment);
+              % must absorb its parent
+              case dlss_storage:has_siblings(Segment) of
+                true->
+                  % The parent is to absorbed by its children
+                  dlss_storage:absorb_parent(Segment);
+                _->
+                  % If there are no other children it is the splitting
+                  Parent = dlss_storage:parent_segment(Segment),
+
+                  ?LOGINFO("start splitting ~p",[Parent]),
+                  split( Parent, Segment ),
+
+                  case is_empty(Segment) of
+                    false->
+                      ?LOGINFO("finish splitting ~p",[Parent]),
+                      dlss_storage:level_up( Segment );
+                    _->
+                      ?LOGERROR("empty head segment ~p after splitting ~p",[Segment,Parent])
+                  end,
+                  ok
+              end;
             true ->
               % the segment is at the respectable level and is not overwhelmed.
               % This is a stable state
@@ -441,11 +426,11 @@ loop( Segment, #{ storage := Storage, level := Level } )->
       end;
     _->
       % The segment has children, that are at the level lower than 1.
-      % They are to hog their parent to take a place at its level.
+      % They are to absorb their parent to take a place at its level.
       case is_empty( Segment ) of
         true ->
           % The segment has been absorbed by the children
-          ?LOGINFO("the segment ~p in storage ~p is aready to be absorbed"),
+          ?LOGINFO("the segment ~p in storage ~p is to be absorbed",[Segment,Storage]),
           dlss_storage:absorb_segment( Segment );
         _->
           ok
@@ -466,3 +451,38 @@ get_nodes(Segment)->
     [Result]->Result;
     _->throw(invalid_storage_type)
   end.
+
+split( From, To )->
+  Half = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT) *?MB / 2,
+  split( From, To, '$start_of_table', Half , 0 ).
+split( From, To, Key, Size, I ) when (I rem 100) =:=0->
+  ToSize = get_size(To),
+  if
+    ToSize>=Size -> ok ;
+    true ->
+      ?LOGINFO("move key from ~p to ~p, left size ~p MB",[ From, To, round((Size - ToSize)/?MB) ]),
+      split( From, To, Key, Size, I+1 )
+  end;
+split( From, To, Key, Size, I )->
+  Rows = dlss_segment:dirty_scan(From,Key,'$end_of_table',?MAX_SCAN_INTERVAL_BATCH),
+  if
+    length(Rows)>=?MAX_SCAN_INTERVAL_BATCH ->
+      move_rows(Rows, From, To),
+      {LastKey,_}=lists:last(Rows),
+      split( From, To, LastKey, Size, I+1 );
+    true ->
+      % It is the end of the From segment take only half of the keys
+      { Head ,_ } = lists:split( length(Rows) div 2, Rows ),
+      move_rows(Head, From, To)
+  end.
+
+move_rows( Rows, From, To )->
+  [if
+     V=:='@deleted@' ->
+       ok = dlss_segment:dirty_delete( From, K );
+     true ->
+       ok = dlss_segment:dirty_write( To, K, V ),
+       ok = dlss_segment:dirty_delete( From, K )
+   end || {K,V} <-Rows],
+  ok.
+

@@ -40,9 +40,11 @@
   get_type/1,
   is_local/1,
   spawn_segment/1,spawn_segment/2,
-  hog_parent/1,
+  absorb_parent/1,
   absorb_segment/1,
+  level_up/1,
   get_children/1,
+  has_siblings/1,
   parent_segment/1
 ]).
 
@@ -297,9 +299,16 @@ spawn_segment(#sgm{str = Str, lvl = Lvl, key = Key} = Sgm, SplitKey)->
   % Generate an unique name within the storage
   ChildName=new_segment_name(Str),
 
-  ?LOGINFO("create a new child segment ~p from ~p with params ~p",[
+  StartKey=
+    if
+      SplitKey =:='$start_of_table' -> Key ;
+      true -> { SplitKey }
+    end,
+
+  ?LOGINFO("create a new child segment ~p from ~p splitkey ~p with params ~p",[
     ChildName,
     Segment,
+    StartKey,
     Params
   ]),
   case dlss_backend:create_segment(ChildName,Params) of
@@ -315,12 +324,6 @@ spawn_segment(#sgm{str = Str, lvl = Lvl, key = Key} = Sgm, SplitKey)->
       ?ERROR(BackendError)
   end,
 
-  StartKey=
-    if
-      SplitKey =:='$start_of_table' -> Key ;
-      true -> { SplitKey }
-    end,
-
   % Add the segment to the schema
   case dlss:transaction(fun()->
     % Set a lock on the schema
@@ -332,40 +335,49 @@ spawn_segment(#sgm{str = Str, lvl = Lvl, key = Key} = Sgm, SplitKey)->
     Error -> Error
   end.
 
-%---------Hog parent segment----------------------------------------
-hog_parent(Segment)->
+%---------Absorb parent segment----------------------------------------
+absorb_parent(Segment)->
   case segment_by_name(Segment) of
     { ok, #sgm{ lvl = Lvl } } when Lvl =< 1->
       ?ERROR( not_low_level_segment );
     { ok, #sgm{ key = Key } = Sgm }->
       Parent = parent_segment( Segment ),
-      % Start key
-      Start=
-        case Key of
-          '_' -> dlss_segment:dirty_first(Parent);
-          { K } -> K
-        end,
-      % End Key
-      Stop=
-        case next_sibling( Sgm ) of
-          #sgm{ key = { Next } }-> dlss_segment:dirty_prev( Parent, Next );
-          _-> dlss_segment:dirty_last(Parent)
-        end,
-      if
-        Stop=:='$end_of_table' ->
-          % if we are here the the parent is either empty or there are
-          % only the next sibling's keys
+
+      % To avoid high peaks we queue processes that are absorbing their parent
+      % the process actually do absorbing only if the parent starts with its range
+      % of keys. As the previous segment finishes absorbing the parent does not have keys
+      % from its range any more.
+
+      case dlss_segment:dirty_first(Parent) of
+        '$end_of_table'->
           ok;
-        true ->
-          ?LOGINFO("~p hog parent ~p from ~p to ~p",[ Segment, Parent, Start, Stop ]),
-          hog_parent( Start, Stop, Parent, Segment, 0 ),
-          ?LOGINFO("~p hog has finished hogging the parent ~p from ~p to ~p",[ Segment, Parent, Start, Stop ])
+        First when Key=:='_'; First>=Key->
+          case next_sibling( Sgm ) of
+            #sgm{ key = { Next } } when First<Next->
+              % This is our queue
+              Stop = dlss_segment:dirty_prev( Parent, Next ),
+              ?LOGINFO("~p absorb parent ~p from ~p to ~p",[ Segment, Parent, First, Stop ]),
+              absorb_parent( First, Stop, Parent, Segment, 0 ),
+              ?LOGINFO("~p has finished absorbing parent ~p from ~p to ~p",[ Segment, Parent, First, Stop ]);
+            undefined->
+              % This is the last segment
+              Stop = dlss_segment:dirty_last(Parent),
+              ?LOGINFO("~p absorb parent ~p from ~p to ~p",[ Segment, Parent, First, Stop ]),
+              absorb_parent( First, Stop, Parent, Segment, 0 ),
+              ?LOGINFO("~p has finished absorbing the parent ~p from ~p to ~p",[ Segment, Parent, First, Stop ]);
+            _->
+              % It's already not our queue
+              ok
+          end;
+        _->
+          % It's not our queue yet
+          ok
       end
   end.
 
-hog_parent( '$end_of_table', _Stop, _Parent, _Segment, _Count )->
+absorb_parent( '$end_of_table', _Stop, _Parent, _Segment, _Count )->
   ok;
-hog_parent( Key, Stop, Parent, Segment, Count )
+absorb_parent( Key, Stop, Parent, Segment, Count )
   when Key =/='$end_of_table',Key =< Stop->
 
   if Count rem (?BATCH_SIZE*10) =:=0->?LOGINFO("segment ~p parent ~p, count ~p",[Segment,Parent,Count]); true->ok end,
@@ -381,10 +393,10 @@ hog_parent( Key, Stop, Parent, Segment, Count )
   if
     length(Rows)>=?BATCH_SIZE ->
       {LastKey,_}=lists:last(Rows),
-      hog_parent(LastKey,Stop,Parent,Segment, Count + length(Rows) );
+      absorb_parent(LastKey,Stop,Parent,Segment, Count + length(Rows) );
     true -> ok
   end;
-hog_parent( _Key, _Stop, _Parent, _Segment, _Count )->
+absorb_parent( _Key, _Stop, _Parent, _Segment, _Count )->
   ok.
 
 %---------Absorb a segment----------------------------------------
@@ -420,6 +432,7 @@ absorb_segment(#sgm{str = Str} = Sgm)->
   end) of
     { ok, _} ->
       % Remove the segment from backend
+      ?LOGINFO("removing segment ~p",[Name]),
       case dlss_backend:delete_segment(Name) of
         ok->ok;
         {error,Error}->
@@ -433,6 +446,47 @@ absorb_segment(#sgm{str = Str} = Sgm)->
       ?LOGERROR("error absorbing segment ~p storage ~p, error ~p",[
         Name,
         Str,
+        Error
+      ]),
+      ?ERROR(Error)
+  end.
+
+%---------level up segment----------------------------------------
+level_up(Name) when is_atom(Name)->
+  case segment_by_name(Name) of
+    { ok, Segment }-> level_up( Segment );
+    Error -> ?ERROR(Error)
+  end;
+level_up(#sgm{lvl = 0})->
+  % The root segment cannot be absorbed
+  ?ERROR(root_segment);
+level_up(#sgm{} = Sgm)->
+
+  % Get the parent
+  #sgm{lvl = Level }=ParentSgm = parent_segment(Sgm),
+  ParentName = dlss_segment:dirty_read(dlss_schema,ParentSgm),
+  First = dlss_segment:dirty_first(ParentName),
+
+  % Current segment
+  Name=dlss_segment:dirty_read(dlss_schema,Sgm),
+
+  ?LOGINFO("moving segment ~p from level ~p to level ~p, the split key ~p",[Name,Sgm#sgm.lvl,Level,First]),
+  case dlss:transaction(fun()->
+
+    dlss_backend:lock({table,dlss_schema},write),
+
+    ok = dlss_segment:write(dlss_schema, ParentSgm#sgm{ key = { First } }, ParentName , write ),
+    ok = dlss_segment:delete(dlss_schema, ParentSgm , write ),
+
+    ok = dlss_segment:write(dlss_schema, Sgm#sgm{ lvl = Level }, Name , write ),
+    ok = dlss_segment:delete(dlss_schema, Sgm , write )
+
+  end) of
+    { ok, _} ->
+      ok;
+    { error, Error}->
+      ?LOGERROR("error to level up segment ~p, error ~p",[
+        Name,
         Error
       ]),
       ?ERROR(Error)
@@ -456,6 +510,17 @@ get_children(#sgm{ str = S } = Next, #sgm{str = S} = Sgm,Acc)->
 get_children(_Other,_Sgm,Acc)->
   % next storage or '$end_of_table'
   lists:reverse(Acc).
+
+has_siblings(Name) when is_atom(Name)->
+  case segment_by_name(Name) of
+    { ok, Segment }-> has_siblings(Segment);
+    Error -> Error
+  end;
+has_siblings(Segment)->
+  case { next_sibling(Segment), prev_sibling(Segment) } of
+    { undefined, undefined }-> false;
+    _-> true
+  end.
 
 %------------Get parent segment-----------------------------------------
 parent_segment(Name) when is_atom(Name)->

@@ -117,7 +117,7 @@ scan_segments(Started)->
   % Each hosted segment must have a serving process that is responsible
   % for its balancing
 
-  Segments = get_supervised_segemnts( node() ),
+  Segments = get_supervised_segments( node() ),
 
   % Start new segments
   [ dlss_segment:start(S) || S <- Segments -- Started ],
@@ -127,7 +127,7 @@ scan_segments(Started)->
 
   Segments.
 
-get_supervised_segemnts(Node)->
+get_supervised_segments(Node)->
   % Get list of attached nodes
   ReadyNodes = dlss_node:get_ready_nodes(),
   All = dlss_storage:get_segments(),
