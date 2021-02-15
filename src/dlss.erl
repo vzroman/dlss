@@ -47,7 +47,8 @@
   write/3, write/4, dirty_write/3,
   delete/2, delete/3, dirty_delete/2,
   first/1, dirty_first/1, last/1, dirty_last/1,
-  next/2, dirty_next/2, prev/2, dirty_prev/2
+  next/2, dirty_next/2, prev/2, dirty_prev/2,
+  scan_interval/3, scan_interval/4
 ]).
 
 -type storage_type() :: ram | ramdisc | disc.
@@ -493,3 +494,27 @@ dirty_prev(Storage,Key)->
   dlss_storage:dirty_prev(Storage,Key).
 
 
+%-----------------------------------------------------------------
+%% @doc	Dirty Previous.
+% Function searches the storage for keys relating to the defined interval.
+% StartKey and EndKey define the interval to run trough.
+% '$start_of_table' and '$end_of_table' are supported.
+% Returns a list of found items [{ Key, Value}|...]
+%% @end
+%-----------------------------------------------------------------
+-spec scan_interval(Storage :: atom(), StartKey :: any(), EndKey ::any() ) -> Items :: list() | no_return().
+scan_interval(Storage, StartKey, EndKey) ->
+  dlss_storage:scan_interval(Storage,StartKey,EndKey).
+
+%-----------------------------------------------------------------
+%% @doc	Dirty Previous.
+% Function searches the storage for keys relating to the defined interval.
+% StartKey and EndKey define the interval to run trough.
+% Limit defines the maximum number of item to return
+% '$start_of_table' and '$end_of_table' are supported.
+% Returns a list of found items [{ Key, Value}|...]
+%% @end
+%-----------------------------------------------------------------
+-spec scan_interval(Storage :: atom(), StartKey :: any(), EndKey ::any(), Limit :: integer() ) -> Items :: list() | no_return().
+scan_interval(Storage, StartKey, EndKey, Limit) ->
+  dlss_storage:scan_interval(Storage,StartKey,EndKey,Limit).
