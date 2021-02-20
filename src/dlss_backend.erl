@@ -294,6 +294,7 @@ stop()->
 
 wait_segments(Timeout)->
   Segments=dlss:get_segments(),
+  ?LOGINFO("wait for segments",[Segments]),
   mnesia:wait_for_tables(Segments,Timeout).
 
 set_forced_mode()->
