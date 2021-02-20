@@ -196,6 +196,8 @@ init_backend(#{
   mnesia:set_debug_level(debug),
   ok=mnesia:start(),
 
+  {ok, _} = application:ensure_all_started( mnesia_eleveldb ),
+
   ?LOGINFO("dlss initalization"),
   if
     IsFirstStart ->

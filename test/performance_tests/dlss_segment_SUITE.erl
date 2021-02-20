@@ -21,7 +21,8 @@
 -include("dlss_test.hrl").
 -include("dlss.hrl").
 
--define(DEFAULT_COUNT,1000000).
+-define(DEFAULT_COUNT,60000).
+-define(THREADS,900). % Why does it fall down when there are more that 500 threads
 
 %% API
 -export([
@@ -45,13 +46,16 @@
 
   test_dets_write/1,
   test_dets_read/1,
-  test_dets_delete/1
+  test_dets_delete/1,
+
+  test_leveldb_multi_write/1
 ]).
 
 all()->
   [
-    {group,leveldb}
-    ,{group,dets}
+%%    {group,leveldb}
+%%    ,{group,dets}
+    {group,write_multi_thread}
   ].
 
 groups()->
@@ -71,6 +75,9 @@ groups()->
       test_dets_read,
       test_dets_delete
     ]
+  },{write_multi_thread,
+    [parallel],
+    [test_leveldb_multi_write||_<-lists:seq(1,?THREADS)]
   }].
 
 %% Init system storages
@@ -110,6 +117,14 @@ init_per_group(dets,Config)->
     |Config
   ];
 
+init_per_group(write_multi_thread,Config)->
+  dlss:add_storage(multi_thread_db,disc),
+  [Segment]=dlss:get_segments(multi_thread_db),
+  [
+    {multi_thread_db,Segment}
+    |Config
+  ];
+
 init_per_group(_,Config)->
   Config.
 
@@ -120,6 +135,10 @@ end_per_group(leveldb,Config)->
 end_per_group(dets,Config)->
   Segment=?GET(dets,Config),
   {atomic,ok}=mnesia:delete_table(Segment),
+  ok;
+end_per_group(write_multi_thread,Config)->
+  Storage=?GET(multi_thread_db,Config),
+  dlss:remove_storage(Storage),
   ok;
 end_per_group(_,_Config)->
   ok.
@@ -219,6 +238,34 @@ test_dets_delete(Config)->
   for(fun(I)->
     {value,I}=dlss_segment:dirty_read(Segment,{I,2})
       end,0,Count),
+
+  ok.
+
+test_leveldb_multi_write(Config)->
+
+  Segment=?GET(multi_thread_db,Config),
+  Count=?GET(count,Config),
+
+  for(fun(I)->
+%%    if
+%%      I rem 1000=:=0 -> ct:pal("write ~p",[I]);
+%%      true -> ok
+%%    end,
+    ok=dlss_segment:dirty_write(Segment,{I,2},{value,I})
+
+%%    receive
+%%    after
+%%      1000->ok
+%%    end
+  end,0,Count),
+
+  for(fun(I)->
+%%    if
+%%      I rem 1000=:=0 -> ct:pal("read ~p",[I]);
+%%      true -> ok
+%%    end,
+    {value,I} = dlss_segment:dirty_read(Segment,{I,2})
+  end,0,Count),
 
   ok.
 

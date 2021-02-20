@@ -197,13 +197,22 @@ run_continuation(Cont,StorageType,MS,Limit,Acc)->
       []->Acc;
       _->[Result|Acc]
     end,
-  % Update the limit
-  Limit1=
-    if
-      is_integer(Limit)-> Limit-length(Result);
-      true -> Limit
-    end,
-  run_continuation(Cont1,StorageType,MS,Limit1,Acc1).
+  % If the result is less than the limit the its the last batch
+  if
+    is_integer(Limit),length(Result)<Limit->
+      lists:append(lists:reverse(Acc1));
+    length(Result)<?MAX_SCAN_INTERVAL_BATCH->
+      lists:append(lists:reverse(Acc1));
+    true->
+      % The result is full, there might be more records
+      % Update the limit
+      Limit1=
+        if
+          is_integer(Limit)-> Limit-length(Result);
+          true -> Limit
+        end,
+      run_continuation(Cont1,StorageType,MS,Limit1,Acc1)
+  end.
 
 %-------------SELECT----------------------------------------------
 select(Segment,MS)->
