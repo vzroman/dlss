@@ -19,7 +19,7 @@
 -ifndef(DLSS_STRUCT).
 -define(DLSS_STRUCT,1).
 
--define(DEFAULT_SEGMENT_LIMIT,100). % MB
+-define(DEFAULT_SEGMENT_LIMIT,1024). % MB
 
 -record(kv,{key,value}).
 
@@ -37,6 +37,8 @@
 
 -define(A2B(Atom),unicode:characters_to_binary(atom_to_list(Atom))).
 
+-ifndef(TEST).
+
 -define(LOGERROR(Text),lager:error(Text)).
 -define(LOGERROR(Text,Params),lager:error(Text,Params)).
 -define(LOGWARNING(Text),lager:warning(Text)).
@@ -45,5 +47,19 @@
 -define(LOGINFO(Text,Params),lager:info(Text,Params)).
 -define(LOGDEBUG(Text),lager:debug(Text)).
 -define(LOGDEBUG(Text,Params),lager:debug(Text,Params)).
+
+-else.
+
+-define(LOGERROR(Text),ct:pal("error: "++Text)).
+-define(LOGERROR(Text,Params),ct:pal("error: "++Text,Params)).
+-define(LOGWARNING(Text),ct:pal("warning: "++Text)).
+-define(LOGWARNING(Text,Params),ct:pal("warning: "++Text,Params)).
+-define(LOGINFO(Text),ct:pal("info: "++Text)).
+-define(LOGINFO(Text,Params),ct:pal("info: "++Text,Params)).
+-define(LOGDEBUG(Text),ct:pal("debug: "++Text)).
+-define(LOGDEBUG(Text,Params),ct:pal("debug: "++Text,Params)).
+
+-endif.
+
 
 -endif.
