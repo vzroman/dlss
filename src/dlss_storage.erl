@@ -637,122 +637,100 @@ dirty_delete(Storage, Key)->
   end.
 
 %-------------Interval scan----------------------------------------------
-scan_interval(Storage, StartKey, EndKey) ->
+scan_interval(Storage, StartKey, EndKey ) ->
   scan_interval(Storage, StartKey, EndKey, infinity).
-
-scan_interval(_Storage, StartKey, EndKey, _Limit)
-    when StartKey > EndKey andalso
-        (StartKey =/= '$start_of_table' andalso StartKey =/= '$end_of_table') ->
-  [];
-scan_interval(Storage, StartKey, EndKey, _Limit)
-    when StartKey == EndKey andalso
-        (StartKey =/= '$start_of_table' andalso StartKey =/= '$end_of_table') ->
-  case dirty_read(Storage, StartKey) of
-    not_found ->
-      [];
-    Value ->
-      [{StartKey, Value}]
-  end;
 scan_interval(Storage, StartKey, EndKey, Limit) ->
-  Segments = find_all_segments(Storage, StartKey, EndKey),
-  SortedSegments = lists:sort(fun level_sort_fun/2, Segments),
-  SortedValues = lists:map(
-    fun([S, _Level]) -> 
-      dlss_segment:dirty_scan(S, StartKey, EndKey, Limit)
-    end,
-    SortedSegments
-  ),
-  Full = lists:foldl(
-    fun(Values, OrddictAcc) ->
-      lists:foldl(
-        fun
-          ({DeletedKey, '@deleted@'}, DictIn) ->
-            orddict:erase(DeletedKey, DictIn);
-          ({Key, Value}, DictIn) ->
-            orddict:store(Key, Value, DictIn)
-        end,
-        OrddictAcc,
-        Values
-      )
-    end,
-    orddict:new(),
-    SortedValues
-  ),
-  limit_output(orddict:to_list(Full), Limit).
+  % Filter the segment that contain keys bigger
+  % than the EndKey
+  HeadSegments = find_head_segments( Storage, StartKey ),
 
-limit_output(Values, infinity) ->
-  Values;
-limit_output(Values, Limit) when Limit > 0 ->
-  {First, _} = lists:split(min(Limit, length(Values)), Values),
-  First.
-
-level_sort_fun([_, Level0], [_, Level1]) ->
-  Level1 < Level0.
-
-find_all_segments(Storage, StartKey, EndKey) ->
-  MatchHead = #kv{key = #sgm{str=Storage, key='$2', lvl='$3'}, value='$1'},
-  Result = ['$1', '$2', '$3'],
-  MatchSpec = [{MatchHead, [], [Result]}],
-  AllSegments = mnesia:dirty_select(dlss_schema, MatchSpec),
-  SegmentsPerLvl = lists:foldl(
-    fun([SegmentName, Key, Lvl], Acc) ->
-        maps:update_with(
-          Lvl,
-          fun(ExistingSet) -> ordsets:add_element({SegmentName, Key}, ExistingSet) end,
-          ordsets:from_list([{SegmentName, Key}]),
-          Acc
-        )
+  % Remove the head segments from levels that cannot contain keys from the range
+  Segments=
+    if
+      StartKey =/= '$start_of_table'->
+        drop_head( HeadSegments, { StartKey } );
+      true ->
+        HeadSegments
     end,
-    #{},
-    AllSegments
-  ),
-  maps:fold(
-    fun(Lvl, OrdSet, AccIn) ->
-      OrderedKeys = ordsets:to_list(OrdSet),
-      FilteredSegments = filter_segments(OrderedKeys, {StartKey}, {EndKey}, Lvl),
-      lists:append(FilteredSegments, AccIn)
-    end,
-    [],
-    SegmentsPerLvl
-  ).
 
-filter_segments([{Segment, _Key} | Rest], {'$start_of_table'}, EndKey, Lvl) ->
-  do_filter_segments(Rest, {'$start_of_table'}, EndKey, [[Segment, Lvl]], Lvl);
-filter_segments(Segments, StartKey, EndKey, Lvl) ->
-  do_filter_segments(Segments, StartKey, EndKey, [], Lvl).
-  
-do_filter_segments([{Segment, _LastKey}], _, {'$end_of_table'}, AccIn, Lvl) ->
-  lists:reverse([[Segment, Lvl] | AccIn]);
-do_filter_segments([{Segment, LastKey}], _, EndKey, AccIn, Lvl) 
-    when EndKey >= LastKey ->
-  lists:reverse([[Segment, Lvl] | AccIn]);
-do_filter_segments([_], _, _, AccIn, _) ->
-  lists:reverse(AccIn);
-do_filter_segments([{FSeg, _} | RestKeys], {'$start_of_table'}, {'$end_of_table'}, AccIn, Lvl) ->
-  NewAcc = [[FSeg, Lvl] | AccIn],
-  do_filter_segments(RestKeys, {'$start_of_table'}, {'$end_of_table'}, NewAcc, Lvl);
-do_filter_segments([{FSeg, FKey}, {SSeg, SKey} | RestKeys], {'$start_of_table'}, EndKey, AccIn, Lvl)
-    when EndKey >= FKey ->
-  NewAcc = [[FSeg, Lvl] | AccIn],
-  do_filter_segments([{SSeg, SKey} | RestKeys], {'$start_of_table'}, EndKey, NewAcc, Lvl);
-do_filter_segments(_, {'$start_of_table'}, _EndKey, AccIn, _Lvl) ->
-  lists:reverse(AccIn);
-do_filter_segments([_, {SSeg, SKey} | RestKeys], StartKey, {'$end_of_table'}, AccIn, Lvl)
-    when StartKey >= SKey ->
-  do_filter_segments([{SSeg, SKey} | RestKeys], StartKey, {'$end_of_table'}, AccIn, Lvl);
-do_filter_segments([{FSeg, _FKey} | RestKeys], StartKey, {'$end_of_table'}, AccIn, Lvl) ->
-  NewAcc = [[FSeg, Lvl] | AccIn],
-  do_filter_segments(RestKeys, StartKey, {'$end_of_table'}, NewAcc, Lvl);
-do_filter_segments([{FSeg, FKey}, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl)
-    when StartKey =< SKey andalso StartKey >= FKey ->
-  NewAcc = [[FSeg, Lvl] | AccIn],
-  do_filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, NewAcc, Lvl);
-do_filter_segments([{FSeg, FKey}, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl)
-    when EndKey =< SKey andalso EndKey >= FKey ->
-  NewAcc = [[FSeg, Lvl] | AccIn],
-  do_filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, NewAcc, Lvl);
-do_filter_segments([_, {SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl) ->
-  do_filter_segments([{SSeg, SKey} | RestKeys], StartKey, EndKey, AccIn, Lvl).
+  % Order the segments by level and then by start key
+  OrderedSegments = lists:usort( Segments ),
+
+  % scan each segment
+  Results =
+    [ { L, dlss_segment:dirty_scan( S, StartKey, EndKey, Limit) } || [L,_Key, S] <- OrderedSegments ],
+
+  % Merge by segments results
+  Merged = merge_results( Results ),
+
+  % Remove deleted records from the result
+  Filtered =
+    [ {K, V} || {K,V} <- Merged, V=/='@deleted@' ],
+
+  % Limit the result
+  if
+    Limit=:=infinity ->
+      Filtered;
+    length( Filtered ) >= Limit->
+      % We satisfy the limit, cut off the excessive records
+      { Head, _} = lists:split(Limit, Filtered),
+      Head;
+    length( Merged )<Limit->
+      % The total length of he result including deleted records is shorter than the limit,
+      % there is no sense to keep searching
+      Filtered;
+    length( Merged ) =:= length( Filtered )->
+      % There are no deleted records in the result, therefore it is the maximum that we can find
+      Filtered;
+    true ->
+      % If we are here then there were deleted records in the result that prevented us
+      % from getting the full result, we need to keep searching.
+      % Continue from the last key in the full result
+      { Head, [ { LastKey,_} ] } = lists:split( length( Merged )-1, Merged ),
+
+      Head ++ scan_interval( Storage, LastKey, EndKey, Limit - length( Filtered ) )
+  end.
+
+find_head_segments( Storage, Key )->
+  ToGuard=
+    if
+      Key =/= '$end_of_table' -> [];
+      true -> [{'=<','$1',{const, { Key }}}]
+    end,
+  MS=[{
+    #kv{key = #sgm{str=Storage, key='$1', lvl='$2'}, value='$3'},
+    ToGuard,
+    ['$2','$1','$3']  % The level goes first to be able to order by it later
+  }],
+  dlss_segment:dirty_select(dlss_schema,MS).
+
+drop_head( [ [Level,_Key,_Name1 ], [Level, Key, _Name2 ]=Next | Rest ], FromKey ) when Key >= FromKey->
+  % If the following segment of the same level contain keys bigger than
+  % the FromKey then the current segment cannot contain key from the range
+  drop_head( [Next | Rest], FromKey );
+drop_head( [S | Rest], FromKey )->
+  % FromKey is smaller than first key of the next segment in the level
+  % or it is the last segment in the level - include
+  [ S | drop_head( Rest, FromKey ) ];
+drop_head( [], _FromKey )->
+  [].
+
+merge_results( [ { Level, Records1 }, { Level, Records2 } | Rest ] )->
+  % The results are from the same level, union them
+  merge_results([ { Level, Records1++Records2 }|Rest]);
+merge_results( [ {_Level ,LevelResult} | Rest ] )->
+  % The next result is from the lower level
+  merge_levels( LevelResult, merge_results( Rest ) );
+merge_results([])->
+  [].
+
+merge_levels([{K1,_}=E1|D1], [{K2,_}=E2|D2]) when K1 =< K2 ->
+  [E1|merge_levels(D1, [E2|D2])];
+merge_levels([{K1,_}=E1|D1], [{K2,_}=E2|D2]) when K1 > K2 ->
+  [E2|merge_levels([E1|D1], D2)];
+merge_levels([], D2) -> D2;
+merge_levels(D1, []) -> D1.
+
 
 %%=================================================================
 %%	Iterate
