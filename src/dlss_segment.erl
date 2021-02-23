@@ -75,6 +75,18 @@
   code_change/3
 ]).
 
+%%====================================================================
+%%		Test API
+%%====================================================================
+-ifdef(TEST).
+
+-export([
+  split/2,
+  split/5
+]).
+
+-endif.
+
 -record(state,{segment,cycle}).
 
 -define(DEFAULT_SCAN_CYCLE,5000).
@@ -128,7 +140,8 @@ dirty_scan(Segment,From,To,Limit)->
 
   % Initialize the continuation
   case mnesia_lib:db_select_init(StorageType,Segment,MS,1) of
-    {[],'$end_of_table'}->[]; % The segment is empty or there are no keys less than To
+    {[],'$end_of_table'}->[]; % The segment is empty
+    {[],_Cont}->[];           % there are no keys less than To
     '$end_of_table'->[]; % this format is returned by the ets backend
 
     {[{FirstKey,FirstValue}],Cont}->
@@ -463,13 +476,20 @@ get_nodes(Segment)->
 
 split( From, To )->
   Half = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT) *?MB / 2,
+  ?LOGINFO("start moving records ~p MB records from ~p to ~p",[ From, To, Half/ ?MB ]),
   split( From, To, '$start_of_table', Half , 0 ).
 split( From, To, Key, Size, I ) when (I rem 100) =:=0->
   ToSize = get_size(To),
   if
     ToSize>=Size -> ok ;
     true ->
-      ?LOGINFO("move key from ~p to ~p, left size ~p MB",[ From, To, round((Size - ToSize)/?MB) ]),
+      ?LOGINFO("move key from ~p to ~p, parent size ~p, child size ~p, left size ~p MB",[
+        From,
+        To,
+        get_size(From) / ?MB,
+        ToSize / ?MB,
+        round((Size - ToSize)/?MB)
+      ]),
       split( From, To, Key, Size, I+1 )
   end;
 split( From, To, Key, Size, I )->

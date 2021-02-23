@@ -35,7 +35,6 @@
 -export([
   test_read/1,
   test_order/1,
-  test_median/1,
   test_scan/1
 ]).
 
@@ -44,7 +43,6 @@ all()->
   [
     test_read,
     test_order,
-    test_median,
     test_scan
   ].
 
@@ -139,27 +137,6 @@ test_order(Config)->
   ok=dlss_segment:dirty_write(Segment,{5,<<0>>},test_value),
   {5,<<0>>}=dlss_segment:dirty_next(Segment,{5,[test]}),
   {<<0>>,5}=dlss_segment:dirty_next(Segment,{[test],5}),
-
-  ok.
-
-test_median(Config)->
-  Segment = ?GET(segment, Config),
-
-  { error, { total_size, 0 } } = dlss_segment:get_split_key( Segment, 10 ),
-
-  ok = dlss_segment:dirty_write( Segment, {10,0}, <<"some_long_name">> ),
-  { error, { total_size, ItemSize } } = dlss_segment:get_split_key( Segment, 4096*1024*1024 ),
-
-  [ dlss_segment:dirty_write(Segment, {10, I}, <<"some_long_name">>) || I <- lists:seq(1,9) ],
-  Size10 = ItemSize * 10,
-
-  { error, { total_size, Size10 } } = dlss_segment:get_split_key( Segment, ItemSize * 11 ),
-
-  % There is no 11-th key
-  { error, { total_size, Size10 } } = dlss_segment:get_split_key( Segment, ItemSize * 10 ),
-
-
-  {ok, { 10, 7 }} = dlss_segment:get_split_key( Segment, ItemSize * 7 ),
 
   ok.
 

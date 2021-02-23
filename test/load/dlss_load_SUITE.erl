@@ -76,7 +76,7 @@ end_per_testcase(_,_Config)->
 add_data_disc(_Config)->
 
   disc=dlss_storage:get_type(storage_disc),
-  Cnt = 141421,
+  Cnt = 1414,
 
   [ ok = dlss:dirty_write(storage_disc, {x, V}, {y, binary:copy(<<"1">>, V)}) || V <- lists:seq(1, Cnt) ],
   [ begin
@@ -90,7 +90,7 @@ add_data_disc(_Config)->
 add_data_ram(_Config)->
 
   ram=dlss_storage:get_type(storage_ram),
-  Cnt = 63245,
+  Cnt = 632,
 
   [ ok = dlss:dirty_write(storage_ram, {x, V}, {y, binary:copy(<<"1">>, V)}) || V <- lists:seq(1, Cnt) ],
   [ begin

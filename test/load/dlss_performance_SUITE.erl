@@ -16,7 +16,7 @@
 %% under the License.
 %%----------------------------------------------------------------
 
--module(dlss_segment_SUITE).
+-module(dlss_performance_SUITE).
 
 -include("dlss_test.hrl").
 -include("dlss.hrl").

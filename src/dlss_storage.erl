@@ -293,7 +293,7 @@ spawn_segment(#sgm{str = Str, lvl = Lvl, key = Key} = Sgm)->
   % Generate an unique name within the storage
   ChildName=new_segment_name(Str),
 
-  ?LOGINFO("create a new child segment ~p from ~p splitkey ~p with params ~p",[
+  ?LOGINFO("create a new child segment ~p from ~p first ~p with params ~p",[
     ChildName,
     Segment,
     Key,
@@ -354,7 +354,7 @@ absorb_parent(Segment)->
               absorb_parent( First, Stop, Parent, Segment, 0 ),
               ?LOGINFO("~p has finished absorbing the parent ~p from ~p to ~p",[ Segment, Parent, First, Stop ]);
             _->
-              % It's already not our queue
+              % It's not our queue yet
               ok
           end;
         _->
@@ -763,7 +763,7 @@ first(Storage)->
   % Set a lock on the schema
   dlss_backend:lock({table,dlss_schema},read),
   % The safe iterator
-  Iter = fun(Segment)-> safe_first(Segment) end,
+  Iter = fun(Segment)-> safe_first(Segment,Storage) end,
   % The scanning starts at the lowest level
   Lowest = #sgm{ str = Storage, key = '~', lvl = '_' },
   Segments = key_segments( parent_segment(Lowest),[]),
@@ -783,14 +783,14 @@ first([S1|Rest],Iter,Acc)->
   first(Rest,Iter,Acc1);
 first([],_Iter,F)-> F.
 
-safe_first(Segment)->
+safe_first(Segment,Storage)->
   case dlss_segment:first(Segment) of
     '$end_of_table' -> '$end_of_table';
     First ->
       % In the safe mode we check if the key is already delete.
       % As 'next' has already locked the table, we can do it in dirty mode
-      case dlss_segment:dirty_read(Segment,First) of
-        '@deleted@' -> safe_next(Segment,First);
+      case dirty_read(Storage,First) of
+        not_found -> safe_next(Segment,Storage,First);
         _->First
       end
   end.
@@ -799,7 +799,7 @@ last(Storage)->
   % Set a lock on the schema
   dlss_backend:lock({table,dlss_schema},read),
   % The safe iterator
-  Iter = fun(Segment)-> safe_last(Segment) end,
+  Iter = fun(Segment)-> safe_last(Segment,Storage) end,
   % The scanning starts at the lowest level
   Highest = #sgm{ str = Storage, key = [], lvl = '_' },
   Segments = key_segments( parent_segment(Highest),[]),
@@ -819,14 +819,14 @@ last([S1|Rest],Iter, Acc)->
   last(Rest,Iter,Acc1);
 last([],_Iter,L)-> L.
 
-safe_last(Segment)->
+safe_last(Segment,Storage)->
   case dlss_segment:last(Segment) of
     '$end_of_table' -> '$end_of_table';
     Last ->
       % In the safe mode we check if the key is already delete.
       % As 'next' has already locked the table, we can do it in dirty mode
-      case dlss_segment:dirty_read(Segment,Last) of
-        '@deleted@' -> safe_prev(Segment,Last);
+      case dirty_read(Storage,Last) of
+        not_found -> safe_prev(Segment,Storage,Last);
         _->Last
       end
   end.
@@ -836,7 +836,7 @@ next( Storage, Key )->
   % Set a lock on the schema
   dlss_backend:lock({table,dlss_schema},read),
   % The safe iterator
-  Iter = fun(Segment)-> safe_next(Segment,Key) end,
+  Iter = fun(Segment)-> safe_next(Segment,Storage,Key) end,
   % Schema starting point
   Lowest = #sgm{ str = Storage, key = { Key }, lvl = '_' },
   next( parent_segment(Lowest), Iter, '$end_of_table' ).
@@ -880,15 +880,17 @@ next_acc(Key,Acc)->
     true -> Acc
   end.
 
-safe_next(Segment,Key)->
+safe_next(Segment,Storage,Key)->
   case dlss_segment:next(Segment,Key) of
     '$end_of_table' -> '$end_of_table';
     Next ->
       % In the safe mode we check if the key is already delete.
       % As 'next' has already locked the table, we can do it in dirty mode
-      case dlss_segment:dirty_read(Segment,Next) of
-        '@deleted@' -> safe_next(Segment,Next);
-        _->Next
+      case dirty_read(Storage,Next) of
+        not_found ->
+          safe_next(Segment,Storage,Next);
+        _->
+          Next
       end
   end.
 
@@ -909,7 +911,7 @@ prev( Storage, Key )->
   % Set a lock on the schema
   dlss_backend:lock({table,dlss_schema},read),
   % The safe iterator
-  Iter = fun(Segment)-> safe_prev(Segment,Key) end,
+  Iter = fun(Segment)-> safe_prev(Segment,Storage,Key) end,
   % Schema starting point
   Lowest = #sgm{ str = Storage, key = { Key }, lvl = '_' },
   prev( parent_segment(Lowest), Iter, '$end_of_table' ).
@@ -953,15 +955,17 @@ prev_acc(Key,Acc)->
     true -> Acc
   end.
 
-safe_prev(Segment,Key)->
+safe_prev(Segment,Storage,Key)->
   case dlss_segment:prev(Segment,Key) of
     '$end_of_table' -> '$end_of_table';
     Prev ->
       % In the safe mode we check if the key is already delete.
       % As 'next' has already locked the table, we can do it in dirty mode
-      case dlss_segment:dirty_read(Segment,Prev) of
-        '@deleted@' -> safe_prev(Segment,Prev);
-        _->Prev
+      case dirty_read(Storage,Prev) of
+        not_found ->
+          safe_prev(Segment,Storage,Prev);
+        _->
+          Prev
       end
   end.
 
