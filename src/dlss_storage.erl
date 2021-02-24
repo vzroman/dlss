@@ -720,14 +720,16 @@ merge_results( [ { Level, Records1 }, { Level, Records2 } | Rest ] )->
   merge_results([ { Level, Records1++Records2 }|Rest]);
 merge_results( [ {_Level ,LevelResult} | Rest ] )->
   % The next result is from the lower level
-  merge_levels( LevelResult, merge_results( Rest ) );
+  merge_levels(  merge_results( Rest ), LevelResult );
 merge_results([])->
   [].
 
-merge_levels([{K1,_}=E1|D1], [{K2,_}=E2|D2]) when K1 =< K2 ->
+merge_levels([{K1,_}=E1|D1], [{K2,_}=E2|D2]) when K1 < K2 ->
   [E1|merge_levels(D1, [E2|D2])];
 merge_levels([{K1,_}=E1|D1], [{K2,_}=E2|D2]) when K1 > K2 ->
   [E2|merge_levels([E1|D1], D2)];
+merge_levels([_E1|D1], [E2|D2])-> % K1 = K2, take the value from the second set
+  [E2|merge_levels(D1, D2)];
 merge_levels([], D2) -> D2;
 merge_levels(D1, []) -> D1.
 
