@@ -138,6 +138,15 @@ dirty_scan(Segment,From,To,Limit)->
 
   MS=[{#kv{key='$1',value='$2'},StopGuard,[{{'$1','$2'}}]}],
 
+  % TODO. There is a significant issue with ets based storage type
+  % As the ets:select doesn't stop when the Key is
+  % bigger than the To it leads to scanning the whole table until it meets the
+  % Limit demand. It might lead ta scanning the table to its end
+  % even if there are no more keys within the range. It
+  % can dramatically decrease the performance. But the 'select' in a major
+  % set of cases is still more efficient than the 'dirty_next' iterator
+  % especially if the table is located on the other node.
+
   % Initialize the continuation
   case mnesia_lib:db_select_init(StorageType,Segment,MS,1) of
     {[],'$end_of_table'}->[]; % The segment is empty
@@ -166,23 +175,29 @@ dirty_scan(Segment,From,To,Limit)->
               is_integer(Limit) -> Limit - length(Head) ;
               true -> Limit
             end,
+
           % Initialize the continuation with the key to start from
           Cont1=init_continuation(Cont,StartKey,Limit1),
 
+          BatchSize =
+            if
+              is_integer(Limit1) -> Limit1 ;
+              true -> ?MAX_SCAN_INTERVAL_BATCH
+            end,
           % Run the search
-          Head++run_continuation(Cont1,StorageType,MS,Limit1,[])
+          Head++run_continuation(Cont1,StorageType,MS,Limit1,BatchSize,[])
       end
   end.
 
 init_continuation('$end_of_table',_StartKey,_Limit)->
   '$end_of_table';
 init_continuation({Segment,_LastKey,Par3,_Limit,Ref,Par6,Par7,Par8},StartKey,Limit)->
+  % This is the form of ets ordered_set continuation
   Limit1 =
     if
       Limit=:=infinity -> ?MAX_SCAN_INTERVAL_BATCH;
       true -> Limit
     end,
-  % This is the form of ets ordered_set continuation
   {Segment,StartKey,Par3,Limit1,Ref,Par6,Par7,Par8};
 init_continuation({_LastKey,_Limit,Fun},StartKey,Limit)->
   Limit1 =
@@ -193,11 +208,18 @@ init_continuation({_LastKey,_Limit,Fun},StartKey,Limit)->
   % This is the form of mnesia_leveldb continuation
   {StartKey,Limit1,Fun}.
 
-run_continuation('$end_of_table',_StorageType,_MS,_Limit,Acc)->
+run_continuation('$end_of_table',_StorageType,_MS,_Limit,_BatchSize,Acc)->
+  % The end of table is reached
   lists:append(lists:reverse(Acc));
-run_continuation(_Cont,_StorageType,_MS,Limit,Acc) when Limit=<0->
+run_continuation(_Cont,_StorageType,_MS,Limit,_BatchSize,Acc) when Limit=:=0->
+  % The limit is reached
   lists:append(lists:reverse(Acc));
-run_continuation(Cont,StorageType,MS,Limit,Acc)->
+run_continuation(_Cont,_StorageType,_MS,Limit,_BatchSize,Acc) when Limit<0->
+  % The limit is passed over, we need to cut off the excessive records
+  Result = lists:append(lists:reverse(Acc)),
+  { Head, _} = lists:split( length(Result) + Limit , Result ),
+  Head;
+run_continuation(Cont,StorageType,MS,Limit,BatchSize,Acc)->
   % Run the search
   {Result,Cont1}=
     case mnesia_lib:db_select_cont(StorageType,Cont,MS) of
@@ -212,9 +234,9 @@ run_continuation(Cont,StorageType,MS,Limit,Acc)->
     end,
   % If the result is less than the limit the its the last batch
   if
-    is_integer(Limit),length(Result)<Limit->
-      lists:append(lists:reverse(Acc1));
-    length(Result)<?MAX_SCAN_INTERVAL_BATCH->
+    length(Result)<BatchSize->
+      % The last scanned records are out of range already. There is no sense
+      % to keep scanning
       lists:append(lists:reverse(Acc1));
     true->
       % The result is full, there might be more records
@@ -224,7 +246,7 @@ run_continuation(Cont,StorageType,MS,Limit,Acc)->
           is_integer(Limit)-> Limit-length(Result);
           true -> Limit
         end,
-      run_continuation(Cont1,StorageType,MS,Limit1,Acc1)
+      run_continuation(Cont1,StorageType,MS,Limit1,BatchSize,Acc1)
   end.
 
 %-------------SELECT----------------------------------------------

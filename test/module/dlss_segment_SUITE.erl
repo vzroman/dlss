@@ -35,15 +35,17 @@
 -export([
   test_read/1,
   test_order/1,
-  test_scan/1
+  test_scan/1,
+  test_ram_scan/1
 ]).
 
 
 all()->
   [
-    test_read,
-    test_order,
-    test_scan
+    test_read
+%%    ,test_order
+%%    ,test_scan
+    ,test_ram_scan
   ].
 
 groups()->
@@ -214,6 +216,39 @@ test_scan(_Config)->
   dlss:remove_storage(ram_test),
   dlss:remove_storage(ramdisc_test),
   dlss:remove_storage(disc_test),
+
+  ok.
+
+test_ram_scan(_Config)->
+  dlss:add_storage(ram_scan_test, ram),
+  [Ram] = dlss:get_segments(ram_scan_test),
+
+  % Fill in the storage
+  Count0 = 20000,
+  [ dlss_segment:dirty_write( Ram, {key,I}, {value,I} ) ||I<-lists:seq(1,Count0) ],
+
+  R2345= [ {{key,I}, {value,I}} || I<- lists:seq(123,2345)],
+
+  Start0 = erlang:system_time(millisecond),
+  R2345 = dlss_segment:dirty_scan( Ram, {key,123}, {key,2345} ),
+  Time0 = erlang:system_time(millisecond) - Start0,
+  ?LOGDEBUG("time0 ~p",[Time0]),
+
+  Count1 = 20000000,
+  [ dlss_segment:dirty_write( Ram, {key,I+Count0}, {value,I+Count0} ) ||I<-lists:seq(1,Count1) ],
+
+  Start1 = erlang:system_time(millisecond),
+  R2345 = dlss_segment:dirty_scan( Ram, {key,123}, {key,2345} ),
+  Time1 = erlang:system_time(millisecond) - Start1,
+  ?LOGDEBUG("time1 ~p",[Time1]),
+
+  Start2 = erlang:system_time(millisecond),
+  dlss_segment:dirty_scan( Ram, {key,19990123}, {key,19992345} ),
+  Time2 = erlang:system_time(millisecond) - Start2,
+  ?LOGDEBUG("time2 ~p",[Time2]),
+
+  % If the time1 is significantly bigger than the time2 then the issue with ets based
+  % storage types is still not resolved
 
   ok.
 
