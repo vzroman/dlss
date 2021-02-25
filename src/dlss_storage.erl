@@ -22,7 +22,7 @@
 
 -record(sgm,{str,key,lvl}).
 
--define(BATCH_SIZE,1000).
+-define(BATCH_SIZE,100000).
 
 %%=================================================================
 %%	STORAGE SERVICE API
@@ -368,16 +368,20 @@ absorb_parent( '$end_of_table', _Stop, _Parent, _Segment, _Count )->
 absorb_parent( Key, Stop, Parent, Segment, Count )
   when Key =/='$end_of_table',Key =< Stop->
 
-  if Count rem (?BATCH_SIZE*10) =:=0->?LOGINFO("segment ~p parent ~p, count ~p",[Segment,Parent,Count]); true->ok end,
+  ?LOGINFO("segment ~p parent ~p, count ~p",[Segment,Parent,Count]),
   Rows = dlss_segment:dirty_scan(Parent,Key,Stop,?BATCH_SIZE),
+
+  % Copy to child
   [if
      V=:='@deleted@' ->
-       ok = dlss_segment:dirty_delete( Segment, K ),
-       ok = dlss_segment:dirty_delete( Parent, K );
+       ok = dlss_segment:dirty_delete( Segment, K );
      true ->
-       ok = dlss_segment:dirty_write( Segment, K, V ),
-       ok = dlss_segment:dirty_delete( Parent, K )
+       ok = dlss_segment:dirty_write( Segment, K, V )
    end || {K,V} <-Rows],
+
+  % Remove from parent
+  [ ok = dlss_segment:dirty_delete( Parent, K ) || {K,_V} <-Rows],
+
   if
     length(Rows)>=?BATCH_SIZE ->
       {LastKey,_}=lists:last(Rows),

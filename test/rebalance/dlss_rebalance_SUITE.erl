@@ -40,6 +40,8 @@
 
 -define(MB,1048576).
 
+-define(TIMER(T),{(T) div 60000, (T) rem 60000}).
+
 all()->
   [
     schema_common
@@ -72,6 +74,9 @@ end_per_testcase(_,_Config)->
   ok.
 
 schema_common(_Config)->
+
+  ct:timetrap(24*3600*1000),
+
   % new storage
   ok=dlss_storage:add(schema_common,disc),
 
@@ -80,19 +85,20 @@ schema_common(_Config)->
   {ok, #{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_1),
 
   % fill the storage with records (~115 MB)
+  T0 = erlang:system_time(millisecond),
   ct:pal("root size ~p MB",[dlss_segment:get_size(dlss_schema_common_1)/?MB]),
-  Count = 2000000,
+  Count0 = 20000000,
   [ begin
       if
         V rem 100000 =:=0 ->
           ct:pal("write ~p",[V]);
         true ->ok
       end,
-      ok = dlss:dirty_write(schema_common, {x, binary:copy(integer_to_binary(V), 1)}, {y, binary:copy(integer_to_binary(V), 100)})
-    end || V <- lists:seq(1, Count) ],
+      ok = dlss:dirty_write(schema_common, {x, V}, {y, binary:copy(integer_to_binary(V), 100)})
+    end || V <- lists:seq(1, Count0) ],
   Size0 = dlss_segment:get_size(dlss_schema_common_1),
-
-  ct:pal("root size ~p MB",[Size0/?MB]),
+  T1 = erlang:system_time(millisecond),
+  ct:pal("root size ~p MB, time ~p",[Size0/?MB, ?TIMER(T1-T0)]),
 
   % Add a new Root segment for storage
   ok = dlss_storage:new_root_segment(schema_common),
@@ -122,6 +128,7 @@ schema_common(_Config)->
   % Normally when the first root is going level down it is to be split, because there are
   % no children to absorb it yet
   dlss_segment:split(dlss_schema_common_1, dlss_schema_common_3, '$start_of_table', Half , 0),
+  T2 = erlang:system_time(millisecond),
   SizeSplit = dlss_segment:get_size(dlss_schema_common_3),
   ct:pal("dlss_schema_common_3 size after split ~p, dlss_schema_common_1 size ~p",[
     SizeSplit/?MB,
@@ -132,7 +139,7 @@ schema_common(_Config)->
 
   % After a half of records are in the child segment, the child is going ta take place
   % next to the parent on the parent's level
-  ?LOGINFO("finish splitting ~p",[dlss_schema_common_1]),
+  ?LOGINFO("finish splitting ~p, time ~p",[dlss_schema_common_1, ?TIMER(T2-T1)]),
   dlss_storage:level_up( dlss_schema_common_3 ),
 
   % check the schema after splitting, notice that the dlss_schema_common_3 follows before dlss_schema_common_1 now
@@ -149,17 +156,18 @@ schema_common(_Config)->
   % add another portion of records to the storage
   % fill the storage with records (~115 MB)
   ct:pal("root size ~p MB",[dlss_segment:get_size(dlss_schema_common_2)/?MB]),
-  Count = 2000000,
+  Count1 = 20000000,
   [ begin
       if
         V rem 100000 =:=0 ->
           ct:pal("write ~p",[V]);
         true ->ok
       end,
-      ok = dlss:dirty_write(schema_common, {x, binary:copy(integer_to_binary(V), 2)}, {y, binary:copy(integer_to_binary(V), 100)})
-    end || V <- lists:seq(1, Count) ],
+      ok = dlss:dirty_write(schema_common, {x, V+Count0}, {y, <<"new",(binary:copy(integer_to_binary(V), 100))/binary>>})
+    end || V <- lists:seq(1, Count1) ],
+  T3 = erlang:system_time(millisecond),
   Size1 = dlss_segment:get_size(dlss_schema_common_2),
-  ct:pal("root size ~p MB",[Size1/?MB]),
+  ct:pal("root size ~p MB, time ~p",[Size1/?MB,?TIMER(T3-T2)]),
 
   % The root is full, create another one
   ok = dlss_storage:new_root_segment(schema_common),
@@ -185,9 +193,11 @@ schema_common(_Config)->
   ?LOGINFO("start absorbing dlss_schema_common_2, initail size ~p",[ dlss_segment:get_size(dlss_schema_common_2)/?MB ]),
   ?LOGINFO("absorb to dlss_schema_common_3, initail size ~p",[ dlss_segment:get_size(dlss_schema_common_3)/?MB ]),
   dlss_storage:absorb_parent( dlss_schema_common_3 ),
-  ?LOGINFO("dlss_schema_common_3 has absorbed its keys, dlss_schema_common_2 size ~p, dlss_schema_common_3 size ~p",[
+  T4 = erlang:system_time(millisecond),
+  ?LOGINFO("dlss_schema_common_3 has absorbed its keys, dlss_schema_common_2 size ~p, dlss_schema_common_3 size ~p, time ~p",[
     dlss_segment:get_size(dlss_schema_common_2)/?MB,
-    dlss_segment:get_size(dlss_schema_common_3)/?MB
+    dlss_segment:get_size(dlss_schema_common_3)/?MB,
+    ?TIMER(T4-T3)
   ]),
 
   % The parent still contains key belonging to the dlss_schema_common_1
@@ -195,9 +205,11 @@ schema_common(_Config)->
 
   ?LOGINFO("absorb to dlss_schema_common_1, initail size ~p",[ dlss_segment:get_size(dlss_schema_common_1)/?MB ]),
   dlss_storage:absorb_parent( dlss_schema_common_1 ),
-  ?LOGINFO("dlss_schema_common_1 has absorbed its keys, dlss_schema_common_2 size ~p, dlss_schema_common_1 size ~p",[
+  T5 = erlang:system_time(millisecond),
+  ?LOGINFO("dlss_schema_common_1 has absorbed its keys, dlss_schema_common_2 size ~p, dlss_schema_common_1 size ~p, time ~p",[
     dlss_segment:get_size(dlss_schema_common_2)/?MB,
-    dlss_segment:get_size(dlss_schema_common_1)/?MB
+    dlss_segment:get_size(dlss_schema_common_1)/?MB,
+    ?TIMER(T5-T4)
   ]),
 
   % Now the parent must be empty
@@ -239,11 +251,6 @@ split_segment(_Config)->
       end,
       ok = dlss:dirty_write(storage1, {x, V}, {y, binary:copy(integer_to_binary(V), 100)})
     end || V <- lists:seq(1, Count) ],
-%%  [ begin
-%%      W = binary:copy(<<"1">>, V),
-%%      {y, W} = dlss:dirty_read(storage_disc, {x, V})
-%%    end  || V <- lists:seq(1, Count) ],
-
 
   %------------------------------------------------------
   % The root is full
