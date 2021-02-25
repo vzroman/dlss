@@ -81,15 +81,15 @@ schema_common(_Config)->
 
   % fill the storage with records (~115 MB)
   ct:pal("root size ~p MB",[dlss_segment:get_size(dlss_schema_common_1)/?MB]),
-  Count = 2000000,
+  Count0 = 20000000,
   [ begin
       if
         V rem 100000 =:=0 ->
           ct:pal("write ~p",[V]);
         true ->ok
       end,
-      ok = dlss:dirty_write(schema_common, {x, binary:copy(integer_to_binary(V), 1)}, {y, binary:copy(integer_to_binary(V), 100)})
-    end || V <- lists:seq(1, Count) ],
+      ok = dlss:dirty_write(schema_common, {x, V}, {y, binary:copy(integer_to_binary(V), 120)})
+    end || V <- lists:seq(1, Count0) ],
   Size0 = dlss_segment:get_size(dlss_schema_common_1),
 
   ct:pal("root size ~p MB",[Size0/?MB]),
@@ -121,7 +121,7 @@ schema_common(_Config)->
 
   % Normally when the first root is going level down it is to be split, because there are
   % no children to absorb it yet
-  dlss_segment:split(dlss_schema_common_1, dlss_schema_common_3, '$start_of_table', Half , 0),
+  dlss_segment:split(dlss_schema_common_1, dlss_schema_common_3 ),
   SizeSplit = dlss_segment:get_size(dlss_schema_common_3),
   ct:pal("dlss_schema_common_3 size after split ~p, dlss_schema_common_1 size ~p",[
     SizeSplit/?MB,
@@ -149,7 +149,7 @@ schema_common(_Config)->
   % add another portion of records to the storage
   % fill the storage with records (~115 MB)
   ct:pal("root size ~p MB",[dlss_segment:get_size(dlss_schema_common_2)/?MB]),
-  Count = 2000000,
+  Count1 = 2000000,
   [ begin
       if
         V rem 100000 =:=0 ->
@@ -157,7 +157,7 @@ schema_common(_Config)->
         true ->ok
       end,
       ok = dlss:dirty_write(schema_common, {x, binary:copy(integer_to_binary(V), 2)}, {y, binary:copy(integer_to_binary(V), 100)})
-    end || V <- lists:seq(1, Count) ],
+    end || V <- lists:seq(1, Count1) ],
   Size1 = dlss_segment:get_size(dlss_schema_common_2),
   ct:pal("root size ~p MB",[Size1/?MB]),
 
