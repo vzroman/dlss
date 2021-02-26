@@ -518,3 +518,6 @@ dirty_range_select(Storage, StartKey, EndKey) ->
 -spec dirty_range_select(Storage :: atom(), StartKey :: any(), EndKey ::any(), Limit :: integer() ) -> Items :: list() | no_return().
 dirty_range_select(Storage, StartKey, EndKey, Limit) ->
   dlss_storage:dirty_range_select(Storage,StartKey,EndKey,Limit).
+
+% Update API docs
+% edoc:files(["src/dlss.erl"],[{dir, "doc"}]).
