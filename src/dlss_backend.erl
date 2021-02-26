@@ -178,6 +178,7 @@ init_backend(#{
   force := IsForced,
   start_timeout := StartTimeout
 })->
+
   % Create mnesia schema
   IsFirstStart=
     case mnesia:create_schema([node()]) of
@@ -189,6 +190,9 @@ init_backend(#{
         ?LOGERROR("FATAL! Unable to create the schema ~p",[Error]),
         ?ERROR(Error)
     end,
+
+  % Recover restore form backups interrupted rebalance transactions
+  dlss_rebalance:on_init(),
 
   %% Next steps need the mnesia started
   ?LOGINFO("starting mnesia"),
