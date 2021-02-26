@@ -43,8 +43,8 @@
 all()->
   [
     test_read
-%%    ,test_order
-%%    ,test_scan
+    ,test_order
+    ,test_scan
     ,test_ram_scan
   ].
 
@@ -249,6 +249,8 @@ test_ram_scan(_Config)->
 
   % If the time1 is significantly bigger than the time2 then the issue with ets based
   % storage types is still not resolved
+
+  dlss:remove_storage(ram_scan_test),
 
   ok.
 

@@ -22,7 +22,7 @@
 
 -record(sgm,{str,key,lvl}).
 
--define(BATCH_SIZE,1000).
+-define(BATCH_SIZE,100000).
 
 %%=================================================================
 %%	STORAGE SERVICE API
@@ -54,8 +54,7 @@
 -export([
   read/2,read/3,dirty_read/2,
   write/3,write/4,dirty_write/3,
-  delete/2,delete/3,dirty_delete/2,
-  scan_interval/3, scan_interval/4
+  delete/2,delete/3,dirty_delete/2
 ]).
 
 %%=================================================================
@@ -65,7 +64,9 @@
   first/1,dirty_first/1,
   last/1,dirty_last/1,
   next/2,dirty_next/2,
-  prev/2,dirty_prev/2
+  prev/2,dirty_prev/2,
+
+  dirty_range_select/3, dirty_range_select/4
 ]).
 %%====================================================================
 %%		Test API
@@ -368,16 +369,20 @@ absorb_parent( '$end_of_table', _Stop, _Parent, _Segment, _Count )->
 absorb_parent( Key, Stop, Parent, Segment, Count )
   when Key =/='$end_of_table',Key =< Stop->
 
-  if Count rem (?BATCH_SIZE*10) =:=0->?LOGINFO("segment ~p parent ~p, count ~p",[Segment,Parent,Count]); true->ok end,
+  ?LOGINFO("segment ~p parent ~p, count ~p",[Segment,Parent,Count]),
   Rows = dlss_segment:dirty_scan(Parent,Key,Stop,?BATCH_SIZE),
+
+  % Copy to child
   [if
      V=:='@deleted@' ->
-       ok = dlss_segment:dirty_delete( Segment, K ),
-       ok = dlss_segment:dirty_delete( Parent, K );
+       ok = dlss_segment:dirty_delete( Segment, K );
      true ->
-       ok = dlss_segment:dirty_write( Segment, K, V ),
-       ok = dlss_segment:dirty_delete( Parent, K )
+       ok = dlss_segment:dirty_write( Segment, K, V )
    end || {K,V} <-Rows],
+
+  % Remove from parent
+  [ ok = dlss_segment:dirty_delete( Parent, K ) || {K,_V} <-Rows],
+
   if
     length(Rows)>=?BATCH_SIZE ->
       {LastKey,_}=lists:last(Rows),
@@ -636,104 +641,6 @@ dirty_delete(Storage, Key)->
       dlss_segment:dirty_write( Root, Key, '@deleted@' )
   end.
 
-%-------------Interval scan----------------------------------------------
-scan_interval(Storage, StartKey, EndKey ) ->
-  scan_interval(Storage, StartKey, EndKey, infinity).
-scan_interval(Storage, StartKey, EndKey, Limit) ->
-  % Filter the segment that contain keys bigger
-  % than the EndKey
-  HeadSegments = find_head_segments( Storage, StartKey ),
-
-  % Remove the head segments from levels that cannot contain keys from the range
-  Segments=
-    if
-      StartKey =/= '$start_of_table'->
-        drop_head( HeadSegments, { StartKey } );
-      true ->
-        HeadSegments
-    end,
-
-  % Order the segments by level and then by start key
-  OrderedSegments = lists:usort( Segments ),
-
-  % scan each segment
-  Results =
-    [ { L, dlss_segment:dirty_scan( S, StartKey, EndKey, Limit) } || [L,_Key, S] <- OrderedSegments ],
-
-  % Merge by segments results
-  Merged = merge_results( Results ),
-
-  % Remove deleted records from the result
-  Filtered =
-    [ {K, V} || {K,V} <- Merged, V=/='@deleted@' ],
-
-  % Limit the result
-  if
-    Limit=:=infinity ->
-      Filtered;
-    length( Filtered ) >= Limit->
-      % We satisfy the limit, cut off the excessive records
-      { Head, _} = lists:split(Limit, Filtered),
-      Head;
-    length( Merged )<Limit->
-      % The total length of he result including deleted records is shorter than the limit,
-      % there is no sense to keep searching
-      Filtered;
-    length( Merged ) =:= length( Filtered )->
-      % There are no deleted records in the result, therefore it is the maximum that we can find
-      Filtered;
-    true ->
-      % If we are here then there were deleted records in the result that prevented us
-      % from getting the full result, we need to keep searching.
-      % Continue from the last key in the full result
-      { Head, [ { LastKey,_} ] } = lists:split( length( Merged )-1, Merged ),
-
-      Head ++ scan_interval( Storage, LastKey, EndKey, Limit - length( Filtered ) )
-  end.
-
-find_head_segments( Storage, Key )->
-  ToGuard=
-    if
-      Key =/= '$end_of_table' -> [];
-      true -> [{'=<','$1',{const, { Key }}}]
-    end,
-  MS=[{
-    #kv{key = #sgm{str=Storage, key='$1', lvl='$2'}, value='$3'},
-    ToGuard,
-    ['$2','$1','$3']  % The level goes first to be able to order by it later
-  }],
-  dlss_segment:dirty_select(dlss_schema,MS).
-
-drop_head( [ [Level,_Key,_Name1 ], [Level, Key, _Name2 ]=Next | Rest ], FromKey ) when Key >= FromKey->
-  % If the following segment of the same level contain keys bigger than
-  % the FromKey then the current segment cannot contain key from the range
-  drop_head( [Next | Rest], FromKey );
-drop_head( [S | Rest], FromKey )->
-  % FromKey is smaller than first key of the next segment in the level
-  % or it is the last segment in the level - include
-  [ S | drop_head( Rest, FromKey ) ];
-drop_head( [], _FromKey )->
-  [].
-
-merge_results( [ { Level, Records1 }, { Level, Records2 } | Rest ] )->
-  % The results are from the same level, union them
-  merge_results([ { Level, Records1++Records2 }|Rest]);
-merge_results( [ {_Level ,LevelResult} | Rest ] )->
-  % The next result is from the lower level
-  merge_levels(  merge_results( Rest ), LevelResult );
-merge_results([])->
-  [].
-
-merge_levels([{K1,_}=E1|D1], [{K2,_}=E2|D2]) when K1 < K2 ->
-  [E1|merge_levels(D1, [E2|D2])];
-merge_levels([{K1,_}=E1|D1], [{K2,_}=E2|D2]) when K1 > K2 ->
-  [E2|merge_levels([E1|D1], D2)];
-merge_levels([_E1|D1], [E2|D2])-> % K1 = K2, take the value from the second set
-  [E2|merge_levels(D1, D2)];
-merge_levels([], D2) -> D2;
-merge_levels(D1, []) -> D1.
-
-
 %%=================================================================
 %%	Iterate
 %%=================================================================
@@ -960,6 +867,117 @@ prev_sibling(#sgm{ str = Str, lvl = Lvl } = Sgm, Str, Lvl)->
 prev_sibling(_Other, _Str, _Lvl)->
   % Higher level or different storage
   undefined.
+
+%-------------Range of keys----------------------------------------------
+dirty_range_select(Storage, StartKey, EndKey ) ->
+  dirty_range_select(Storage, StartKey, EndKey, infinity).
+dirty_range_select(Storage, StartKey, EndKey, Limit) ->
+
+  % Filter the segment that contain keys bigger
+  % than the EndKey
+  HeadSegments = find_head_segments( Storage, EndKey ),
+
+  % Remove the head segments from levels that cannot contain keys from the range
+  Segments=
+    if
+      StartKey =/= '$start_of_table'->
+        drop_head( HeadSegments, { StartKey } );
+      true ->
+        HeadSegments
+    end,
+
+  % Order the segments by level and then by start key
+  OrderedSegments = lists:usort( Segments ),
+
+  % scan each segment
+  Results =
+    [ { L, scan_segment( S, StartKey, EndKey, Limit) } || [L,_Key, S] <- OrderedSegments ],
+
+  % Merge by segments results
+  Merged = merge_results( Results ),
+
+  % Remove deleted records from the result
+  Filtered =
+    [ {K, V} || {K,V} <- Merged, V=/='@deleted@' ],
+
+  % Limit the result
+  if
+    Limit=:=infinity ->
+      Filtered;
+    length( Filtered ) =:= Limit->
+      % Exactly the limit
+      Filtered;
+    length( Filtered ) > Limit->
+      % We satisfy the limit, cut off the excessive records
+      lists:sublist( Filtered, Limit );
+    length( Merged )<Limit->
+      % The total length of he result including deleted records is shorter than the limit,
+      % there is no sense to keep searching
+      Filtered;
+    length( Merged ) =:= length( Filtered )->
+      % There are no deleted records in the result, therefore it is the maximum that we can find
+      Filtered;
+    true ->
+      % If we are here then there were deleted records in the result that prevented us
+      % from getting the full result, we need to keep searching.
+      % Continue from the last key in the full result
+      { Head, [ { LastKey,_} ] } = lists:split( length( Filtered )-1, Filtered ),
+      Head ++ lists:sublist( dirty_range_select( Storage, LastKey, EndKey, Limit ), Limit - length(Head) )
+  end.
+
+find_head_segments( Storage, Key )->
+  ToGuard=
+    if
+      Key =:= '$end_of_table' -> [];
+      true -> [{'=<','$1',{const, { Key }}}]
+    end,
+  MS=[{
+    #kv{key = #sgm{str=Storage, key='$1', lvl='$2'}, value='$3'},
+    ToGuard,
+    [['$2','$1','$3']]  % The level goes first to be able to order by it later
+  }],
+  dlss_segment:dirty_select(dlss_schema,MS).
+
+drop_head( [ [Level,_Key,_Name1 ], [Level, Key, _Name2 ]=Next | Rest ], FromKey ) when FromKey >= Key->
+  % If the following segment of the same level contain keys bigger than
+  % the FromKey then the current segment cannot contain key from the range
+  drop_head( [Next | Rest], FromKey );
+drop_head( [S | Rest], FromKey )->
+  % FromKey is smaller than first key of the next segment in the level
+  % or it is the last segment in the level - include
+  [ S | drop_head( Rest, FromKey ) ];
+drop_head( [], _FromKey )->
+  [].
+
+scan_segment( Segment, StartKey, EndKey, Limit )->
+  % As scanning is performed in dirty mode
+  % there are might be schema transformation after selecting
+  % the segments so the segment may not exist any more
+  try
+    dlss_segment:dirty_scan(Segment, StartKey, EndKey, Limit)
+  catch
+      _:{no_exists, _}->[];
+    _:Error->?ERROR(Error)
+  end.
+
+merge_results( [ { Level, Records1 }, { Level, Records2 } | Rest ] )->
+  % The results are from the same level, union them
+  merge_results([ { Level, Records1++Records2 }|Rest]);
+merge_results( [ {_Level ,LevelResult} | Rest ] )->
+  % The next result is from the lower level
+  merge_levels(  merge_results( Rest ), LevelResult );
+merge_results([])->
+  [].
+
+merge_levels([{K1,_}=E1|D1], [{K2,_}=E2|D2]) when K1 < K2 ->
+  [E1|merge_levels(D1, [E2|D2])];
+merge_levels([{K1,_}=E1|D1], [{K2,_}=E2|D2]) when K1 > K2 ->
+  [E2|merge_levels([E1|D1], D2)];
+merge_levels([_E1|D1], [E2|D2])-> % K1 = K2, take the value from the second set
+  [E2|merge_levels(D1, D2)];
+merge_levels([], D2) -> D2;
+merge_levels(D1, []) -> D1.
+
 
 %%=================================================================
 %%	Internal stuff

@@ -39,6 +39,8 @@
 <tr><td valign="top"><a href="#dirty_last-1">dirty_last/1</a></td><td>Dirty Last.</td></tr>
 <tr><td valign="top"><a href="#dirty_next-2">dirty_next/2</a></td><td>Dirty Next.</td></tr>
 <tr><td valign="top"><a href="#dirty_prev-2">dirty_prev/2</a></td><td>Dirty Previous.</td></tr>
+<tr><td valign="top"><a href="#dirty_range_select-3">dirty_range_select/3</a></td><td>Dirty Range Select.</td></tr>
+<tr><td valign="top"><a href="#dirty_range_select-4">dirty_range_select/4</a></td><td>Dirty Range Select.</td></tr>
 <tr><td valign="top"><a href="#dirty_read-2">dirty_read/2</a></td><td>Dirty Read.</td></tr>
 <tr><td valign="top"><a href="#dirty_write-3">dirty_write/3</a></td><td>Dirty Write.</td></tr>
 <tr><td valign="top"><a href="#first-1">first/1</a></td><td>First.</td></tr>
@@ -176,6 +178,25 @@
  As input function gets Name of storage as atom and pivot Key
  There is no needs of wrapping in transaction, when using dirty_previous
  Returns RetKey, or '$end_of_table' or  throws Error</p>
+
+<h3 class="function"><a name="dirty_range_select-3">dirty_range_select/3</a></h3>
+<div class="spec">
+<p><tt>dirty_range_select(Storage::atom(), StartKey::any(), EndKey::any()) -&gt; Items::list() | no_return()</tt><br></p>
+</div><p>Dirty Range Select.
+ Function searches the storage for keys relating to the defined range of keys.
+ StartKey and EndKey define the range to run trough.
+ '$start_of_table' and '$end_of_table' are supported.
+ Returns a list of found items [{ Key, Value}|...]</p>
+
+<h3 class="function"><a name="dirty_range_select-4">dirty_range_select/4</a></h3>
+<div class="spec">
+<p><tt>dirty_range_select(Storage::atom(), StartKey::any(), EndKey::any(), Limit::integer()) -&gt; Items::list() | no_return()</tt><br></p>
+</div><p>Dirty Range Select.
+ Function searches the storage for keys relating to the defined range of keys.
+ StartKey and EndKey define the interval to run trough.
+ Limit defines the maximum number of item to return
+ '$start_of_table' and '$end_of_table' are supported.
+ Returns a list of found items [{ Key, Value}|...]</p>
 
 <h3 class="function"><a name="dirty_read-2">dirty_read/2</a></h3>
 <div class="spec">

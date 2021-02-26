@@ -497,82 +497,31 @@ get_nodes(Segment)->
   end.
 
 split( From, To )->
-  #{ type:=Type } = get_info( From ),
-  Initial = get_size( From ),
-  Half = Initial / 2,
-  ?LOGINFO("start moving records ~p MB records from ~p to ~p, type ~p",[
-    From,
-    To,
-    Half/ ?MB,
-    Type
-  ]),
-
-  BatchSize = ?MAX_SCAN_INTERVAL_BATCH*100,
-  OnBatch=
-    fun({Key,_V})->
-      ToSize = get_size(To),
-      if
-        ToSize>=Half -> stop ;
-        true ->
-          ?LOGINFO("move batch from ~p to ~p, last key ~p, parent size ~p, child size ~p, left size ~p MB",[
-            From,
-            To,
-            Key,
-            get_size(From) / ?MB,
-            ToSize / ?MB,
-            round((Half - ToSize)/?MB)
-          ]),
-          next
-      end
-    end,
-
-  if
-    Type =:= disc->
-      ?LOGINFO("DISC based storage split algorithm"),
-      split_disc( From, To, BatchSize, OnBatch, [] );
-    true ->
-      ?LOGINFO("RAM based storage split algorithm"),
-      split_ram( From, To, '$start_of_table', BatchSize, OnBatch, [] )
-  end.
-
-split_disc( From, To, OnBatch, BatchSize, Batch ) when length(Batch)>=BatchSize->
-  % Prepare bulk insert, remove deleted records
-  Deleted = mnesia_eleveldb:encode_val('@deleted@'),
-  Batch1 = [ {K,V} || {K,V} <-lists:reverse(Batch), V=/=Deleted ],
-
-  % The bulk insert
-  mnesia_eleveldb:bulk_insert( To, Batch1 ),
-  case OnBatch( lists:last(BatchSize) ) of
-    next->
-      split_disc( From, To, OnBatch, BatchSize, [] );
-    _->
-      ok
-  end;
-split_disc( From, To, OnBatch, BatchSize, Batch )->
-
-
-
-split_ram( From, To, Key, Size, I ) when (I rem 100) =:=0->
+  Half = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT) *?MB / 2,
+  ?LOGINFO("start moving records ~p MB records from ~p to ~p",[ From, To, Half/ ?MB ]),
+  split( From, To, '$start_of_table', Half , 0 ).
+split( From, To, Key, Size, I ) when (I rem 10) =:=0->
   ToSize = get_size(To),
   if
     ToSize>=Size -> ok ;
     true ->
-      ?LOGINFO("move key from ~p to ~p, parent size ~p, child size ~p, left size ~p MB",[
+      ?LOGINFO("move bulk key ~p from ~p to ~p, parent size ~p, child size ~p, left size ~p MB",[
+        Key,
         From,
         To,
         get_size(From) / ?MB,
         ToSize / ?MB,
         round((Size - ToSize)/?MB)
       ]),
-      split_ram( From, To, Key, Size, I+1 )
+      split( From, To, Key, Size, I+1 )
   end;
-split_ram( From, To, Key, Size, I )->
-  Rows = dlss_segment:dirty_scan(From,Key,'$end_of_table',?MAX_SCAN_INTERVAL_BATCH),
+split( From, To, Key, Size, I )->
+  Rows = dlss_segment:dirty_scan(From,Key,'$end_of_table',?MAX_SCAN_INTERVAL_BATCH*100),
   if
-    length(Rows)>=?MAX_SCAN_INTERVAL_BATCH ->
+    length(Rows)>=?MAX_SCAN_INTERVAL_BATCH*100 ->
       move_rows(Rows, From, To),
       {LastKey,_}=lists:last(Rows),
-      split_ram( From, To, LastKey, Size, I+1 );
+      split( From, To, LastKey, Size, I+1 );
     true ->
       % It is the end of the From segment take only half of the keys
       { Head ,_ } = lists:split( length(Rows) div 2, Rows ),
@@ -580,12 +529,12 @@ split_ram( From, To, Key, Size, I )->
   end.
 
 move_rows( Rows, From, To )->
-  [if
-     V=:='@deleted@' ->
-       ok = dlss_segment:dirty_delete( From, K );
-     true ->
-       ok = dlss_segment:dirty_write( To, K, V ),
-       ok = dlss_segment:dirty_delete( From, K )
-   end || {K,V} <-Rows],
+
+  % Make a copy
+  [ ok = dlss_segment:dirty_write( To, K, V ) || {K,V}<-Rows, V=/='@deleted@' ],
+
+  % Delete from the parent
+  [ ok = dlss_segment:dirty_delete( From, K ) || {K,_V}<-Rows  ],
+
   ok.
 

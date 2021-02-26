@@ -41,10 +41,8 @@
   storage_prev/1,
   storage_first/1,
   storage_last/1,
-  storage_scan/1,
-  storage_scan_boundaries/1,
-  storage_scan_infinity/1,
-  storage_scan_deleted/1
+  storage_range_select/1,
+  storage_range_select_limit/1
 ]).
 
 -define(MB,1048576).
@@ -59,10 +57,8 @@ all()->
     ,storage_prev
     ,storage_first
     ,storage_last
-%%    ,storage_scan
-%%    ,storage_scan_boundaries
-%%    ,storage_scan_infinity
-%%    ,storage_scan_deleted
+    ,storage_range_select
+    ,storage_range_select_limit
   ].
 
 groups()->
@@ -941,133 +937,447 @@ storage_last(_Config)->
   ok.
 
 
-storage_scan(_Config) ->
-  ok = dlss_storage:add(storage1, ram),
-  ok = dlss_storage:spawn_segment(dlss_storage1_1, 5),
+storage_range_select(_Config) ->
+  ok=dlss_storage:add(storage1,disc),
+  [dlss_storage1_1]=dlss_storage:get_segments(storage1),
 
-  ?assertEqual(
-    [dlss_storage1_1, dlss_storage1_2],
-    dlss_storage:get_segments(storage1)
-  ),
+  '$end_of_table' = dlss_storage:dirty_last(storage1),
+  % fill the storage with records
+  Count = 200000,
+  [ begin
+      ok = dlss:dirty_write(storage1, {x, V}, {y, V})
+    end || V <- lists:seq(1, Count) ],
 
-  [ ok = dlss_segment:dirty_write(dlss_storage1_1, X, new_value) || X <- lists:seq(1, 5) ],
-  [ ok = dlss_segment:dirty_write(dlss_storage1_2, X, old_value) || X <- lists:seq(4, 7) ],
+  %------------Check------------------------------------------------
+  % The whole table
+  Full=
+    [ {{x,V}, {y,V}} || V <- lists:seq(1, Count) ],
+  Full = dlss_storage:dirty_range_select(storage1,'$start_of_table','$end_of_table'),
 
-  ?assertEqual(
-    [{3, new_value}, {4, new_value}, {5, new_value}, {6, old_value}],
-    dlss_storage:scan_interval(storage1, 3, 7, _Limit = 4)
-  ),
+  % From the head
+  R123= [ {{x,V}, {y,V}} || V<- lists:seq(1,123)],
+  R123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123}),
+  R123 = dlss_storage:dirty_range_select(storage1,'$start_of_table',{x,123}),
+  R123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123}),
 
-  ?assertEqual([{3, new_value}], dlss_storage:scan_interval(storage1, 3, 3)),
+  % From the tail
+  R123_= [ {{x,V}, {y,V}} || V<- lists:seq(Count-123,Count)],
+  R123_ = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count}),
+  R123_ = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count+123}),
+  R123_ = dlss_storage:dirty_range_select(storage1,{x,Count-123},'$end_of_table'),
 
+  % From the middle
+  R2345= [ {{x,V}, {y,V}} || V<- lists:seq(123,2345)],
+  R2345 = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345}),
+
+  %------------------------------------------------------
+  % Two levels
+  %------------------------------------------------------
+  % Create a new root segment
+  ok = dlss_storage:new_root_segment(storage1),
+  [
+    dlss_storage1_2,
+    dlss_storage1_1
+  ]=dlss_storage:get_segments(storage1),
+
+  %------------Check------------------------------------------------
+  % The whole table
+  Full=
+    [ {{x,V}, {y,V}} || V <- lists:seq(1, Count) ],
+  Full = dlss_storage:dirty_range_select(storage1,'$start_of_table','$end_of_table'),
+
+  % From the head
+  R123= [ {{x,V}, {y,V}} || V<- lists:seq(1,123)],
+  R123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123}),
+  R123 = dlss_storage:dirty_range_select(storage1,'$start_of_table',{x,123}),
+  R123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123}),
+
+  % From the tail
+  R123_= [ {{x,V}, {y,V}} || V<- lists:seq(Count-123,Count)],
+  R123_ = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count}),
+  R123_ = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count+123}),
+  R123_ = dlss_storage:dirty_range_select(storage1,{x,Count-123},'$end_of_table'),
+
+  % From the middle
+  R2345= [ {{x,V}, {y,V}} || V<- lists:seq(123,2345)],
+  R2345 = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345}),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  [
+    dlss_storage1_2,
+    dlss_storage1_1,
+    dlss_storage1_3
+  ]=dlss_storage:get_segments(storage1),
+
+  %------------Check------------------------------------------------
+  % The whole table
+  Full=
+    [ {{x,V}, {y,V}} || V <- lists:seq(1, Count) ],
+  Full = dlss_storage:dirty_range_select(storage1,'$start_of_table','$end_of_table'),
+
+  % From the head
+  R123= [ {{x,V}, {y,V}} || V<- lists:seq(1,123)],
+  R123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123}),
+  R123 = dlss_storage:dirty_range_select(storage1,'$start_of_table',{x,123}),
+  R123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123}),
+
+  % From the tail
+  R123_= [ {{x,V}, {y,V}} || V<- lists:seq(Count-123,Count)],
+  R123_ = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count}),
+  R123_ = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count+123}),
+  R123_ = dlss_storage:dirty_range_select(storage1,{x,Count-123},'$end_of_table'),
+
+  % From the middle
+  R2345= [ {{x,V}, {y,V}} || V<- lists:seq(123,2345)],
+  R2345 = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345}),
+
+
+  % simulate the segments split. Move the first half of records into
+  % the newly spawned segment dlss_storage1_3
+  HalfCount = 100000,
+  [ begin
+      Key = {x, V},
+      Value = {y, V},
+      ok = dlss_segment:dirty_write(dlss_storage1_3, Key, Value ),
+      ok = dlss_segment:dirty_delete(dlss_storage1_1, Key )
+    end || V <- lists:seq(1, HalfCount) ],
+  ?LOGDEBUG("---------------------SPLITTING----------------------------"),
+
+  %------------Check------------------------------------------------
+  % The whole table
+  Full=
+    [ {{x,V}, {y,V}} || V <- lists:seq(1, Count) ],
+  Full = dlss_storage:dirty_range_select(storage1,'$start_of_table','$end_of_table'),
+
+  % From the head
+  R123= [ {{x,V}, {y,V}} || V<- lists:seq(1,123)],
+  R123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123}),
+  R123 = dlss_storage:dirty_range_select(storage1,'$start_of_table',{x,123}),
+  R123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123}),
+
+  % From the tail
+  R123_= [ {{x,V}, {y,V}} || V<- lists:seq(Count-123,Count)],
+  R123_ = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count}),
+  R123_ = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count+123}),
+  R123_ = dlss_storage:dirty_range_select(storage1,{x,Count-123},'$end_of_table'),
+
+  % From the middle
+  R2345= [ {{x,V}, {y,V}} || V<- lists:seq(123,2345)],
+  R2345 = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345}),
+
+  % The newborn segment is filled with its keys, move it to the level of the parent
+  dlss_storage:level_up( dlss_storage1_3 ),
+
+  %------------Check------------------------------------------------
+  % The whole table
+  Full=
+    [ {{x,V}, {y,V}} || V <- lists:seq(1, Count) ],
+  Full = dlss_storage:dirty_range_select(storage1,'$start_of_table','$end_of_table'),
+
+  % From the head
+  R123= [ {{x,V}, {y,V}} || V<- lists:seq(1,123)],
+  R123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123}),
+  R123 = dlss_storage:dirty_range_select(storage1,'$start_of_table',{x,123}),
+  R123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123}),
+
+  % From the tail
+  R123_= [ {{x,V}, {y,V}} || V<- lists:seq(Count-123,Count)],
+  R123_ = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count}),
+  R123_ = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count+123}),
+  R123_ = dlss_storage:dirty_range_select(storage1,{x,Count-123},'$end_of_table'),
+
+  % From the middle
+  R2345= [ {{x,V}, {y,V}} || V<- lists:seq(123,2345)],
+  R2345 = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345}),
+
+  % Delete every second key in the storage
+  [ begin
+      ok = dlss:dirty_delete(storage1, {x, V})
+    end || V <- lists:seq(1, Count, 2) ],
+  ?LOGDEBUG("---------------------DELETE 1/2----------------------------"),
+
+  %------------Check------------------------------------------------
+  % The whole table
+  FullX=
+    [ {{x,V}, {y,V}} || V <- lists:seq(2, Count, 2) ],
+  FullX = dlss_storage:dirty_range_select(storage1,'$start_of_table','$end_of_table'),
+
+  % From the head
+  R123X= [ {{x,V}, {y,V}} || V<- lists:seq(2,123,2)],
+  R123X = dlss_storage:dirty_range_select(storage1,{x,1},{x,123}),
+  R123X = dlss_storage:dirty_range_select(storage1,'$start_of_table',{x,123}),
+  R123X = dlss_storage:dirty_range_select(storage1,{x,1},{x,123}),
+
+  % From the tail
+  R123_X= [ {{x,V}, {y,V}} || V<- lists:seq(Count-123+1,Count,2)],
+  R123_X = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count}),
+  R123_X = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count+123}),
+  R123_X = dlss_storage:dirty_range_select(storage1,{x,Count-123},'$end_of_table'),
+
+
+  %------------------------------------------------------
+  % Three levels
+  %------------------------------------------------------
+  % Create a new root segment
+  ok = dlss_storage:new_root_segment(storage1),
+  [
+    dlss_storage1_4,
+    dlss_storage1_2,
+    dlss_storage1_3,
+    dlss_storage1_1
+  ]=dlss_storage:get_segments(storage1),
+
+  %------------Check------------------------------------------------
+  % The whole table
+  FullX=
+    [ {{x,V}, {y,V}} || V <- lists:seq(2, Count, 2) ],
+  FullX = dlss_storage:dirty_range_select(storage1,'$start_of_table','$end_of_table'),
+
+  % From the head
+  R123X= [ {{x,V}, {y,V}} || V<- lists:seq(2,123,2)],
+  R123X = dlss_storage:dirty_range_select(storage1,{x,1},{x,123}),
+  R123X = dlss_storage:dirty_range_select(storage1,'$start_of_table',{x,123}),
+  R123X = dlss_storage:dirty_range_select(storage1,{x,1},{x,123}),
+
+  % From the tail
+  R123_X= [ {{x,V}, {y,V}} || V<- lists:seq(Count-123+1,Count,2)],
+  R123_X = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count}),
+  R123_X = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count+123}),
+  R123_X = dlss_storage:dirty_range_select(storage1,{x,Count-123},'$end_of_table'),
+
+
+  % Update every second key in the storage
+  [ begin
+      ok = dlss:dirty_write(storage1, {x, V}, {y2,V})
+    end || V <- lists:seq(1, Count, 2) ],
+  ?LOGDEBUG("---------------------UPDATE 1/2----------------------------"),
+
+  %------------Check------------------------------------------------
+  % The whole table
+  FullU=
+    ordsets:from_list([ {{x,V}, {y,V}} || V <- lists:seq(2, Count, 2) ] ++[ {{x,V}, {y2,V}} || V <- lists:seq(1, Count, 2) ] ),
+  FullU = dlss_storage:dirty_range_select(storage1,'$start_of_table','$end_of_table'),
+
+  % From the head
+  R123U= ordsets:from_list([ {{x,V}, {y,V}} || V<- lists:seq(2,123,2)] ++ [ {{x,V}, {y2,V}} || V <- lists:seq(1,123,2) ] ),
+  R123U = dlss_storage:dirty_range_select(storage1,{x,1},{x,123}),
+  R123U = dlss_storage:dirty_range_select(storage1,'$start_of_table',{x,123}),
+  R123U = dlss_storage:dirty_range_select(storage1,{x,1},{x,123}),
+
+  % From the tail
+  R123_U= ordsets:from_list([ {{x,V}, {y,V}} || V<- lists:seq(Count-123+1,Count,2)] ++ [ {{x,V}, {y2,V}} || V<- lists:seq(Count-123,Count,2)]),
+  R123_U = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count}),
+  R123_U = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count+123}),
+  R123_U = dlss_storage:dirty_range_select(storage1,{x,Count-123},'$end_of_table'),
+
+  % Clean up
   dlss_storage:remove(storage1),
   []=dlss_storage:get_storages(),
   []=dlss_storage:get_segments(),
 
   ok.
 
-storage_scan_infinity(_Config) ->
-  ok = dlss_storage:add(storage1, ram),
-  ?assertEqual(
-    [dlss_storage1_1],
-    dlss_storage:get_segments(storage1)
-  ),
+storage_range_select_limit(_Config) ->
+  ok=dlss_storage:add(storage1,disc),
+  [dlss_storage1_1]=dlss_storage:get_segments(storage1),
 
-  % Put value into the storage
-  [ ok = dlss_segment:dirty_write(dlss_storage1_1, X, value) || X <- lists:seq(1, 3) ],
+  '$end_of_table' = dlss_storage:dirty_last(storage1),
+  % fill the storage with records
+  Count = 200000,
+  [ begin
+      ok = dlss:dirty_write(storage1, {x, V}, {y, V})
+    end || V <- lists:seq(1, Count) ],
 
-  ?assertEqual(
-    [{1, value}, {2, value}, {3, value}],
-    dlss_storage:scan_interval(storage1, '$start_of_table', '$end_of_table', 10)
-  ),
+  %------------Check------------------------------------------------
+  % The whole table
+  R1_100=
+    [ {{x,V}, {y,V}} || V <- lists:seq(1, 100) ],
+  R1_100 = dlss_storage:dirty_range_select(storage1,'$start_of_table','$end_of_table',100),
 
-   ?assertEqual(
-    [{1, value}, {2, value}],
-    dlss_storage:scan_interval(storage1, '$start_of_table', 2, 10)
-  ),
+  % From the head
+  R1_123= [ {{x,V}, {y,V}} || V<- lists:seq(1,123)],
+  R1_123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},123),
+  R1_123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},200),
+  R1_100 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},100),
 
-  ?assertEqual(
-    [{3, value}],
-    dlss_storage:scan_interval(storage1, 3, '$end_of_table', 10)
-  ),
 
+  % From the tail
+  R123_F= [ {{x,V}, {y,V}} || V<- lists:seq(Count-123,Count)],
+  R123_F = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count},124),
+  {R123_100,_} = lists:split(100,R123_F),
+  R123_100 = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count+123},100),
+  R123_100 = dlss_storage:dirty_range_select(storage1,{x,Count-123},'$end_of_table',100),
+
+  % From the middle
+  R2345_F= [ {{x,V}, {y,V}} || V<- lists:seq(123,2345)],
+  R2345_F = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345},2345-123+1),
+
+  %------------------------------------------------------
+  % Two levels
+  %------------------------------------------------------
+  % Create a new root segment
+  ok = dlss_storage:new_root_segment(storage1),
+  [
+    dlss_storage1_2,
+    dlss_storage1_1
+  ]=dlss_storage:get_segments(storage1),
+%%
+  %------------Check------------------------------------------------
+  % The whole table
+  R1_100=
+    [ {{x,V}, {y,V}} || V <- lists:seq(1, 100) ],
+  R1_100 = dlss_storage:dirty_range_select(storage1,'$start_of_table','$end_of_table',100),
+
+  % From the head
+  R1_123= [ {{x,V}, {y,V}} || V<- lists:seq(1,123)],
+  R1_123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},123),
+  R1_123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},200),
+  R1_100 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},100),
+
+
+  % From the tail
+  R123_F= [ {{x,V}, {y,V}} || V<- lists:seq(Count-123,Count)],
+  R123_F = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count},124),
+  {R123_100,_} = lists:split(100,R123_F),
+  R123_100 = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count+123},100),
+  R123_100 = dlss_storage:dirty_range_select(storage1,{x,Count-123},'$end_of_table',100),
+
+  % From the middle
+  R2345_F= [ {{x,V}, {y,V}} || V<- lists:seq(123,2345)],
+  R2345_F = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345},2345-123+1),
+  R2345_F = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345},2345-123+2),
+  {R2345_100,_} = lists:split(100,R2345_F),
+  R2345_100 = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345},100),
+
+  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  [
+    dlss_storage1_2,
+    dlss_storage1_1,
+    dlss_storage1_3
+  ]=dlss_storage:get_segments(storage1),
+
+  %------------Check------------------------------------------------
+  % The whole table
+  R1_100=
+    [ {{x,V}, {y,V}} || V <- lists:seq(1, 100) ],
+  R1_100 = dlss_storage:dirty_range_select(storage1,'$start_of_table','$end_of_table',100),
+
+  % From the head
+  R1_123= [ {{x,V}, {y,V}} || V<- lists:seq(1,123)],
+  R1_123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},123),
+  R1_123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},200),
+  R1_100 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},100),
+
+
+  % From the tail
+  R123_F= [ {{x,V}, {y,V}} || V<- lists:seq(Count-123,Count)],
+  R123_F = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count},124),
+  {R123_100,_} = lists:split(100,R123_F),
+  R123_100 = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count+123},100),
+  R123_100 = dlss_storage:dirty_range_select(storage1,{x,Count-123},'$end_of_table',100),
+
+  % From the middle
+  R2345_F= [ {{x,V}, {y,V}} || V<- lists:seq(123,2345)],
+  R2345_F = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345},2345-123+1),
+  R2345_F = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345},2345-123+2),
+  {R2345_100,_} = lists:split(100,R2345_F),
+  R2345_100 = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345},100),
+
+  % simulate the segments split. Move the first half of records into
+  % the newly spawned segment dlss_storage1_3
+  HalfCount = 100000,
+  [ begin
+      Key = {x, V},
+      Value = {y, V},
+      ok = dlss_segment:dirty_write(dlss_storage1_3, Key, Value ),
+      ok = dlss_segment:dirty_delete(dlss_storage1_1, Key )
+    end || V <- lists:seq(1, HalfCount) ],
+  ?LOGDEBUG("---------------------SPLITTING----------------------------"),
+
+  %------------Check------------------------------------------------
+  % The whole table
+  R1_100=
+    [ {{x,V}, {y,V}} || V <- lists:seq(1, 100) ],
+  R1_100 = dlss_storage:dirty_range_select(storage1,'$start_of_table','$end_of_table',100),
+
+  % From the head
+  R1_123= [ {{x,V}, {y,V}} || V<- lists:seq(1,123)],
+  R1_123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},123),
+  R1_123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},200),
+  R1_100 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},100),
+
+
+  % From the tail
+  R123_F= [ {{x,V}, {y,V}} || V<- lists:seq(Count-123,Count)],
+  R123_F = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count},124),
+  {R123_100,_} = lists:split(100,R123_F),
+  R123_100 = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count+123},100),
+  R123_100 = dlss_storage:dirty_range_select(storage1,{x,Count-123},'$end_of_table',100),
+
+  % From the middle
+  R2345_F= [ {{x,V}, {y,V}} || V<- lists:seq(123,2345)],
+  R2345_F = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345},2345-123+1),
+  R2345_F = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345},2345-123+2),
+  {R2345_100,_} = lists:split(100,R2345_F),
+  R2345_100 = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345},100),
+
+  % The newborn segment is filled with its keys, move it to the level of the parent
+  dlss_storage:level_up( dlss_storage1_3 ),
+
+  %------------Check------------------------------------------------
+  % The whole table
+  R1_100=
+    [ {{x,V}, {y,V}} || V <- lists:seq(1, 100) ],
+  R1_100 = dlss_storage:dirty_range_select(storage1,'$start_of_table','$end_of_table',100),
+
+  % From the head
+  R1_123= [ {{x,V}, {y,V}} || V<- lists:seq(1,123)],
+  R1_123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},123),
+  R1_123 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},200),
+  R1_100 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},100),
+
+
+  % From the tail
+  R123_F= [ {{x,V}, {y,V}} || V<- lists:seq(Count-123,Count)],
+  R123_F = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count},124),
+  {R123_100,_} = lists:split(100,R123_F),
+  R123_100 = dlss_storage:dirty_range_select(storage1,{x,Count-123},{x,Count+123},100),
+  R123_100 = dlss_storage:dirty_range_select(storage1,{x,Count-123},'$end_of_table',100),
+
+  % From the middle
+  R2345_F= [ {{x,V}, {y,V}} || V<- lists:seq(123,2345)],
+  R2345_F = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345},2345-123+1),
+  R2345_F = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345},2345-123+2),
+  {R2345_100,_} = lists:split(100,R2345_F),
+  R2345_100 = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345},100),
+
+  % Delete every second key in the storage
+  [ begin
+      ok = dlss:dirty_delete(storage1, {x, V})
+    end || V <- lists:seq(1, Count, 2) ],
+  ?LOGDEBUG("---------------------DELETE 1/2----------------------------"),
+
+  %------------Check------------------------------------------------
+  % The whole table
+  R1_100_2=
+    [ {{x,V}, {y,V}} || V <- lists:seq(2, Count, 2) ],
+  R1_100_2 = dlss_storage:dirty_range_select(storage1,'$start_of_table','$end_of_table',length(R1_100_2)),
+
+  % From the head
+  R123_2= [ {{x,V}, {y,V}} || V<- lists:seq(2,123,2)],
+  R1123_2 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},length(R123_2)),
+  R1123_2 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},123),
+  R1123_2 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},200),
+  {R1123_2_20,_} = lists:split(20,R1123_2),
+  R1123_2_20 = dlss_storage:dirty_range_select(storage1,{x,1},{x,123},20),
+
+  % Clean up
   dlss_storage:remove(storage1),
   []=dlss_storage:get_storages(),
   []=dlss_storage:get_segments(),
 
   ok.
 
-storage_scan_boundaries(_Config) ->
-  ok = dlss_storage:add(storage1, ram),
-  ok = dlss_storage:spawn_segment(dlss_storage1_1, 5),
-  ok = dlss_storage:spawn_segment(dlss_storage1_1, 15),
-  ok = dlss_storage:spawn_segment(dlss_storage1_1, 25),
-  ?assertEqual(
-    [dlss_storage1_1, dlss_storage1_2, dlss_storage1_3, dlss_storage1_4],
-    dlss_storage:get_segments(storage1)
-  ),
-
-  [ ok = dlss_segment:dirty_write(dlss_storage1_1, X, value1) || X <- lists:seq(1, 3) ],
-  [ ok = dlss_segment:dirty_write(dlss_storage1_2, X, value2) || X <- lists:seq(5, 12) ],
-  [ ok = dlss_segment:dirty_write(dlss_storage1_3, X, value3) || X <- lists:seq(15, 20) ],
-  [ ok = dlss_segment:dirty_write(dlss_storage1_4, X, value4) || X <- lists:seq(25, 26) ],
-
-  ?assertEqual(
-    [{10, value2}, {11, value2}, {12, value2}, {15, value3}, {16, value3}, {17, value3}],
-    dlss_storage:scan_interval(storage1, 10, 17, 100)
-  ),
-
-  StartOfTable =
-    [{I,value1}||I<-lists:seq(1,3)] ++
-    [{I,value2}||I<-lists:seq(5,12)] ++
-    [{I,value3}||I<-lists:seq(15,20)],
-  ?assertEqual(
-    StartOfTable,
-    dlss_storage:scan_interval(storage1, '$start_of_table', 20, 100)
-  ),
-
-  EndOfTable =
-    [{I,value2}||I<-lists:seq(5,12)] ++
-    [{I,value3}||I<-lists:seq(15,20)]++
-    [{I,value4}||I<-lists:seq(25,26)],
-  ?assertEqual(
-    EndOfTable,
-    dlss_storage:scan_interval(storage1, 5, '$end_of_table', 100)
-  ),
 
 
-  dlss_storage:remove(storage1),
-  []=dlss_storage:get_storages(),
-  []=dlss_storage:get_segments(),
 
-  ok.
-
-storage_scan_deleted(_Config) ->
-  ok = dlss_storage:add(storage1, ram),
-  ok = dlss_storage:spawn_segment(dlss_storage1_1, 3),
-
-  ?assertEqual(
-    [dlss_storage1_1, dlss_storage1_2],
-    dlss_storage:get_segments(storage1)
-  ),
-
-  [ ok = dlss_segment:dirty_write(dlss_storage1_1, X, value) || X <- lists:seq(1, 5) ],
-  ok = dlss_segment:dirty_write(dlss_storage1_2, 4, old_value),
-
-  ?assertEqual(
-    [{3, value}, {4, value}, {5, value}],
-    dlss_storage:scan_interval(storage1, 3, 7, _Limit = 4)
-  ),
-
-  ok = dlss_storage:dirty_delete(storage1, 4),
-
-  ?assertEqual(
-    [{3, value}, {5, value}],
-    dlss_storage:scan_interval(storage1, 3, 7, _Limit = 4)
-  ),
-
-  dlss_storage:remove(storage1),
-  []=dlss_storage:get_storages(),
-  []=dlss_storage:get_segments(),
-
-  ok.
