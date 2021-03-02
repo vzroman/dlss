@@ -27,8 +27,8 @@
 %%=================================================================
 -export([
   start_link/0,
-  start_segment/1,
-  stop_segment/1
+  start_storage/1,
+  stop_storage/1
 ]).
 
 %%=================================================================
@@ -49,13 +49,13 @@
 start_link() ->
   supervisor:start_link({local, ?SERVER}, ?MODULE, []).
 
-start_segment(Segment)->
-  supervisor:start_child(?SERVER,[Segment]).
+start_storage(Storage)->
+  supervisor:start_child(?SERVER,[Storage]).
 
-stop_segment(Segment)->
-  case gen_server:stop(Segment,normal,?ENV(segment_stop_timeout, ?DEFAULT_STOP_TIMEOUT)) of
+stop_storage(Storage)->
+  case gen_server:stop(Storage,shutdown,?ENV(storage_stop_timeout, ?DEFAULT_STOP_TIMEOUT)) of
     ok->ok;
-    _->supervisor:terminate_child(?SERVER,Segment)
+    _->supervisor:terminate_child(?SERVER,Storage)
   end.
 
 %%=================================================================
@@ -66,18 +66,18 @@ init([]) ->
   ?LOGINFO("starting schema supervisor ~p",[self()]),
 
   ChildConfig = #{
-    id=>dlss_segment,
-    start=>{dlss_segment,start_link,[]},
-    restart=>transient,
-    shutdown=>?ENV(segment_stop_timeout, ?DEFAULT_STOP_TIMEOUT),
-    type=>worker,
-    modules=>[dlss_segment]
+    id => dlss_storage_supervisor,
+    start => { dlss_storage_supervisor, start_link, [] },
+    restart => transient,
+    shutdown => ?ENV(storage_stop_timeout, ?DEFAULT_STOP_TIMEOUT),
+    type=> worker,
+    modules=>[ dlss_storage_supervisor ]
   },
 
-  Supervisor=#{
-    strategy=>simple_one_for_one,
-    intensity=>?ENV(segemnt_max_restarts, ?MAX_RESTARTS),
-    period=>?ENV(segemnt_max_period, ?MAX_PERIOD)
+  Supervisor = #{
+    strategy => simple_one_for_one,
+    intensity => ?ENV(storage_max_restarts, ?MAX_RESTARTS),
+    period => ?ENV(storage_max_period, ?MAX_PERIOD)
   },
 
-  {ok, {Supervisor, [ChildConfig]}}.
+  {ok, { Supervisor, [ ChildConfig ]}}.

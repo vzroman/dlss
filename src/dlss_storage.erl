@@ -20,7 +20,7 @@
 
 -include("dlss.hrl").
 
--record(sgm,{str,key,lvl}).
+-record(sgm,{str,key,lvl,copies}).
 
 -define(BATCH_SIZE,100000).
 
@@ -33,6 +33,7 @@
   get_storages/0,
   get_segments/0,get_segments/1,
   new_root_segment/1,
+  set_segment_version/3,
   root_segment/1,
   segment_params/1,
   add/2,add/3,
@@ -131,7 +132,7 @@ is_local(Storage)->
 
 segment_params(Name)->
   case segment_by_name(Name) of
-    { ok, #sgm{ str = Str, lvl = Lvl, key = Key } }->
+    { ok, #sgm{ str = Str, lvl = Lvl, key = Key, copies = Copies } }->
       % The start key except for '_' is wrapped into a tuple
       % to make the schema properly ordered by start keys
       StartKey =
@@ -139,7 +140,7 @@ segment_params(Name)->
           { K } -> K;
           _-> Key
         end,
-      { ok, #{ storage => Str, level => Lvl, key => StartKey } };
+      { ok, #{ storage => Str, level => Lvl, key => StartKey, copies => Copies } };
     Error -> Error
   end.
 
@@ -276,6 +277,32 @@ new_root_segment(Storage) ->
     ok=dlss_segment:write(dlss_schema, #sgm{str=Storage,key='_',lvl=0}, NewRoot , write)
   end),
   ok.
+
+
+set_segment_version( Segment, Node, Version )->
+  case segment_by_name( Segment ) of
+    { ok, Sgm }-> set_segment_version( Sgm, Node, Version );
+    Error -> Error
+  end;
+set_segment_version( #sgm{ copies = Copies } = Sgm, Node, Version )->
+
+  % Set a version for a segment in the schema
+  case dlss:transaction(fun()->
+    % Set a lock on the segment
+    Segment = dlss_segment:read( dlss_schema, Sgm, write ),
+
+    % Update the copies
+    Copies1 = Copies#{ Node=>Version },
+
+    % Update the segment
+    ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ copies = Copies1 }, Segment, write )
+
+  end) of
+    {ok,ok} -> ok;
+    Error -> Error
+  end.
+
 
 %---------Spawn a segment----------------------------------------
 spawn_segment(Name) when is_atom(Name)->

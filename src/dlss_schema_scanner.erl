@@ -90,8 +90,7 @@ handle_info(loop,#state{
 
   % Scanning procedure
   Started1=
-    try
-      scan_segments(Started)
+    try scan_storages(Started)
     catch
         _:Error:Stack->
           ?LOGERROR("schema scanner error ~p, stack ~p",[Error,Stack]),
@@ -110,22 +109,19 @@ code_change(_OldVsn, State, _Extra) ->
 %%============================================================================
 %%	The loop
 %%============================================================================
-scan_segments(Started)->
+scan_storages(Started)->
   ?LOGDEBUG("start schema scanning"),
 
-  % The service checks a schema on segments hosted by this node.
-  % Each hosted segment must have a serving process that is responsible
-  % for its balancing
-
-  Segments = get_supervised_segments( node() ),
+  % The service checks monitors the schema for configured storages
+  Storages = dlss_storage:get_storages(),
 
   % Start new segments
-  [ dlss_segment:start(S) || S <- Segments -- Started ],
+  [ dlss_rebalance:start(S) || S <- Storages -- Started ],
 
   % Stop no longer supervised segments
-  [ dlss_segment:stop(S) || S <- Started -- Segments ],
+  [ dlss_rebalance:stop(S) || S <- Started -- Storages ],
 
-  Segments.
+  Storages.
 
 get_supervised_segments(Node)->
   % Get list of attached nodes
