@@ -376,6 +376,23 @@ merge_segment( Target, Source, FromKey0, ToKey0, Type, Hash )->
 
   dlss_rebalance:copy( Source, Target, Copy, FromKey, OnBatch, Hash ).
 
+reload_segment( Segment, SourceNode )->
+
+  {ok, #{copies:= Copies} } = dlss_storage:segment_params( Segment ),
+  #dump{ version = Ver, hash = Hash } = maps:get( SourceNode, Copies ),
+
+  case dlss_rebalance:reload_from( Segment, SourceNode ) of
+    ok->
+      ok = dlss_storage:set_segment_version( Segment, node(), #dump{hash = Hash, version = Ver }  );
+    { error, Error }->
+      ?LOGERROR("~p unable to reload from ~p, error ~p",[
+        Segment,
+        SourceNode,
+        Error
+      ])
+  end.
+
+
 %%============================================================================
 %% Confirm schema transformation
 %%============================================================================
@@ -423,11 +440,17 @@ check_hash( split, Segment, Node, Master, #{copies:=Copies} )->
       ok;
     #dump{ version = Ver}->
       ?LOGWARNING("~p hash for ~p differs from hash for master ~p",[ Segment, Node, Master ]),
-      reload_segment( Segment, Master );
+      % We purge the local copy of the segment to let the sync mechanism to reload it
+      % next cycle
+      dlss_segment:remove_node( Segment, Node );
     _->
       % The node has not updated its version yet
       ok
-  end.
+  end;
+
+check_hash( merge, Segment, Node, _Master, _Params )->
+  Children = dlss_storage:get_children( Segment ),
+
 
 not_confirmed( Version, Hash, Copies )->
   [ N || { N, #dump{version = V,hash = H}} <- Copies, V =/=Version or H=/=Hash  ].

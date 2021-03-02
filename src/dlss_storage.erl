@@ -340,15 +340,14 @@ split_commit( Sgm, K1, #sgm{lvl = Level }=Prn, K2 )->
 
 merge_commit( Segment )->
 
-  { ok, #sgm{ str = Storage, lvl = Level} =Sgm } = segment_by_name( Segment ),
-  MergeLevel = round(Level),
+  { ok, Sgm } = segment_by_name( Segment ),
 
-  Segments=
-    [ S || S = #sgm{lvl = MergeLevel} <- [ segment_by_name(S) || S <-get_segments( Storage ) ]],
+  Children =
+    [ segment_by_name(S) || S <- get_children( Segment ) ],
 
-  merge_commit( Sgm, Segments ).
+  merge_commit( Sgm, Children ).
 
-merge_commit( Sgm, LevelSegments )->
+merge_commit( Sgm, Children )->
   % Set a version for a segment in the schema
   case dlss:transaction(fun()->
     % Set a lock on the segment
@@ -362,7 +361,7 @@ merge_commit( Sgm, LevelSegments )->
         ok = dlss_segment:delete(dlss_schema, S , write ),
         ok = dlss_segment:write( dlss_schema, S#sgm{ key = First }, Segment, write )
 
-      end || S <- LevelSegments ],
+      end || S <- Children ],
 
     % Remove the merged segment
     ok = dlss_segment:delete(dlss_schema, Sgm , write ),
@@ -601,18 +600,14 @@ get_children(Name) when is_atom(Name)->
     { ok, Segment }-> get_children(Segment);
     Error -> Error
   end;
-get_children(Sgm)->
-  get_children(dlss_segment:dirty_next(dlss_schema,Sgm),Sgm,[]).
-
-get_children(#sgm{ str = S, lvl = NextLvl },#sgm{ str = S, lvl = Lvl}, Acc)
-  when NextLvl =< Lvl->
-  lists:reverse(Acc);
-get_children(#sgm{ str = S } = Next, #sgm{str = S} = Sgm,Acc)->
-  Table = dlss_segment:dirty_read( dlss_schema, Next ),
-  get_children(dlss_segment:dirty_next(dlss_schema,Next),Sgm,[{Next,Table}|Acc]);
-get_children(_Other,_Sgm,Acc)->
-  % next storage or '$end_of_table'
-  lists:reverse(Acc).
+get_children(#sgm{str = Storage,lvl = Level})->
+  LevelDown = math:floor( Level ) + 1,
+  MS=[{
+    #kv{key = #sgm{str = Storage,key = '_',lvl = LevelDown}, value = '$1'},
+    [],
+    ['$1']
+  }],
+  dlss_segment:dirty_select(dlss_schema,MS).
 
 has_siblings(Name) when is_atom(Name)->
   case segment_by_name(Name) of
