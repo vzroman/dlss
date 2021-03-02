@@ -111,15 +111,14 @@ handle_info(loop,#state{
 
     % Perform waiting transformations
     case pending_transformation( Storage, Type, node()) of
-      wait ->
-        % The schema is under transformation
-        ok;
+      { Operation, Segment } ->
+
+        % Master commits the schema transformation if it is finished
+        hash_confirm( Operation, Segment, node() );
       _->
+
         % Remove stale head
         purge_stale( Storage ),
-
-        % Master schema transformations
-        master_commit( Storage, node() ),
 
         % No active transformations, check limits
         check_limits( Storage )
@@ -152,7 +151,7 @@ sync_copies( Storage, Node )->
       #{ nodes => Nodes }->
         {ok, #{copies := Copies} } = dlss_storage:segment_params(S),
 
-        case { maps:is_key( Node, Nodes ), lists:member(Node,Nodes) } of
+        case { maps:is_key( Node, Copies ), lists:member(Node,Nodes) } of
           { true, false }->
             % The segment is to be added to the Node
             Master = master_node( Copies ),
@@ -200,13 +199,13 @@ pending_transformation( Storage, Type, Node )->
         Operation =:= split->
           %----------split---------------------------------------
           case Params of
-            #{copies := #{ Node := #dump{ hash = Hash, version = Ver }=Dump } }->
+            #{ version:=Version, copies := #{ Node := #dump{ hash = Hash }=Dump } }->
               % The segment has local copy
               Parent = dlss_storage:parent_segment( Segment ),
               case split_segment( Parent, Segment, Type, Hash ) of
                 {ok, NewHash }->
                   % Update the version of the segment in the schema
-                  ok = dlss_storage:set_segment_version( Segment, Node, Dump#dump{hash = NewHash, version = Ver+1 }  );
+                  ok = dlss_storage:set_segment_version( Segment, Node, Dump#dump{hash = NewHash, version = Version }  );
                 {error, SplitError}->
                   ?LOGERROR("~p error on splitting, error ~p",[ Segment, SplitError ])
               end;
@@ -286,10 +285,10 @@ merge_level([_Prev, Next = {_S, #{key:=K2}}| Tail ], Source, #{key:=Key} = Param
   % The first key in the source segment is bigger is bigger than the first key
   % of the next segment, so there are no keys for the S1 segment in the source
   merge_level([Next|Tail], Source,Params, Node, Type );
-merge_level([ {S, #{key:=FromKey, copies:=Copies}}| Tail ], Source, _Params, Node, Type )->
+merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], Source, _Params, Node, Type )->
   % This is the segment that is currently copies the keys from the source
   case Copies of
-    #{ Node := #dump{hash = Hash, version = Ver} = Dump}->
+    #{ Node := #dump{hash = Hash } = Dump}->
       % This node hosts the target segment, it must to play its role
       ToKey =
         case Tail of
@@ -301,7 +300,7 @@ merge_level([ {S, #{key:=FromKey, copies:=Copies}}| Tail ], Source, _Params, Nod
       case merge_segment( S, Source, FromKey, ToKey, Type, Hash ) of
         {ok, NewHash }->
           % Update the version of the segment in the schema
-          ok = dlss_storage:set_segment_version( S, Node, Dump#dump{hash = NewHash, version = Ver+1 }  );
+          ok = dlss_storage:set_segment_version( S, Node, Dump#dump{hash = NewHash, version = Version }  );
         {error, MergeError}->
           ?LOGERROR("~p error on merging to ~p, error ~p",[ Source, S, MergeError ])
       end;
@@ -378,10 +377,68 @@ merge_segment( Target, Source, FromKey0, ToKey0, Type, Hash )->
   dlss_rebalance:copy( Source, Target, Copy, FromKey, OnBatch, Hash ).
 
 %%============================================================================
+%% Confirm schema transformation
+%%============================================================================
+hash_confirm( Operation, Segment, Node )->
+  {ok, #{copies:= Copies} = Params } = dlss_storage:segment_params( Segment ),
+  case master_node( Copies ) of
+    Node ->
+      master_commit( Operation, Segment,Node, Params );
+    Master->
+      check_hash( Operation, Segment, Node, Master, Params )
+  end.
+
+master_commit( split, Segment, Node, #{version := Version,copies:=Copies})->
+  #dump{ hash = Hash } = maps:get( Node, Copies ),
+  case not_confirmed( Version, Hash, Copies ) of
+    [] ->
+      dlss_storage:split_commit( Segment );
+    Nodes->
+      % There are still nodes that are not confirmed the hash yet
+      ?LOGINFO("~p splitting is not finished yet, waiting for ~p",[ Nodes ]),
+      ok
+  end;
+master_commit( merge, Segment, _Node, _Params )->
+  Children = dlss_storage:get_children( Segment ),
+  Children1=
+    [ begin
+        {ok, #{version:=V, copies:=C} } = dlss_storage:segment_params(S),
+        M = master_node(C),
+        #{ M:= #dump{ hash = H } } = C,
+        {S, not_confirmed( V, H, C ) }
+      end || S <- Children ],
+  case [ {S,W} || {S, W } <- Children1, length(W)>0 ] of
+    []->
+      dlss_storage:merge_commit( Segment );
+    Wait->
+      ?LOGINFO("~p merging is not finished yet, waiting for ~p",[ Wait ]),
+      ok
+  end.
+
+check_hash( split, Segment, Node, Master, #{copies:=Copies} )->
+  #dump{ version = Ver, hash = Hash } = maps:get( Master, Copies ),
+  case maps:get( Node, Copies ) of
+    #dump{ version = Ver, hash = Hash }->
+      % The hash is confirmed
+      ok;
+    #dump{ version = Ver}->
+      ?LOGWARNING("~p hash for ~p differs from hash for master ~p",[ Segment, Node, Master ]),
+      reload_segment( Segment, Master );
+    _->
+      % The node has not updated its version yet
+      ok
+  end.
+
+not_confirmed( Version, Hash, Copies )->
+  [ N || { N, #dump{version = V,hash = H}} <- Copies, V =/=Version or H=/=Hash  ].
+
+%%============================================================================
 %%	Internal helpers
 %%============================================================================
 master_node( Copies )->
-  case lists:usort([ N || { N, #dump{ hash = Hash } } <- maps:to_list( Copies ), is_binary(Hash) ]) of
+  WithHash = lists:usort([ N || { N, #dump{ hash = Hash } } <- maps:to_list( Copies ), is_binary(Hash) ]),
+  Ready = dlss:get_ready_nodes( ),
+  case WithHash -- Ready of
     [ Master | _ ]-> Master;
     _-> undefined
   end.
@@ -397,77 +454,4 @@ which_operation(Level)->
       merge
   end.
 
-%%============================================================================
-%%	The Loop
-%%============================================================================
-loop( Segment, #{ level := 0, storage := Storage } )->
-  % The segment is the root segment in its storage.
-  % We watch its size and when it reaches the limit we
-  % create a new root segment for the storage
-  Size = get_size( Segment ) / ?MB, % MB
-  Limit = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT),
-  if
-    Size >= Limit ->
-      ?LOGINFO("the root segment ~p in storage ~p reached the limit ~p, size ~p",[ Segment, Storage, Limit, Size ]),
-      dlss_storage:new_root_segment(Storage);
-    true -> ok
-  end;
-
-loop( Segment, #{ storage := Storage, level := Level } )->
-  case dlss_storage:get_children( Segment ) of
-    [] ->
-      % The segment is at the lowest level.
-      % Check its size and if it has reached the limit split the segment
-      Size = round (get_size( Segment ) / ?MB), % MB
-      Limit = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT),
-      if
-        Size >= Limit ->
-          ?LOGINFO("the segment ~p in storage ~p reached the limit ~p, size ~p, split...",[ Segment, Storage, Limit, Size ]),
-
-          % Create a child segment
-          dlss_storage:spawn_segment(Segment),
-          ok;
-        true ->
-          if
-            Level > 1->
-              % The segment is below the desired level. To take place in upper level it
-              % must absorb its parent
-              case dlss_storage:has_siblings(Segment) of
-                true->
-                  % The parent is to absorbed by its children
-                  dlss_storage:absorb_parent(Segment);
-                _->
-                  % If there are no other children it is the splitting
-                  Parent = dlss_storage:parent_segment(Segment),
-
-                  ?LOGINFO("start splitting ~p",[Parent]),
-                  split( Parent, Segment ),
-
-                  case is_empty(Segment) of
-                    false->
-                      ?LOGINFO("finish splitting ~p",[Parent]),
-                      dlss_storage:level_up( Segment );
-                    _->
-                      ?LOGERROR("empty head segment ~p after splitting ~p",[Segment,Parent])
-                  end,
-                  ok
-              end;
-            true ->
-              % the segment is at the respectable level and is not overwhelmed.
-              % This is a stable state
-              ok
-          end
-      end;
-    _->
-      % The segment has children, that are at the level lower than 1.
-      % They are to absorb their parent to take a place at its level.
-      case is_empty( Segment ) of
-        true ->
-          % The segment has been absorbed by the children
-          ?LOGINFO("the segment ~p in storage ~p is to be absorbed",[Segment,Storage]),
-          dlss_storage:absorb_segment( Segment );
-        _->
-          ok
-      end
-  end.
 

@@ -30,7 +30,10 @@
   copy/6,
 
   disc_bulk_read/2,
-  disc_bulk_write/2
+  disc_bulk_write/2,
+
+  ets_bulk_read/2,
+  ets_bulk_write/2
 ]).
 
 %% API
@@ -145,6 +148,21 @@ disc_bulk_write( Segment, Records )->
   ok = mnesia_eleveldb:bulk_insert( Segment, [ {K,V} || {put, K, V} <- Records ] ),
   ok = mnesia_eleveldb:bulk_delete( Segment, [K || {delete, K} <- Records ] ),
 
+  ok.
+
+ets_bulk_read( Segment, FromKey )->
+  dlss_segment:dirty_scan( Segment, FromKey, '$end_of_table', ?BATCH_SIZE ).
+
+ets_bulk_write( Segment, Records )->
+
+  mnesia:ets(fun()->
+    [ case R of
+        {put, K, V}->
+          ok = dlss_segment:write(Segment, K, V);
+        {delete, K}->
+          ok = dlss_segment:delete( Segment, K )
+      end|| R <- Records ]
+  end),
   ok.
 
 

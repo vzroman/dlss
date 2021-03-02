@@ -20,7 +20,7 @@
 
 -include("dlss.hrl").
 
--record(sgm,{str,key,lvl,copies}).
+-record(sgm,{str,key,lvl,ver,copies}).
 
 -define(BATCH_SIZE,100000).
 
@@ -34,6 +34,8 @@
   get_segments/0,get_segments/1,
   new_root_segment/1,
   set_segment_version/3,
+  split_commit/1,
+  merge_commit/1,
   root_segment/1,
   segment_params/1,
   add/2,add/3,
@@ -132,7 +134,7 @@ is_local(Storage)->
 
 segment_params(Name)->
   case segment_by_name(Name) of
-    { ok, #sgm{ str = Str, lvl = Lvl, key = Key, copies = Copies } }->
+    { ok, #sgm{ str = Str, lvl = Lvl, key = Key, ver = Version, copies = Copies } }->
       % The start key except for '_' is wrapped into a tuple
       % to make the schema properly ordered by start keys
       StartKey =
@@ -140,7 +142,7 @@ segment_params(Name)->
           { K } -> K;
           _-> Key
         end,
-      { ok, #{ storage => Str, level => Lvl, key => StartKey, copies => Copies } };
+      { ok, #{ storage => Str, level => Lvl, key => StartKey, version=>Version, copies => Copies } };
     Error -> Error
   end.
 
@@ -301,6 +303,87 @@ set_segment_version( #sgm{ copies = Copies } = Sgm, Node, Version )->
   end) of
     {ok,ok} -> ok;
     Error -> Error
+  end.
+
+split_commit( Segment )->
+  Parent = parent_segment( Segment ),
+  First = dlss_segment:dirty_first( Segment ),
+  Last = dlss_segment:dirty_last( Segment ),
+  Next = dlss_segment:dirty_next( Parent, Last ),
+
+  {ok, Sgm } = segment_by_name( Segment ),
+  {ok, Prn } = segment_by_name( Parent ),
+
+  split_commit( Sgm, First, Prn, Next ).
+
+split_commit( Sgm, K1, #sgm{lvl = Level }=Prn, K2 )->
+
+  % Set a version for a segment in the schema
+  case dlss:transaction(fun()->
+    % Set a lock on the segment
+    Segment = dlss_segment:read( dlss_schema, Sgm, write ),
+    Parent = dlss_segment:read( dlss_schema, Prn, write ),
+
+    % Update the segment
+    ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level, key = K1 }, Segment, write ),
+
+    % Update the parent
+    ok = dlss_segment:delete(dlss_schema, Prn , write ),
+    ok = dlss_segment:write( dlss_schema, Prn#sgm{ key = K2 }, Parent, write ),
+
+    ok
+  end) of
+    {ok,ok} -> ok;
+    Error -> Error
+  end.
+
+merge_commit( Segment )->
+
+  { ok, #sgm{ str = Storage, lvl = Level} =Sgm } = segment_by_name( Segment ),
+  MergeLevel = round(Level),
+
+  Segments=
+    [ S || S = #sgm{lvl = MergeLevel} <- [ segment_by_name(S) || S <-get_segments( Storage ) ]],
+
+  merge_commit( Sgm, Segments ).
+
+merge_commit( Sgm, LevelSegments )->
+  % Set a version for a segment in the schema
+  case dlss:transaction(fun()->
+    % Set a lock on the segment
+    Merged = dlss_segment:read( dlss_schema, Sgm, write ),
+    [ begin
+
+        Segment = dlss_segment:read( dlss_schema, S, write ),
+        First = dlss_segment:first( Segment ),
+
+        % Update the segment
+        ok = dlss_segment:delete(dlss_schema, S , write ),
+        ok = dlss_segment:write( dlss_schema, S#sgm{ key = First }, Segment, write )
+
+      end || S <- LevelSegments ],
+
+    % Remove the merged segment
+    ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+
+    Merged
+  end) of
+    {ok, Merged } ->
+      ?LOGINFO("removing merged segment ~p",[Merged]),
+      case dlss_backend:delete_segment( Merged ) of
+        ok->ok;
+        {error,Error}->
+          ?LOGERROR("unable to remove segment ~p, reason ~p",[
+            Merged,
+            Error
+          ])
+      end;
+    {error, Error} ->
+      ?LOGERROR("error on merge commit ~p, error ~p",[
+        dlss_segment:dirty_read( dlss_schema, Sgm ),
+        Error
+      ])
   end.
 
 
@@ -989,7 +1072,7 @@ scan_segment( Segment, StartKey, EndKey, Limit )->
 
 merge_results( [ { Level, Records1 }, { Level, Records2 } | Rest ] )->
   % The results are from the same level, union them
-  merge_results([ { Level, Records1++Records2 }|Rest]);
+  merge_results([ { Level, merge_levels( Records2, Records1 ) }|Rest]);
 merge_results( [ {_Level ,LevelResult} | Rest ] )->
   % The next result is from the lower level
   merge_levels(  merge_results( Rest ), LevelResult );
