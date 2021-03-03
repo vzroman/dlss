@@ -50,7 +50,12 @@
   % create/delete a storage
   add/2,add/3,
   remove/1,
-  % transform the storage schema
+
+  % add/remove segment copies
+  add_segment_copy/2,
+  remove_segment_copy/2,
+
+  % rebalance the storage schema
   split_segment/1,
   set_segment_version/3,
   split_commit/1,
@@ -404,7 +409,6 @@ split_commit( Sgm, #sgm{lvl = Level }=Prn )->
     Error -> ?ERROR( Error )
   end.
 
-
 %%--------------------------------------------------------------------------------
 %%  Merge procedure
 %%--------------------------------------------------------------------------------
@@ -533,6 +537,63 @@ set_segment_version( #sgm{ copies = Copies } = Sgm, Node, Version )->
     ok = dlss_segment:delete(dlss_schema, Sgm , write ),
     ok = dlss_segment:write( dlss_schema, Sgm#sgm{ copies = Copies1 }, Segment, write )
 
+  end) of
+    {ok,ok} -> ok;
+    Error -> ?ERROR( Error )
+  end.
+
+%%--------------------------------------------------------------------------------
+%%  Add/Remove segment copies
+%%--------------------------------------------------------------------------------
+add_segment_copy( Segment, Node ) when is_atom(Segment)->
+  case segment_by_name( Segment ) of
+    {ok, Sgm}-> add_segment_copy( Sgm, Node );
+    _-> {error, {invalid_segment, Segment} }
+  end;
+add_segment_copy( Sgm = #sgm{copies = Copies} , Node )->
+
+  case dlss:transaction(fun()->
+    % Set a lock on the segment
+    % Set a lock on the segment
+    Segment = dlss_segment:read( dlss_schema, Sgm, write ),
+    case Copies of
+      #{Node:=_}->
+        % The copy is already added
+        ok;
+      _->
+        % Just add a copy to the schema, the actual copying will do the storage supervisor
+        ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+        ok = dlss_segment:write( dlss_schema, Sgm#sgm{ copies = Copies#{Node => undefined } }, Segment, write )
+    end,
+
+    ok
+  end) of
+    {ok,ok} -> ok;
+    Error -> ?ERROR( Error )
+  end.
+
+remove_segment_copy( Segment, Node ) when is_atom(Segment)->
+  case segment_by_name( Segment ) of
+    {ok, Sgm}-> remove_segment_copy( Sgm, Node );
+    _-> {error, {invalid_segment, Segment} }
+  end;
+remove_segment_copy( Sgm = #sgm{copies = Copies} , Node )->
+
+  case dlss:transaction(fun()->
+    % Set a lock on the segment
+    % Set a lock on the segment
+    Segment = dlss_segment:read( dlss_schema, Sgm, write ),
+    case Copies of
+      #{Node:=_}->
+        % Just add a copy to the schema, the actual copying will do the storage supervisor
+        ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+        ok = dlss_segment:write( dlss_schema, Sgm#sgm{ copies = maps:without([Node],Copies) }, Segment, write );
+      _->
+        % The copy is already removed
+        ok
+    end,
+
+    ok
   end) of
     {ok,ok} -> ok;
     Error -> ?ERROR( Error )

@@ -246,7 +246,7 @@ stop()->
 %-----------------------------------------------------------------
 -spec add_segment_copy(Segment :: atom(), Node :: node()) -> ok | { error, Reason :: any() }.
 add_segment_copy(Segment,Node)->
-  dlss_segment:add_node(Segment,Node).
+  dlss_storage:add_segment_copy( Segment, Node ).
 
 %-----------------------------------------------------------------
 %% @doc Remove segment_copy from node.
@@ -257,7 +257,7 @@ add_segment_copy(Segment,Node)->
 %-----------------------------------------------------------------
 -spec remove_segment_copy(Segment :: atom(), Node :: node()) -> ok | { error, Reason :: any() }.
 remove_segment_copy(Segment,Node)->
-  dlss_segment:remove_node(Segment,Node).
+  dlss_storage:remove_segment_copy(Segment,Node).
 
 %%---------------------------------------------------------------
 %%	DATA API
