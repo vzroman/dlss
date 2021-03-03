@@ -116,33 +116,10 @@ scan_storages(Started)->
   Storages = dlss_storage:get_storages(),
 
   % Start new segments
-  [ dlss_rebalance:start(S) || S <- Storages -- Started ],
+  [ dlss_storage_supervisor:start(S) || S <- Storages -- Started ],
 
   % Stop no longer supervised segments
-  [ dlss_rebalance:stop(S) || S <- Started -- Storages ],
+  [ dlss_storage_supervisor:stop(S) || S <- Started -- Storages ],
 
   Storages.
 
-get_supervised_segments(Node)->
-  % Get list of attached nodes
-  ReadyNodes = dlss_node:get_ready_nodes(),
-  All = dlss_storage:get_segments(),
-  % Filter segment for which the Node is the master
-  Filter=
-    fun(S)->
-      case dlss_segment:get_info(S) of
-        #{ local:=true }->
-          % Local only segments are never supervised (split).
-          % IMPORTANT! Local only storage can have only root segment
-          false;
-        #{ nodes := Nodes }->
-          case Nodes -- ( Nodes -- ReadyNodes ) of
-            [ Node|_ ] ->
-              % If the Node is the first node in the list of hosting nodes for the segment
-              % then the Node is the master and should supervise the segment
-              true;
-            _ -> false
-          end
-      end
-    end,
-  [ S || S <- All, Filter(S) ].

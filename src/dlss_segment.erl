@@ -20,8 +20,6 @@
 
 -include("dlss.hrl").
 
--behaviour(gen_server).
-
 %%=================================================================
 %%	STORAGE READ/WRITE API
 %%=================================================================
@@ -55,21 +53,7 @@
   get_size/1
 ]).
 
-%%====================================================================
-%%		Test API
-%%====================================================================
--ifdef(TEST).
-
--export([
-  split/2,
-  split/5
-]).
-
--endif.
-
 -define(MAX_SCAN_INTERVAL_BATCH,1000).
-
--define(MB,1048576).
 
 
 %%=================================================================
@@ -321,46 +305,4 @@ get_nodes(Segment)->
     [Result]->Result;
     _->throw(invalid_storage_type)
   end.
-
-split( From, To )->
-  Half = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT) *?MB / 2,
-  ?LOGINFO("start moving records ~p MB records from ~p to ~p",[ From, To, Half/ ?MB ]),
-  split( From, To, '$start_of_table', Half , 0 ).
-split( From, To, Key, Size, I ) when (I rem 10) =:=0->
-  ToSize = get_size(To),
-  if
-    ToSize>=Size -> ok ;
-    true ->
-      ?LOGINFO("move bulk key ~p from ~p to ~p, parent size ~p, child size ~p, left size ~p MB",[
-        Key,
-        From,
-        To,
-        get_size(From) / ?MB,
-        ToSize / ?MB,
-        round((Size - ToSize)/?MB)
-      ]),
-      split( From, To, Key, Size, I+1 )
-  end;
-split( From, To, Key, Size, I )->
-  Rows = dlss_segment:dirty_scan(From,Key,'$end_of_table',?MAX_SCAN_INTERVAL_BATCH*100),
-  if
-    length(Rows)>=?MAX_SCAN_INTERVAL_BATCH*100 ->
-      move_rows(Rows, From, To),
-      {LastKey,_}=lists:last(Rows),
-      split( From, To, LastKey, Size, I+1 );
-    true ->
-      % It is the end of the From segment take only half of the keys
-      { Head ,_ } = lists:split( length(Rows) div 2, Rows ),
-      move_rows(Head, From, To)
-  end.
-
-move_rows( Rows, From, To )->
-
-  % Make a copy
-  [ ok = dlss_segment:dirty_write( To, K, V ) || {K,V}<-Rows, V=/='@deleted@' ],
-
-  % Delete from the parent
-  [ ok = dlss_segment:dirty_delete( From, K ) || {K,_V}<-Rows  ],
-
-  ok.
 

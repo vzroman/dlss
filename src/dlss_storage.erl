@@ -32,23 +32,30 @@
   is_storage/1,
   get_storages/0,
   get_segments/0,get_segments/1,
-  new_root_segment/1,
-  set_segment_version/3,
-  split_commit/1,
-  merge_commit/1,
+
   root_segment/1,
   segment_params/1,
-  add/2,add/3,
-  remove/1,
   get_type/1,
   is_local/1,
-  spawn_segment/1,
-  absorb_parent/1,
-  absorb_segment/1,
-  level_up/1,
+
   get_children/1,
   has_siblings/1,
   parent_segment/1
+]).
+
+%%=================================================================
+%%	SCHEMA TRANSFORMATION API
+%%=================================================================
+-export([
+  % create/delete a storage
+  add/2,add/3,
+  remove/1,
+  % transform the storage schema
+  split_segment/1,
+  set_segment_version/3,
+  split_commit/1,
+  merge_segment/1,
+  merge_commit/1
 ]).
 
 %%=================================================================
@@ -229,9 +236,67 @@ remove(_Storage,_Sgm)->
   % '$end_of_table'
   ok.
 
-%---------Add a new Root segment to the storage----------------------------------------
+%%--------------------------------------------------------------------------------
+%%  Split procedure
+%%--------------------------------------------------------------------------------
+split_segment( Segment )->
+  {ok, #sgm{ str = Storage, lvl = Level } } = segment_by_name( Segment ),
+  if
+    Level =:= 0 ->
+      new_root_segment( Storage );
+    true ->
+      split_segment( Storage, Segment )
+  end.
 
-new_root_segment(Storage) ->
+split_segment( Storage, Segment )->
+  % Inherit params
+  Params = dlss_segment:get_info(Segment),
+
+  %% Generate an unique name within the storage for the new segment
+  NewSegment = new_segment_name(Storage),
+  ?LOGINFO("~p split to ~p with params ~p",[
+    NewSegment,
+    Params
+  ]),
+
+  %% Creating a new table for the new segment
+  case dlss_backend:create_segment(NewSegment, Params) of
+    ok -> ok;
+    { error, CreateError }->
+      ?LOGERROR("unable to create a new split segment ~p with params ~p for storage ~p, error ~p",[
+        NewSegment,
+        Params,
+        Storage,
+        CreateError
+      ]),
+      ?ERROR(CreateError)
+  end,
+
+  %% Level down all segments to +1
+  case dlss:transaction(fun()->
+
+    %% Locking an old Root table
+    dlss_backend:lock({table,dlss_schema},write),
+
+    Prn = #sgm{ copies = Copies0, lvl = Level } = segment_by_name( Segment ),
+    Copies = maps:map(fun(_K,_V)->undefined end, Copies0 ),
+
+    % Put the new segment on the floating level
+    ok = dlss_segment:write(dlss_schema, Prn#sgm{lvl= Level+0.1 ,ver = 0,copies = Copies}, NewSegment , write),
+
+    ok
+  end) of
+    {ok,ok}->ok;
+    SchemaError->
+      case dlss_backend:delete_segment( NewSegment ) of
+        ok->ok;
+        RemoveError->
+          ?LOGERROR("unable to remove ~p segment, error ~p",[ NewSegment, RemoveError ])
+      end,
+      ?ERROR( SchemaError )
+  end.
+
+new_root_segment( Storage ) ->
   %% Get Root segment
   Root = root_segment(Storage),
 
@@ -248,18 +313,18 @@ new_root_segment(Storage) ->
   %% Creating a new table for New Root
   case dlss_backend:create_segment(NewRoot,Params) of
     ok -> ok;
-    { error, Error }->
+    { error, CreateError }->
       ?LOGERROR("unable to create a new root segment ~p with params ~p for storage ~p, error ~p",[
         NewRoot,
         Params,
         Storage,
-        Error
+        CreateError
       ]),
-      ?ERROR(Error)
+      ?ERROR( CreateError )
   end,
 
   %% Level down all segments to +1
-  dlss:transaction(fun()->
+  case dlss:transaction(fun()->
 
     %% Locking an old Root table
     dlss_backend:lock({table,dlss_schema},write),
@@ -267,94 +332,138 @@ new_root_segment(Storage) ->
     %% Locking an old Root table
     dlss_backend:lock({table,Root},read),
 
-    First = dlss:first( Root ),
-    RootSgm = #sgm{ copies = Copies0} = segment_by_name( Root ),
+    #sgm{ copies = Copies0} = segment_by_name( Root ),
     Copies = maps:map(fun(_K,_V)->undefined end, Copies0 ),
 
-    % Find all segments of the Storage
-    Level =
-      case get_children( Root ) of
-        [] ->
-          % There are no children to merge with yet
-          1;
-        Children ->
-          % Increment the version of the children to merge with
-          [ begin
-              {ok,Sgm = #sgm{ver = V}} = segment_by_name( S ),
+    merge_segment( Root ),
 
-              ok = dlss_segment:delete(dlss_schema, Sgm , write ),
-              ok = dlss_segment:write(dlss_schema, Sgm#sgm{ ver = V+1 }, S , write )
-
-            end || S <- Children ],
-          % Merge floating level
-          0.9
-      end,
-    % Move the former root level down
-    ok = dlss_segment:write(dlss_schema, RootSgm#sgm{ key={ First }, lvl = Level }, Root , write),
     % Put the new root segment on the level 0
     ok = dlss_segment:write(dlss_schema, #sgm{str=Storage,key='_',lvl=0,ver = 0,copies = Copies}, NewRoot , write),
 
     ok
 
-  end),
-  ok.
-
-
-set_segment_version( Segment, Node, Version )->
-  case segment_by_name( Segment ) of
-    { ok, Sgm }-> set_segment_version( Sgm, Node, Version );
-    Error -> Error
-  end;
-set_segment_version( #sgm{ copies = Copies } = Sgm, Node, Version )->
-
-  % Set a version for a segment in the schema
-  case dlss:transaction(fun()->
-    % Set a lock on the segment
-    Segment = dlss_segment:read( dlss_schema, Sgm, write ),
-
-    % Update the copies
-    Copies1 = Copies#{ Node=>Version },
-
-    % Update the segment
-    ok = dlss_segment:delete(dlss_schema, Sgm , write ),
-    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ copies = Copies1 }, Segment, write )
-
   end) of
     {ok,ok} -> ok;
-    Error -> Error
+    SchemaError ->
+      case dlss_backend:delete_segment( NewRoot ) of
+        ok->ok;
+        RemoveError->
+          ?LOGERROR("unable to remove ~p segment, error ~p",[ NewRoot, RemoveError ])
+      end,
+      ?ERROR( SchemaError )
   end.
 
 split_commit( Segment )->
   Parent = parent_segment( Segment ),
-  First = dlss_segment:dirty_first( Segment ),
-  Last = dlss_segment:dirty_last( Segment ),
-  Next = dlss_segment:dirty_next( Parent, Last ),
-
   {ok, Sgm } = segment_by_name( Segment ),
   {ok, Prn } = segment_by_name( Parent ),
 
-  split_commit( Sgm, First, Prn, Next ).
+  split_commit( Sgm, Prn ).
 
-split_commit( Sgm, K1, #sgm{lvl = Level }=Prn, K2 )->
+split_commit( Sgm, #sgm{lvl = Level }=Prn )->
 
   % Set a version for a segment in the schema
   case dlss:transaction(fun()->
+
     % Set a lock on the segment
     Segment = dlss_segment:read( dlss_schema, Sgm, write ),
     Parent = dlss_segment:read( dlss_schema, Prn, write ),
 
+    First0 = dlss_segment:first( Segment ),
+    Last0 = dlss_segment:last( Segment ),
+    Next0 =
+      if
+        Last0=:='$end_of_table'->
+          dlss_segment:first( Parent );
+        true ->
+          dlss_segment:next( Parent, Last0 )
+      end,
+    First =
+      if
+        First0 =:='$end_of_table' ->'_';
+        true -> { First0 }
+      end,
+    Next =
+      if
+        Next0 =:='$end_of_table' ->'_';
+        true -> { Next0 }
+      end,
+
     % Update the segment
     ok = dlss_segment:delete(dlss_schema, Sgm , write ),
-    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level, key = { K1 } }, Segment, write ),
+    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level, key = First }, Segment, write ),
 
     % Update the parent
     ok = dlss_segment:delete(dlss_schema, Prn , write ),
-    ok = dlss_segment:write( dlss_schema, Prn#sgm{ key = { K2 } }, Parent, write ),
+    ok = dlss_segment:write( dlss_schema, Prn#sgm{ key = Next }, Parent, write ),
 
     ok
   end) of
     {ok,ok} -> ok;
-    Error -> Error
+    Error -> ?ERROR( Error )
+  end.
+
+
+%%--------------------------------------------------------------------------------
+%%  Merge procedure
+%%--------------------------------------------------------------------------------
+merge_segment( Segment )->
+  merge_segment(Segment, get_children(Segment) ).
+merge_segment( Segment, [] )->
+  % The segment has no children to merge with, move it directly level down
+  { ok, Sgm = #sgm{ lvl = Level } } = segment_by_name( Segment ),
+
+  case dlss:transaction(fun()->
+    % Set a lock on the segment
+    Segment = dlss_segment:read( dlss_schema, Sgm, write ),
+    First0 = dlss_segment:first( Segment ),
+    First =
+      if
+        First0 =:='$end_of_table'->'_' ;
+        true -> { First0 }
+      end,
+    % Update the segment
+    ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ key = First, lvl = Level + 1 }, Segment, write ),
+
+    ok
+  end) of
+    {ok,ok} -> ok;
+    Error -> ?ERROR( Error )
+  end;
+merge_segment( Segment, Children )->
+  % The segment has children to merge with, move it to the floating level
+  { ok, Sgm = #sgm{ lvl = Level } } = segment_by_name( Segment ),
+
+  case dlss:transaction(fun()->
+
+    % Set a lock on the segment
+    Segment = dlss_segment:read( dlss_schema, Sgm, write ),
+
+    First0 = dlss_segment:first( Segment ),
+    First =
+      if
+        First0 =:='$end_of_table'->'_' ;
+        true -> { First0 }
+      end,
+
+    % Increment the version of the children to merge with
+    [ begin
+        {ok,Sgm = #sgm{ver = V}} = segment_by_name( S ),
+
+        ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+        ok = dlss_segment:write(dlss_schema, Sgm#sgm{ ver = V+1 }, S , write )
+
+      end || S <- Children ],
+
+    % Update the segment
+    ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+    ok = dlss_segment:write( dlss_schema, Sgm#sgm{key = First , lvl = Level + 0.9 }, Segment, write ),
+
+    ok
+  end) of
+    {ok,ok} -> ok;
+    Error -> ?ERROR( Error )
   end.
 
 merge_commit( Segment )->
@@ -404,213 +513,28 @@ merge_commit( Sgm, Children )->
       ])
   end.
 
-
-%---------Spawn a segment----------------------------------------
-spawn_segment(Name) when is_atom(Name)->
-  case segment_by_name(Name) of
-    { ok, Segment }-> spawn_segment( Segment );
+set_segment_version( Segment, Node, Version ) when is_atom(Segment)->
+  case segment_by_name( Segment ) of
+    { ok, Sgm }-> set_segment_version( Sgm, Node, Version );
     Error -> Error
   end;
-spawn_segment(#sgm{str = Str, lvl = Lvl, key = Key} = Sgm)->
+set_segment_version( #sgm{ copies = Copies } = Sgm, Node, Version )->
 
-  % Obtain the segment name
-  Segment=dlss_segment:dirty_read(dlss_schema,Sgm),
-
-  % Get segment params
-  Params = dlss_segment:get_info(Segment),
-
-  % Generate an unique name within the storage
-  ChildName=new_segment_name(Str),
-
-  ?LOGINFO("create a new child segment ~p from ~p first ~p with params ~p",[
-    ChildName,
-    Segment,
-    Key,
-    Params
-  ]),
-  case dlss_backend:create_segment(ChildName,Params) of
-    ok -> ok;
-    { error, BackendError }->
-      ?LOGERROR("unable to create a new child segment ~p from ~p with params ~p for storage ~p, error ~p",[
-        ChildName,
-        Segment,
-        Params,
-        Str,
-        BackendError
-      ]),
-      ?ERROR(BackendError)
-  end,
-
-  % Add the segment to the schema
+  % Set a version for a segment in the schema
   case dlss:transaction(fun()->
-    % Set a lock on the schema
-    dlss_backend:lock({table,dlss_schema},read),
-    % Add the segment
-    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ key=Key, lvl= Lvl + 1 }, ChildName, write )
+    % Set a lock on the segment
+    Segment = dlss_segment:read( dlss_schema, Sgm, write ),
+
+    % Update the copies
+    Copies1 = Copies#{ Node=>Version },
+
+    % Update the segment
+    ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ copies = Copies1 }, Segment, write )
+
   end) of
     {ok,ok} -> ok;
-    Error -> Error
-  end.
-
-%---------Absorb parent segment----------------------------------------
-absorb_parent(Segment)->
-  case segment_by_name(Segment) of
-    { ok, #sgm{ lvl = Lvl } } when Lvl =< 1->
-      ?ERROR( not_low_level_segment );
-    { ok, #sgm{ key = Key } = Sgm }->
-      Parent = parent_segment( Segment ),
-
-      % To avoid high peaks we queue processes that are absorbing their parent
-      % the process actually do absorbing only if the parent starts with its range
-      % of keys. As the previous segment finishes absorbing the parent does not have keys
-      % from its range any more.
-
-      case dlss_segment:dirty_first(Parent) of
-        '$end_of_table'->
-          ok;
-        First when Key=:='_'; First>=Key->
-          case next_sibling( Sgm ) of
-            #sgm{ key = { Next } } when First<Next->
-              % This is our queue
-              Stop = dlss_segment:dirty_prev( Parent, Next ),
-              ?LOGINFO("~p absorb parent ~p from ~p to ~p",[ Segment, Parent, First, Stop ]),
-              absorb_parent( First, Stop, Parent, Segment, 0 ),
-              ?LOGINFO("~p has finished absorbing parent ~p from ~p to ~p",[ Segment, Parent, First, Stop ]);
-            undefined->
-              % This is the last segment
-              Stop = dlss_segment:dirty_last(Parent),
-              ?LOGINFO("~p absorb parent ~p from ~p to ~p",[ Segment, Parent, First, Stop ]),
-              absorb_parent( First, Stop, Parent, Segment, 0 ),
-              ?LOGINFO("~p has finished absorbing the parent ~p from ~p to ~p",[ Segment, Parent, First, Stop ]);
-            _->
-              % It's not our queue yet
-              ok
-          end;
-        _->
-          % It's not our queue yet
-          ok
-      end
-  end.
-
-absorb_parent( '$end_of_table', _Stop, _Parent, _Segment, _Count )->
-  ok;
-absorb_parent( Key, Stop, Parent, Segment, Count )
-  when Key =/='$end_of_table',Key =< Stop->
-
-  ?LOGINFO("segment ~p parent ~p, count ~p",[Segment,Parent,Count]),
-  Rows = dlss_segment:dirty_scan(Parent,Key,Stop,?BATCH_SIZE),
-
-  % Copy to child
-  [if
-     V=:='@deleted@' ->
-       ok = dlss_segment:dirty_delete( Segment, K );
-     true ->
-       ok = dlss_segment:dirty_write( Segment, K, V )
-   end || {K,V} <-Rows],
-
-  % Remove from parent
-  [ ok = dlss_segment:dirty_delete( Parent, K ) || {K,_V} <-Rows],
-
-  if
-    length(Rows)>=?BATCH_SIZE ->
-      {LastKey,_}=lists:last(Rows),
-      absorb_parent(LastKey,Stop,Parent,Segment, Count + length(Rows) );
-    true -> ok
-  end;
-absorb_parent( _Key, _Stop, _Parent, _Segment, _Count )->
-  ok.
-
-%---------Absorb a segment----------------------------------------
-absorb_segment(Name) when is_atom(Name)->
-  case segment_by_name(Name) of
-    { ok, Segment }-> absorb_segment( Segment );
-    Error -> ?ERROR(Error)
-  end;
-absorb_segment(#sgm{lvl = 0})->
-  % The root segment cannot be absorbed
-  ?ERROR(root_segment);
-absorb_segment(#sgm{str = Str} = Sgm)->
-
-  % Obtain the segment name
-  Name=dlss_segment:dirty_read(dlss_schema,Sgm),
-
-  case dlss:transaction(fun()->
-
-    % Set a lock on the schema while traversing segments
-    dlss_backend:lock({table,dlss_schema},write),
-
-    % Find all the children of the segment
-    Children = get_children(Sgm),
-
-    % Remove the absorbed segment from the dlss schema
-    ok = dlss_segment:delete(dlss_schema, Sgm, write ),
-
-    % Put all children segments level up
-    [ begin
-        ok = dlss_segment:write(dlss_schema, S#sgm{ lvl = S#sgm.lvl - 1 }, T , write ),
-        ok = dlss_segment:delete(dlss_schema, S , write )
-      end || { S, T } <- Children]
-  end) of
-    { ok, _} ->
-      % Remove the segment from backend
-      ?LOGINFO("removing segment ~p",[Name]),
-      case dlss_backend:delete_segment(Name) of
-        ok->ok;
-        {error,Error}->
-          ?LOGERROR("unable to remove segment ~p storage ~p, reason ~p",[
-            Name,
-            Str,
-            Error
-          ])
-      end;
-    { error, Error}->
-      ?LOGERROR("error absorbing segment ~p storage ~p, error ~p",[
-        Name,
-        Str,
-        Error
-      ]),
-      ?ERROR(Error)
-  end.
-
-%---------level up segment----------------------------------------
-level_up(Name) when is_atom(Name)->
-  case segment_by_name(Name) of
-    { ok, Segment }-> level_up( Segment );
-    Error -> ?ERROR(Error)
-  end;
-level_up(#sgm{lvl = 0})->
-  % The root segment cannot be absorbed
-  ?ERROR(root_segment);
-level_up(#sgm{} = Sgm)->
-
-  % Get the parent
-  #sgm{lvl = Level }=ParentSgm = parent_segment(Sgm),
-  ParentName = dlss_segment:dirty_read(dlss_schema,ParentSgm),
-  First = dlss_segment:dirty_first(ParentName),
-
-  % Current segment
-  Name=dlss_segment:dirty_read(dlss_schema,Sgm),
-
-  ?LOGINFO("moving segment ~p from level ~p to level ~p, the split key ~p",[Name,Sgm#sgm.lvl,Level,First]),
-  case dlss:transaction(fun()->
-
-    dlss_backend:lock({table,dlss_schema},write),
-
-    ok = dlss_segment:write(dlss_schema, ParentSgm#sgm{ key = { First } }, ParentName , write ),
-    ok = dlss_segment:delete(dlss_schema, ParentSgm , write ),
-
-    ok = dlss_segment:write(dlss_schema, Sgm#sgm{ lvl = Level }, Name , write ),
-    ok = dlss_segment:delete(dlss_schema, Sgm , write )
-
-  end) of
-    { ok, _} ->
-      ok;
-    { error, Error}->
-      ?LOGERROR("error to level up segment ~p, error ~p",[
-        Name,
-        Error
-      ]),
-      ?ERROR(Error)
+    Error -> ?ERROR( Error )
   end.
 
 %------------Get children segments-----------------------------------------

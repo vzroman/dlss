@@ -175,10 +175,10 @@ code_change(_OldVsn, State, _Extra) ->
 %%============================================================================
 sync_copies( Storage, Node )->
   [ case dlss_segment:get_info( S ) of
-      #{ local => true }->
+      #{ local := true }->
         % Local only storage types are not synchronized between nodes
         ok;
-      #{ nodes => Nodes }->
+      #{ nodes := Nodes }->
         {ok, #{copies := Copies} } = dlss_storage:segment_params(S),
 
         case { maps:is_key( Node, Copies ), lists:member(Node,Nodes) } of
@@ -252,7 +252,7 @@ pending_transformation( Storage, Type, Node )->
           %----------merge---------------------------------------
           MergeLevel = round(Level),
           MergeTo =
-            [ {S, P} || { S, #{level := MergeLevel} = P } <- Segments ],
+            [ {S, P} || { S, #{level := L} = P } <- Segments, L=:=MergeLevel],
           merge_level( MergeTo, Segment, Params, Node, Type )
       end,
       % The segment is under transformation
@@ -288,10 +288,7 @@ split_segment( Parent, Segment, Type, Hash )->
     end,
 
   {ok, #{ level:= Level}} = dlss_storage:segment_params( Segment ),
-  ConfigVar = list_to_atom("level_"++integer_to_list(Level)++"_segment_limit"),
-
-  % Copy a half of the size of the segment
-  ToSize = ?ENV( ConfigVar, maps:get(Level,?DEFAULT_SEGMENT_LIMITS) ) / 2 * ?MB,
+  ToSize = segment_level_limit( Level ) / 2,
 
   OnBatch=
     fun(K,Count,Size)->
@@ -499,15 +496,16 @@ check_hash( _Other, Segment, Node, Master, #{version:=Version,copies:=Copies} )-
   end.
 
 not_confirmed( Version, Hash, Copies )->
-  [ N || { N, #dump{version = V,hash = H}} <- Copies, V =/=Version or H=/=Hash  ].
+  [ N || { N, #dump{version = V,hash = H}} <- Copies, (V=/=Version) or (H=/=Hash)  ].
 
 
 %%============================================================================
-%% Remove the keys from the segments that are smaller than the First key of the segment
+%% Remove the keys from the segments that are smaller than the FirstKey
+%% of the segment. This is the case after the segment was split
 %%============================================================================
 purge_stale( Storage, Node )->
   [ case dlss_storage:segment_params(S) of
-      {ok, #{ copies:= #{Node:=_}, key = FirstKey } }->
+      {ok, #{ copies:= #{Node:=_}, key := FirstKey } }->
         case dlss_segment:dirty_prev( S, FirstKey ) of
           '$end_of_table'->ok;
           ToKey->
@@ -518,6 +516,69 @@ purge_stale( Storage, Node )->
         ok
     end || S <- dlss_storage:get_segments(Storage) ],
   ok.
+
+%%============================================================================
+%% This is the entry point for all rebalancing transformations
+%%============================================================================
+check_limits( Storage, Node )->
+  Segments =
+    [ begin
+        {ok, P} = dlss_storage:segment_params(S),
+        {S, P}
+      end || S <- dlss_storage:get_segments(Storage) ],
+  case check_segment_limit( Segments, Node ) of
+    Segment when Segment=/=undefined->
+      dlss_storage:split_segment( Segment );
+    undefined->
+      case check_level_limits( Segments, Node ) of
+        Segment when Segment =/=undefined ->
+          dlss_storage:merge_segment(Segment);
+        undefined ->
+          ok
+      end
+  end.
+
+check_segment_limit([{ Segment, #{level:=Level, copies:=Copies}}| Rest], Node)->
+  case master_node( Copies ) of
+    Node->
+      Size = dlss_segment:get_size( Segment ),
+      Limit = segment_level_limit( Level ),
+      if
+        Size > Limit-> Segment;
+        true ->
+          check_segment_limit( Rest, Node )
+      end;
+      _->
+      check_segment_limit( Rest, Node )
+  end;
+check_segment_limit([], _Node)->
+  undefined.
+
+check_level_limits([{ Segment, #{ level:= Level ,copies := Copies }} | Rest], Node )->
+  { LevelSegments, Tail } = level_segments( Rest, Level, [] ),
+  case master_node( Copies ) of
+    Node->
+      case level_count_limit(Level) of
+        Limit when is_integer(Limit)->
+          if
+            length(LevelSegments) + 1 >= Limit ->
+              Segment;
+            true ->
+              check_level_limits( Tail, Node )
+          end;
+          _->
+          check_level_limits( Tail, Node)
+      end;
+    _->
+      check_level_limits( Tail, Node )
+  end;
+check_level_limits([], _Node)->
+  undefined.
+
+level_segments( [S={_,#{ level:=L }}|Rest ], L, Head )->
+  level_segments( Rest, L, [S|Head] );
+level_segments(Tail,_L, Head)->
+  { lists:reverse(Head), Tail }.
 
 %%============================================================================
 %%	Internal helpers
@@ -541,4 +602,21 @@ which_operation(Level)->
       merge
   end.
 
+segment_level_limit( Level )->
+  Limits0 =
+    case ?ENV(segment_level_limit,#{}) of
+      _L when is_map(_L)->_L;
+      _L when is_list(_L)->maps:from_list(_L)
+    end,
+  Limits = maps:merge( ?DEFAULT_SEGMENT_LIMITS, Limits0 ),
+  maps:get( Level, Limits ).
+
+level_count_limit( 0 )->
+  % There can be only one root segment
+  1;
+level_count_limit( Level ) when Level >= 2->
+  % The lowest level can have any number of segments
+  unlimited;
+level_count_limit( Level )->
+  ?ENV( buffer_level_limit, maps:get(Level,?DEFAULT_SEGMENT_LIMITS) ) * ?MB.
 
