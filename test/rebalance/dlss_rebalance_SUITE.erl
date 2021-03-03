@@ -73,6 +73,31 @@ init_per_testcase(_,Config)->
 end_per_testcase(_,_Config)->
   ok.
 
+%%------------------------------------------------------------
+%%  * add a storage
+%%  * fill 1 GB
+%%  * run supervisor loop -> new root should appear, former takes level 1
+%%  * run supervisor loop -> former root should be queued to split
+%%  * run supervisor loop -> the splitting is performed and committed, new segment is at the level 1
+%%  * run supervisor loop -> no changes
+%%  * + 1 GB
+%%  * run supervisor loop -> new root appears, former takes level 0.9
+%%  * run supervisor loop -> the former root is in the level 1 segments (it is removed)
+%%  * run supervisor loop -> no changes (1 gb is between l1 segments)
+%%  * + 1 GB
+%%  * run supervisor loop -> new root appears, former takes level 0.9
+%%  * run supervisor loop -> the former root is in the level 1 segments (it is removed)
+%%  * run supervisor loop -> the first l1 segment is queued to split
+%%  * run supervisor loop -> the first l1 segment is split and at the l1
+%%  * run supervisor loop -> the second l1 segment is queued to split
+%%  * run supervisor loop -> the second l1 segment is split and at the l1
+%%  * run supervisor loop -> the new first segment from l1 goes to l2
+%%  * run supervisor loop -> the new first segment is queued to merge to l2
+%%  * run supervisor loop -> the merged segment is deleted
+%%  * run supervisor loop -> the l2 segment is queued to split
+%%  * run supervisor loop -> the l2 segment is split
+%%  * run supervisor loop -> no changes
+%%------------------------------------------------------------
 schema_common(_Config)->
 
   ct:timetrap(24*3600*1000),

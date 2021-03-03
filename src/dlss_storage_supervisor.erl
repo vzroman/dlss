@@ -76,6 +76,17 @@
   code_change/3
 ]).
 
+%%====================================================================
+%%		Test API
+%%====================================================================
+-ifdef(TEST).
+
+-export([
+  loop/3
+]).
+
+-endif.
+
 %%=================================================================
 %%	API
 %%=================================================================
@@ -133,27 +144,7 @@ handle_info(loop,#state{
   % The loop
   {ok,_}=timer:send_after( Cycle, loop ),
 
-  Node = node(),
-  try
-
-    % Synchronize actual copies configuration to the schema settings
-    sync_copies( Storage, Node ),
-
-    % Perform waiting transformations
-    case pending_transformation( Storage, Type, Node ) of
-      { Operation, Segment } ->
-
-        % Master commits the schema transformation if it is finished
-        hash_confirm( Operation, Segment, Node );
-      _->
-
-        % Remove stale head
-        purge_stale( Storage, Node ),
-
-        % No active transformations, check limits
-        check_limits( Storage, Node )
-    end
-
+  try loop( Storage, Type, node() )
   catch
     _:Error:Stack->
       ?LOGINFO("~p storage supervisor error ~p, stack ~p",[ Storage, Error, Stack ])
@@ -169,6 +160,24 @@ terminate(Reason,#state{storage = Storage})->
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
 
+loop( Storage, Type, Node )->
+  % Synchronize actual copies configuration to the schema settings
+  sync_copies( Storage, Node ),
+
+  % Perform waiting transformations
+  case pending_transformation( Storage, Type, Node ) of
+    { Operation, Segment } ->
+
+      % Master commits the schema transformation if it is finished
+      hash_confirm( Operation, Segment, Node );
+    _->
+
+      % Remove stale head
+      purge_stale( Storage, Node ),
+
+      % No active transformations, check limits
+      check_limits( Storage, Node )
+  end.
 
 %%============================================================================
 %% Obtain/Remove copies of segments of a Storage to the Node
