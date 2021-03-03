@@ -267,16 +267,35 @@ new_root_segment(Storage) ->
     %% Locking an old Root table
     dlss_backend:lock({table,Root},read),
 
-    % Find all segments of the Storage
-    Segments = get_children(#sgm{str=Storage,key = '_',lvl = -1 }),
+    First = dlss:first( Root ),
+    RootSgm = #sgm{ copies = Copies0} = segment_by_name( Root ),
+    Copies = maps:map(fun(_K,_V)->undefined end, Copies0 ),
 
-    % Put all segments level down
-    [ begin
-        ok = dlss_segment:write(dlss_schema, S#sgm{ lvl = S#sgm.lvl + 1 }, T , write ),
-        ok = dlss_segment:delete(dlss_schema, S , write )
-      end || {S, T} <- lists:reverse(Segments)],
-    % Add the new Root segment to the schema
-    ok=dlss_segment:write(dlss_schema, #sgm{str=Storage,key='_',lvl=0}, NewRoot , write)
+    % Find all segments of the Storage
+    Level =
+      case get_children( Root ) of
+        [] ->
+          % There are no children to merge with yet
+          1;
+        Children ->
+          % Increment the version of the children to merge with
+          [ begin
+              {ok,Sgm = #sgm{ver = V}} = segment_by_name( S ),
+
+              ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+              ok = dlss_segment:write(dlss_schema, Sgm#sgm{ ver = V+1 }, S , write )
+
+            end || S <- Children ],
+          % Merge floating level
+          0.9
+      end,
+    % Move the former root level down
+    ok = dlss_segment:write(dlss_schema, RootSgm#sgm{ key={ First }, lvl = Level }, Root , write),
+    % Put the new root segment on the level 0
+    ok = dlss_segment:write(dlss_schema, #sgm{str=Storage,key='_',lvl=0,ver = 0,copies = Copies}, NewRoot , write),
+
+    ok
+
   end),
   ok.
 
@@ -326,11 +345,11 @@ split_commit( Sgm, K1, #sgm{lvl = Level }=Prn, K2 )->
 
     % Update the segment
     ok = dlss_segment:delete(dlss_schema, Sgm , write ),
-    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level, key = K1 }, Segment, write ),
+    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level, key = { K1 } }, Segment, write ),
 
     % Update the parent
     ok = dlss_segment:delete(dlss_schema, Prn , write ),
-    ok = dlss_segment:write( dlss_schema, Prn#sgm{ key = K2 }, Parent, write ),
+    ok = dlss_segment:write( dlss_schema, Prn#sgm{ key = { K2 } }, Parent, write ),
 
     ok
   end) of
@@ -359,7 +378,7 @@ merge_commit( Sgm, Children )->
 
         % Update the segment
         ok = dlss_segment:delete(dlss_schema, S , write ),
-        ok = dlss_segment:write( dlss_schema, S#sgm{ key = First }, Segment, write )
+        ok = dlss_segment:write( dlss_schema, S#sgm{ key = { First } }, Segment, write )
 
       end || S <- Children ],
 

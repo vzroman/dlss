@@ -28,6 +28,7 @@
   dump_segment/1,
   %-----------------Copy-------------------------------------------
   copy/6,
+  delete_until/2,
 
   disc_bulk_read/2,
   disc_bulk_write/2,
@@ -127,9 +128,51 @@ copy_items( [], _OnItem )->
 
 update_hash_size([ Rec | Tail ], HashRef, Size )->
   Rec1 = term_to_binary( Rec ),
-  update_hash_size( Tail, crypto:hash_update(HashRef,Rec1), Size + byte_size(Rec1) );
+  RecSize =
+    case Rec of
+      { put, _, _ }->byte_size( Rec1 );
+      _-> 0
+    end,
+  update_hash_size( Tail, crypto:hash_update(HashRef,Rec1), Size + RecSize );
 update_hash_size( [], HashRef, Size )->
   { HashRef, Size}.
+
+delete_until( Segment, ToKey )->
+  #{ type:= Type }=dlss_segment:get_info( Segment ),
+  delete_until( Type, Segment, ToKey ).
+delete_until( disc, Segment, ToKey0 )->
+  ToKey = mnesia_eleveldb:encode_key( ToKey0 ),
+  mnesia_eleveldb:dirty_iterator( Segment,fun( { K, _V }, _Acc )->
+    if
+      K > ToKey -> stop ;
+      true ->
+        mnesia_eleveldb:bulk_delete( Segment,[ K ] ),
+        ok
+    end
+  end, ok, '$start_of_table' ),
+  ok;
+delete_until( _EtsBased, Segment, ToKey )->
+
+  mnesia:ets(fun()->
+    delete_batch_until( dlss_segment:dirty_scan( Segment, '$start_of_table', ToKey, ?BATCH_SIZE ), ToKey, Segment )
+  end),
+
+  % Dump the segment after cleaning
+  dump_segment( Segment ),
+
+  ok.
+
+delete_batch_until( Records, ToKey, Segment ) when length(Records) > 0 ->
+  [ dlss_segment:delete( Segment, K ) || {K,_V} <- Records ],
+  if
+    length(Records)>=?BATCH_SIZE ->
+      {LastKey, _} = lists:last( Records ),
+      delete_batch_until( dlss_segment:dirty_scan( Segment, LastKey, ToKey, ?BATCH_SIZE ), ToKey, Segment );
+    true ->
+      ok
+  end;
+delete_batch_until( [], _ToKey, _Segment )->
+  ok.
 
 
 %%=================================================================

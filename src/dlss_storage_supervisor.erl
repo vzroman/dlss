@@ -27,6 +27,36 @@
 -record(dump,{ version, hash }).
 
 %%=================================================================
+%%	The rebalancing algorithm follows the rules:
+%%   * There is a supervisor process for each storage on each node
+%%   * The transformation procedure is started only by the segment's
+%%     master node. The master is the active node with the smallest
+%%     name in the list of the nodes that have copies of the segment.
+%%   * The transformation procedure is some state of the schema when
+%%     there is at least one segment at the floating level.
+%%   * To start a transformation the supervisor needs to move the due
+%%     segment to the floating level and to increment its version.
+%%     ( Split - L.1, Merge - L.9 )
+%%   * If there is a segment at the floating level all the supervisors
+%%     try to do their part of work to move it to a sustainable level.
+%%     After a supervisor has accomplished its operations on a floating
+%%     segment it updates its hash in the dlss_schema.
+%%   * The transformation procedure can be committed if all the segments
+%%     have confirmed their hash.
+%%   * If some of nodes has a different form the master node hash it drops
+%%     the local copy what leads to complete reloading the segment
+%%   * If a segment reaches the limit it splits. A new segment is created
+%%     at the same nodes with the level L.1 and the first key same as the
+%%     the full (parent) segment
+%%   * If a level reaches max number of the segments the first segment in
+%%     in the level goes to L.9 level if there are segments in the lower level
+%%     they all get the increment of the version. If there are no segments
+%%     on the L+1 level yet the merged segment directly goes to the L+1 level
+%%
+%%=================================================================
+
+
+%%=================================================================
 %%	API
 %%=================================================================
 -export([
@@ -45,7 +75,6 @@
   terminate/2,
   code_change/3
 ]).
-
 
 %%=================================================================
 %%	API
@@ -104,24 +133,25 @@ handle_info(loop,#state{
   % The loop
   {ok,_}=timer:send_after( Cycle, loop ),
 
+  Node = node(),
   try
 
     % Synchronize actual copies configuration to the schema settings
-    sync_copies( Storage, node() ),
+    sync_copies( Storage, Node ),
 
     % Perform waiting transformations
-    case pending_transformation( Storage, Type, node()) of
+    case pending_transformation( Storage, Type, Node ) of
       { Operation, Segment } ->
 
         % Master commits the schema transformation if it is finished
-        hash_confirm( Operation, Segment, node() );
+        hash_confirm( Operation, Segment, Node );
       _->
 
         % Remove stale head
-        purge_stale( Storage ),
+        purge_stale( Storage, Node ),
 
         % No active transformations, check limits
-        check_limits( Storage )
+        check_limits( Storage, Node )
     end
 
   catch
@@ -199,10 +229,15 @@ pending_transformation( Storage, Type, Node )->
         Operation =:= split->
           %----------split---------------------------------------
           case Params of
-            #{ version:=Version, copies := #{ Node := #dump{ hash = Hash }=Dump } }->
+            #{ version:=Version, copies := #{ Node := Dump } }->
               % The segment has local copy
               Parent = dlss_storage:parent_segment( Segment ),
-              case split_segment( Parent, Segment, Type, Hash ) of
+              InitHash=
+                case Dump of
+                  #dump{hash = _H}->_H;
+                  _-><<>>
+                end,
+              case split_segment( Parent, Segment, Type, InitHash ) of
                 {ok, NewHash }->
                   % Update the version of the segment in the schema
                   ok = dlss_storage:set_segment_version( Segment, Node, Dump#dump{hash = NewHash, version = Version }  );
@@ -285,10 +320,10 @@ merge_level([_Prev, Next = {_S, #{key:=K2}}| Tail ], Source, #{key:=Key} = Param
   % The first key in the source segment is bigger is bigger than the first key
   % of the next segment, so there are no keys for the S1 segment in the source
   merge_level([Next|Tail], Source,Params, Node, Type );
-merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], Source, _Params, Node, Type )->
+merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], Source, Params, Node, Type )->
   % This is the segment that is currently copies the keys from the source
   case Copies of
-    #{ Node := #dump{hash = Hash } = Dump}->
+    #{ Node := Dump } when Dump=:=undefined; Dump#dump.version < Version->
       % This node hosts the target segment, it must to play its role
       ToKey =
         case Tail of
@@ -297,7 +332,12 @@ merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], So
           _->
             '$end_of_table'
         end,
-      case merge_segment( S, Source, FromKey, ToKey, Type, Hash ) of
+      InitHash=
+        case Dump of
+          #dump{hash = _H}->_H;
+          _-><<>>
+        end,
+      case merge_segment( S, Source, FromKey, ToKey, Type, InitHash ) of
         {ok, NewHash }->
           % Update the version of the segment in the schema
           ok = dlss_storage:set_segment_version( S, Node, Dump#dump{hash = NewHash, version = Version }  );
@@ -305,8 +345,8 @@ merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], So
           ?LOGERROR("~p error on merging to ~p, error ~p",[ Source, S, MergeError ])
       end;
     _->
-      % The Node doesn't hosts the target segment, just wait for other nodes to do their part of work
-      ok
+      % The Node doesn't hosts the target segment, check the rest of the level
+      merge_level( Tail, Source, Params, Node, Type )
   end;
 merge_level( [], _Source, _Params, _Node, _Type )->
   % There is no locally hosted segments to merge to
@@ -376,23 +416,6 @@ merge_segment( Target, Source, FromKey0, ToKey0, Type, Hash )->
 
   dlss_rebalance:copy( Source, Target, Copy, FromKey, OnBatch, Hash ).
 
-reload_segment( Segment, SourceNode )->
-
-  {ok, #{copies:= Copies} } = dlss_storage:segment_params( Segment ),
-  #dump{ version = Ver, hash = Hash } = maps:get( SourceNode, Copies ),
-
-  case dlss_rebalance:reload_from( Segment, SourceNode ) of
-    ok->
-      ok = dlss_storage:set_segment_version( Segment, node(), #dump{hash = Hash, version = Ver }  );
-    { error, Error }->
-      ?LOGERROR("~p unable to reload from ~p, error ~p",[
-        Segment,
-        SourceNode,
-        Error
-      ])
-  end.
-
-
 %%============================================================================
 %% Confirm schema transformation
 %%============================================================================
@@ -405,24 +428,39 @@ hash_confirm( Operation, Segment, Node )->
       check_hash( Operation, Segment, Node, Master, Params )
   end.
 
-master_commit( split, Segment, Node, #{version := Version,copies:=Copies})->
-  #dump{ hash = Hash } = maps:get( Node, Copies ),
-  case not_confirmed( Version, Hash, Copies ) of
-    [] ->
-      dlss_storage:split_commit( Segment );
-    Nodes->
-      % There are still nodes that are not confirmed the hash yet
-      ?LOGINFO("~p splitting is not finished yet, waiting for ~p",[ Nodes ]),
+master_commit( split, Segment, Master, #{version := Version,copies:=Copies})->
+  case maps:get( Master, Copies ) of
+    #dump{ version = Version, hash = Hash }->
+      % The master has already updated its version
+      case not_confirmed( Version, Hash, Copies ) of
+        [] ->
+          dlss_storage:split_commit( Segment );
+        Nodes->
+          % There are still nodes that are not confirmed the hash yet
+          ?LOGINFO("~p splitting is not finished yet, waiting for ~p",[ Nodes ]),
+          ok
+      end;
+    _->
+      %  The master is not ready itself
       ok
   end;
+
 master_commit( merge, Segment, _Node, _Params )->
   Children = dlss_storage:get_children( Segment ),
   Children1=
     [ begin
         {ok, #{version:=V, copies:=C} } = dlss_storage:segment_params(S),
         M = master_node(C),
-        #{ M:= #dump{ hash = H } } = C,
-        {S, not_confirmed( V, H, C ) }
+        W =
+          case C of
+            #{M := #dump{ version = V, hash = H }}->
+              not_confirmed( V, H, C );
+            _->
+              % The master is not ready itself
+              maps:keys( C )
+
+          end,
+        {S, W }
       end || S <- Children ],
   case [ {S,W} || {S, W } <- Children1, length(W)>0 ] of
     []->
@@ -432,36 +470,62 @@ master_commit( merge, Segment, _Node, _Params )->
       ok
   end.
 
-check_hash( split, Segment, Node, Master, #{copies:=Copies} )->
-  #dump{ version = Ver, hash = Hash } = maps:get( Master, Copies ),
-  case maps:get( Node, Copies ) of
-    #dump{ version = Ver, hash = Hash }->
-      % The hash is confirmed
-      ok;
-    #dump{ version = Ver}->
-      ?LOGWARNING("~p hash for ~p differs from hash for master ~p",[ Segment, Node, Master ]),
-      % We purge the local copy of the segment to let the sync mechanism to reload it
-      % next cycle
-      dlss_segment:remove_node( Segment, Node );
-    _->
-      % The node has not updated its version yet
-      ok
-  end;
-
 check_hash( merge, Segment, Node, _Master, _Params )->
   Children = dlss_storage:get_children( Segment ),
+  [ begin
+      { ok, #{ copies:= C} = P} = dlss_storage:segment_params( S ),
+      M = master_node( C ),
+      check_hash( undefined, S, Node, M, P )
+    end || S <- Children ],
+  ok;
 
+check_hash( _Other, Segment, Node, Master, #{version:=Version,copies:=Copies} )->
+  case Copies of
+    #{ Master := #dump{ version = Version, hash = Hash }}->
+      % The master has already updated its hash
+      case Copies of
+        #{ Node := #dump{ version = Version, hash = Hash }}->
+          % The hash for the Node is confirmed
+          ok;
+        #{ Node := #dump{ version = Version } }->
+          % The version of the segment for the Node has a different hash.
+          % We purge the local copy of the segment to let the sync mechanism to reload it
+          % next cycle
+          dlss_segment:remove_node( Segment, Node );
+        _->
+          % The segment has not updated yet
+          ok
+      end
+  end.
 
 not_confirmed( Version, Hash, Copies )->
   [ N || { N, #dump{version = V,hash = H}} <- Copies, V =/=Version or H=/=Hash  ].
+
+
+%%============================================================================
+%% Remove the keys from the segments that are smaller than the First key of the segment
+%%============================================================================
+purge_stale( Storage, Node )->
+  [ case dlss_storage:segment_params(S) of
+      {ok, #{ copies:= #{Node:=_}, key = FirstKey } }->
+        case dlss_segment:dirty_prev( S, FirstKey ) of
+          '$end_of_table'->ok;
+          ToKey->
+            dlss_rebalance:delete_until( S, ToKey )
+        end;
+      _->
+        % The node does not have a copy of the segment
+        ok
+    end || S <- dlss_storage:get_segments(Storage) ],
+  ok.
 
 %%============================================================================
 %%	Internal helpers
 %%============================================================================
 master_node( Copies )->
-  WithHash = lists:usort([ N || { N, #dump{ hash = Hash } } <- maps:to_list( Copies ), is_binary(Hash) ]),
+  Nodes = lists:usort([ N || { N, _Dump } <- maps:to_list( Copies ) ]),
   Ready = dlss:get_ready_nodes( ),
-  case WithHash -- Ready of
+  case Nodes -- Ready of
     [ Master | _ ]-> Master;
     _-> undefined
   end.
