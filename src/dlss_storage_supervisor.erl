@@ -88,7 +88,7 @@ start_link( Storage )->
 stop(Storage)->
   case whereis(?PROCESS(Storage)) of
     PID when is_pid(PID)->
-      dlss_schema_sup:stop_segment(PID);
+      dlss_schema_sup:stop_storage(PID);
     _ ->
       { error, not_started }
   end.
