@@ -99,7 +99,7 @@ is_storage(Storage)->
   end.
 get_storages()->
   MS=[{
-    #kv{key = #sgm{str = '$1',key = '_',lvl = 0},value = '_'},
+    #kv{key = #sgm{str = '$1',key = '_',lvl = 0,ver = '_',copies = '_'},value = '_'},
     [],
     ['$1']
   }],
@@ -107,7 +107,7 @@ get_storages()->
 
 get_segments()->
   MS=[{
-    #kv{key = #sgm{str = '_',key = '_',lvl = '_'}, value = '$1'},
+    #kv{key = #sgm{str = '_',key = '_',lvl = '_',ver = '_',copies = '_'}, value = '$1'},
     [],
     ['$1']
   }],
@@ -116,7 +116,7 @@ get_segments()->
 
 get_segments(Storage)->
   MS=[{
-    #kv{key = #sgm{str = Storage,key = '_',lvl = '_'}, value = '$1'},
+    #kv{key = #sgm{str = Storage,key = '_',lvl = '_',ver = '_',copies = '_'}, value = '$1'},
     [],
     ['$1']
   }],
@@ -193,8 +193,9 @@ add(Name,Type,Options)->
       ?ERROR(Error)
   end,
 
+  Copies = maps:from_list([ {N,undefined} ||N<-maps:get(nodes,Params)]),
   % Add the storage to the schema
-  ok=dlss_segment:dirty_write(dlss_schema,#sgm{str=Name,key='_',lvl=0},Root).
+  ok=dlss_segment:dirty_write(dlss_schema,#sgm{str=Name,key='_',lvl=0,ver = 0,copies = Copies},Root).
 
 remove(Name)->
   ?LOGWARNING("removing storage ~p",[Name]),
@@ -546,7 +547,7 @@ get_children(Name) when is_atom(Name)->
 get_children(#sgm{str = Storage,lvl = Level})->
   LevelDown = math:floor( Level ) + 1,
   MS=[{
-    #kv{key = #sgm{str = Storage,key = '_',lvl = LevelDown}, value = '$1'},
+    #kv{key = #sgm{str = Storage,key = '_',lvl = LevelDown,ver = '_',copies = '_'}, value = '$1'},
     [],
     ['$1']
   }],
@@ -980,7 +981,7 @@ find_head_segments( Storage, Key )->
       true -> [{'=<','$1',{const, { Key }}}]
     end,
   MS=[{
-    #kv{key = #sgm{str=Storage, key='$1', lvl='$2'}, value='$3'},
+    #kv{key = #sgm{str=Storage, key='$1', lvl='$2',ver = '_',copies = '_'}, value='$3'},
     ToGuard,
     [['$2','$1','$3']]  % The level goes first to be able to order by it later
   }],
