@@ -261,6 +261,7 @@ split_segment( Storage, Segment )->
   %% Generate an unique name within the storage for the new segment
   NewSegment = new_segment_name(Storage),
   ?LOGINFO("~p split to ~p with params ~p",[
+    Segment,
     NewSegment,
     Params
   ]),
@@ -284,7 +285,7 @@ split_segment( Storage, Segment )->
     %% Locking an old Root table
     dlss_backend:lock({table,dlss_schema},write),
 
-    Prn = #sgm{ copies = Copies0, lvl = Level } = segment_by_name( Segment ),
+    {ok, Prn = #sgm{ copies = Copies0, lvl = Level }} = segment_by_name( Segment ),
     Copies = maps:map(fun(_K,_V)->undefined end, Copies0 ),
 
     % Put the new segment on the floating level
@@ -338,7 +339,7 @@ new_root_segment( Storage ) ->
     %% Locking an old Root table
     dlss_backend:lock({table,Root},read),
 
-    #sgm{ copies = Copies0} = segment_by_name( Root ),
+    {ok, #sgm{ copies = Copies0} } = segment_by_name( Root ),
     Copies = maps:map(fun(_K,_V)->undefined end, Copies0 ),
 
     merge_segment( Root ),
@@ -433,7 +434,9 @@ merge_segment( Segment, [] )->
 
     ok
   end) of
-    {ok,ok} -> ok;
+    {ok,ok} ->
+      ?LOGINFO("~p successfully moved to level ~p",[ Segment, Level+1 ]),
+      ok;
     Error -> ?ERROR( Error )
   end;
 merge_segment( Segment, Children )->
@@ -454,10 +457,10 @@ merge_segment( Segment, Children )->
 
     % Increment the version of the children to merge with
     [ begin
-        {ok,Sgm = #sgm{ver = V}} = segment_by_name( S ),
+        {ok,S1 = #sgm{ver = V}} = segment_by_name( S ),
 
-        ok = dlss_segment:delete(dlss_schema, Sgm , write ),
-        ok = dlss_segment:write(dlss_schema, Sgm#sgm{ ver = V+1 }, S , write )
+        ok = dlss_segment:delete(dlss_schema, S1 , write ),
+        ok = dlss_segment:write(dlss_schema, S1#sgm{ ver = V+1 }, S , write )
 
       end || S <- Children ],
 
@@ -467,7 +470,9 @@ merge_segment( Segment, Children )->
 
     ok
   end) of
-    {ok,ok} -> ok;
+    {ok,ok} ->
+      ?LOGINFO("~p is queued to merge to level ~p segments ~p",[ Segment, Level+1, Children ]),
+      ok;
     Error -> ?ERROR( Error )
   end.
 
@@ -476,7 +481,7 @@ merge_commit( Segment )->
   { ok, Sgm } = segment_by_name( Segment ),
 
   Children =
-    [ segment_by_name(S) || S <- get_children( Segment ) ],
+    [ begin {ok,S1} = segment_by_name(S), S1 end|| S <- get_children( Segment ) ],
 
   merge_commit( Sgm, Children ).
 
@@ -535,10 +540,17 @@ set_segment_version( #sgm{ copies = Copies } = Sgm, Node, Version )->
 
     % Update the segment
     ok = dlss_segment:delete(dlss_schema, Sgm , write ),
-    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ copies = Copies1 }, Segment, write )
+    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ copies = Copies1 }, Segment, write ),
 
+    Segment
   end) of
-    {ok,ok} -> ok;
+    {ok,Segment} ->
+      ?LOGINFO("update ~p verson for node ~p, new version ~p",[
+        Segment,
+        Node,
+        Version
+      ]),
+      ok;
     Error -> ?ERROR( Error )
   end.
 
@@ -606,7 +618,7 @@ get_children(Name) when is_atom(Name)->
     Error -> Error
   end;
 get_children(#sgm{str = Storage,lvl = Level})->
-  LevelDown = math:floor( Level ) + 1,
+  LevelDown = round(math:floor( Level )) + 1,
   MS=[{
     #kv{key = #sgm{str = Storage,key = '_',lvl = LevelDown,ver = '_',copies = '_'}, value = '$1'},
     [],

@@ -38,15 +38,13 @@
   absorb_parent/1
 ]).
 
--define(MB,1048576).
-
 -define(TIMER(T),{(T) div 60000, (T) rem 60000}).
 
 all()->
   [
     schema_common
     %,split_segment
-    ,absorb_parent
+    %,absorb_parent
   ].
 
 groups()->
@@ -102,6 +100,15 @@ schema_common(_Config)->
 
   ct:timetrap(24*3600*1000),
 
+  application:set_env([{ dlss, [
+    {segment_level_limit,[
+      { 0, 1024 },
+      { 1, 1024 },
+      { 2, 1024 }
+    ]},
+    {buffer_level_limit, 2 }
+  ]}]),
+
   % new storage
   ok=dlss_storage:add(schema_common,disc),
 
@@ -109,7 +116,7 @@ schema_common(_Config)->
   [dlss_schema_common_1]=dlss_storage:get_segments(schema_common),
   {ok, #{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_1),
 
-  % fill the storage with records (~115 MB)
+  % fill the storage with records (~1 GB)
   T0 = erlang:system_time(millisecond),
   ct:pal("root size ~p MB",[dlss_segment:get_size(dlss_schema_common_1)/?MB]),
   Count0 = 20000000,
@@ -125,137 +132,179 @@ schema_common(_Config)->
   T1 = erlang:system_time(millisecond),
   ct:pal("root size ~p MB, time ~p",[Size0/?MB, ?TIMER(T1-T0)]),
 
-  % Add a new Root segment for storage
-  ok = dlss_storage:new_root_segment(schema_common),
+  % Run supervisor
+  dlss_storage_supervisor:loop( schema_common, disc, node() ),
+  % new root should appear, former takes level 1
+
   [dlss_schema_common_2,dlss_schema_common_1]=dlss_storage:get_segments(schema_common),
-  [{_,dlss_schema_common_1}] = dlss_storage:get_children(dlss_schema_common_2),
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
+  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_schema_common_1),
+  [ dlss_schema_common_1 ] = dlss_storage:get_children(dlss_schema_common_2),
   [] = dlss_storage:get_children(dlss_schema_common_1),
-  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
-  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_1),
 
-  % Spawn a new segment for storage
-  ok = dlss_storage:spawn_segment(dlss_schema_common_1),
-  [dlss_schema_common_2,dlss_schema_common_1,dlss_schema_common_3]=dlss_storage:get_segments(schema_common),
-  [{_,dlss_schema_common_1},{_,dlss_schema_common_3}] = dlss_storage:get_children(dlss_schema_common_2),
-  [{_,dlss_schema_common_3}] = dlss_storage:get_children(dlss_schema_common_1),
-  [] = dlss_storage:get_children(dlss_schema_common_3),
-  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
-  {ok,#{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_1),
-  {ok,#{ level := 2, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_3),
-
-  SizeInit = dlss_segment:get_size(dlss_schema_common_3),
-  Half = Size0 /2,
-  ct:pal("split dlss_schema_common_1 to dlss_schema_common_3, initial size ~p, to size ~p",[
-    SizeInit/?MB,
-    Half/?MB
-  ]),
-
-  % Normally when the first root is going level down it is to be split, because there are
-  % no children to absorb it yet
-  dlss_segment:split(dlss_schema_common_1, dlss_schema_common_3, '$start_of_table', Half , 0),
-  T2 = erlang:system_time(millisecond),
-  SizeSplit = dlss_segment:get_size(dlss_schema_common_3),
-  ct:pal("dlss_schema_common_3 size after split ~p, dlss_schema_common_1 size ~p",[
-    SizeSplit/?MB,
-    dlss_segment:get_size(dlss_schema_common_1)/?MB   % If there are not many records it is not going to decrease,
-                                                      % because leveldb doesn't do true delete, only during rebalancing
-                                                      % and the rebalancing may not has occurred yet
-  ]),
-
-  % After a half of records are in the child segment, the child is going ta take place
-  % next to the parent on the parent's level
-  ?LOGINFO("finish splitting ~p, time ~p",[dlss_schema_common_1, ?TIMER(T2-T1)]),
-  dlss_storage:level_up( dlss_schema_common_3 ),
-
-  % check the schema after splitting, notice that the dlss_schema_common_3 follows before dlss_schema_common_1 now
-  [dlss_schema_common_2,dlss_schema_common_3,dlss_schema_common_1]=dlss_storage:get_segments(schema_common),
-  [{_,dlss_schema_common_3},{_,dlss_schema_common_1}] = dlss_storage:get_children(dlss_schema_common_2),
-  [] = dlss_storage:get_children(dlss_schema_common_1),
-  [] = dlss_storage:get_children(dlss_schema_common_3),
-  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
-  {ok,#{ level := 1, key := SplitKey }} = dlss_storage:segment_params(dlss_schema_common_1),
-  {ok,#{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_3),
-
-  ?LOGINFO("the split key is ~p",[SplitKey]),
-
-  % add another portion of records to the storage
-  % fill the storage with records (~115 MB)
-  ct:pal("root size ~p MB",[dlss_segment:get_size(dlss_schema_common_2)/?MB]),
-  Count1 = 20000000,
-  [ begin
-      if
-        V rem 100000 =:=0 ->
-          ct:pal("write ~p",[V]);
-        true ->ok
-      end,
-      ok = dlss:dirty_write(schema_common, {x, V+Count0}, {y, <<"new",(binary:copy(integer_to_binary(V), 100))/binary>>})
-    end || V <- lists:seq(1, Count1) ],
-  T3 = erlang:system_time(millisecond),
-  Size1 = dlss_segment:get_size(dlss_schema_common_2),
-  ct:pal("root size ~p MB, time ~p",[Size1/?MB,?TIMER(T3-T2)]),
-
-  % The root is full, create another one
-  ok = dlss_storage:new_root_segment(schema_common),
+  % Run supervisor loop
+  dlss_storage_supervisor:loop( schema_common, disc, node() ),
+  % dlss_schema_common_1 should be queued to split because it weights more than the limit
   [
-    dlss_schema_common_4,
     dlss_schema_common_2,
-    dlss_schema_common_3,
-    dlss_schema_common_1
+    dlss_schema_common_1,dlss_schema_common_3
   ]=dlss_storage:get_segments(schema_common),
 
-  [{_,dlss_schema_common_2},{_,dlss_schema_common_3},{_,dlss_schema_common_1}] = dlss_storage:get_children(dlss_schema_common_4),
-  [{_,dlss_schema_common_3},{_,dlss_schema_common_1}] = dlss_storage:get_children(dlss_schema_common_2),
-  [] = dlss_storage:get_children(dlss_schema_common_3),
-  [] = dlss_storage:get_children(dlss_schema_common_1),
-  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_4),
-  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
-  {ok,#{ level := 2, key := SplitKey }} = dlss_storage:segment_params(dlss_schema_common_1),
-  {ok,#{ level := 2, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_3),
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
+  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_schema_common_1),
+  {ok, #{ level := 1.1, key := {x,1} }} = dlss_storage:segment_params(dlss_schema_common_3),
 
-  % Level 2 segments are to absorb their parent dlss_schema_common_2.
-  % They do it by order, first absorbs its keys the segment with the smallest key,
-  % then next and so on
-  ?LOGINFO("start absorbing dlss_schema_common_2, initail size ~p",[ dlss_segment:get_size(dlss_schema_common_2)/?MB ]),
-  ?LOGINFO("absorb to dlss_schema_common_3, initail size ~p",[ dlss_segment:get_size(dlss_schema_common_3)/?MB ]),
-  dlss_storage:absorb_parent( dlss_schema_common_3 ),
-  T4 = erlang:system_time(millisecond),
-  ?LOGINFO("dlss_schema_common_3 has absorbed its keys, dlss_schema_common_2 size ~p, dlss_schema_common_3 size ~p, time ~p",[
-    dlss_segment:get_size(dlss_schema_common_2)/?MB,
-    dlss_segment:get_size(dlss_schema_common_3)/?MB,
-    ?TIMER(T4-T3)
-  ]),
-
-  % The parent still contains key belonging to the dlss_schema_common_1
-  false = dlss_segment:is_empty( dlss_schema_common_2 ),
-
-  ?LOGINFO("absorb to dlss_schema_common_1, initail size ~p",[ dlss_segment:get_size(dlss_schema_common_1)/?MB ]),
-  dlss_storage:absorb_parent( dlss_schema_common_1 ),
-  T5 = erlang:system_time(millisecond),
-  ?LOGINFO("dlss_schema_common_1 has absorbed its keys, dlss_schema_common_2 size ~p, dlss_schema_common_1 size ~p, time ~p",[
-    dlss_segment:get_size(dlss_schema_common_2)/?MB,
-    dlss_segment:get_size(dlss_schema_common_1)/?MB,
-    ?TIMER(T5-T4)
-  ]),
-
-  % Now the parent must be empty
-  true = dlss_segment:is_empty( dlss_schema_common_2 ),
-
-  ?LOGINFO("removing dlss_schema_common_2"),
-  dlss_storage:absorb_segment( dlss_schema_common_2 ),
-
-  % Check the schema
+  % Run supervisor loop
+  T2 = erlang:system_time(millisecond),
+  dlss_storage_supervisor:loop( schema_common, disc, node() ),
+  % the splitting is performed and committed, dlss_schema_common_3 is at level 1
+  T3 = erlang:system_time(millisecond),
   [
-    dlss_schema_common_4,
-    dlss_schema_common_3,
-    dlss_schema_common_1
+    dlss_schema_common_2,
+    dlss_schema_common_3,dlss_schema_common_1
   ]=dlss_storage:get_segments(schema_common),
 
-  [{_,dlss_schema_common_3},{_,dlss_schema_common_1}] = dlss_storage:get_children(dlss_schema_common_4),
-  [] = dlss_storage:get_children(dlss_schema_common_3),
-  [] = dlss_storage:get_children(dlss_schema_common_1),
-  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_4),
-  {ok,#{ level := 1, key := SplitKey }} = dlss_storage:segment_params(dlss_schema_common_1),
-  {ok,#{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_3),
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_schema_common_1),
+  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_schema_common_3),
+  ?LOGINFO("finish splitting ~p, time ~p, split key ~p",[dlss_schema_common_1, ?TIMER(T3-T2), SplitKey0]),
+
+  % Run supervisor loop
+  dlss_storage_supervisor:loop( schema_common, disc, node() ),
+  % No limits are broken, no changes
+  [
+    dlss_schema_common_2,
+    dlss_schema_common_3,dlss_schema_common_1
+  ]=dlss_storage:get_segments(schema_common),
+
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_schema_common_1),
+  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_schema_common_3),
+
+%%
+%%  % Spawn a new segment for storage
+%%  ok = dlss_storage:spawn_segment(dlss_schema_common_1),
+%%  [dlss_schema_common_2,dlss_schema_common_1,dlss_schema_common_3]=dlss_storage:get_segments(schema_common),
+%%  [{_,dlss_schema_common_1},{_,dlss_schema_common_3}] = dlss_storage:get_children(dlss_schema_common_2),
+%%  [{_,dlss_schema_common_3}] = dlss_storage:get_children(dlss_schema_common_1),
+%%  [] = dlss_storage:get_children(dlss_schema_common_3),
+%%  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
+%%  {ok,#{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_1),
+%%  {ok,#{ level := 2, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_3),
+%%
+%%  SizeInit = dlss_segment:get_size(dlss_schema_common_3),
+%%  Half = Size0 /2,
+%%  ct:pal("split dlss_schema_common_1 to dlss_schema_common_3, initial size ~p, to size ~p",[
+%%    SizeInit/?MB,
+%%    Half/?MB
+%%  ]),
+%%
+%%  % Normally when the first root is going level down it is to be split, because there are
+%%  % no children to absorb it yet
+%%  dlss_segment:split(dlss_schema_common_1, dlss_schema_common_3, '$start_of_table', Half , 0),
+%%  T2 = erlang:system_time(millisecond),
+%%  SizeSplit = dlss_segment:get_size(dlss_schema_common_3),
+%%  ct:pal("dlss_schema_common_3 size after split ~p, dlss_schema_common_1 size ~p",[
+%%    SizeSplit/?MB,
+%%    dlss_segment:get_size(dlss_schema_common_1)/?MB   % If there are not many records it is not going to decrease,
+%%                                                      % because leveldb doesn't do true delete, only during rebalancing
+%%                                                      % and the rebalancing may not has occurred yet
+%%  ]),
+%%
+%%  % After a half of records are in the child segment, the child is going ta take place
+%%  % next to the parent on the parent's level
+%%  ?LOGINFO("finish splitting ~p, time ~p",[dlss_schema_common_1, ?TIMER(T2-T1)]),
+%%  dlss_storage:level_up( dlss_schema_common_3 ),
+%%
+%%  % check the schema after splitting, notice that the dlss_schema_common_3 follows before dlss_schema_common_1 now
+%%  [dlss_schema_common_2,dlss_schema_common_3,dlss_schema_common_1]=dlss_storage:get_segments(schema_common),
+%%  [{_,dlss_schema_common_3},{_,dlss_schema_common_1}] = dlss_storage:get_children(dlss_schema_common_2),
+%%  [] = dlss_storage:get_children(dlss_schema_common_1),
+%%  [] = dlss_storage:get_children(dlss_schema_common_3),
+%%  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
+%%  {ok,#{ level := 1, key := SplitKey }} = dlss_storage:segment_params(dlss_schema_common_1),
+%%  {ok,#{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_3),
+%%
+%%  ?LOGINFO("the split key is ~p",[SplitKey]),
+%%
+%%  % add another portion of records to the storage
+%%  % fill the storage with records (~115 MB)
+%%  ct:pal("root size ~p MB",[dlss_segment:get_size(dlss_schema_common_2)/?MB]),
+%%  Count1 = 20000000,
+%%  [ begin
+%%      if
+%%        V rem 100000 =:=0 ->
+%%          ct:pal("write ~p",[V]);
+%%        true ->ok
+%%      end,
+%%      ok = dlss:dirty_write(schema_common, {x, V+Count0}, {y, <<"new",(binary:copy(integer_to_binary(V), 100))/binary>>})
+%%    end || V <- lists:seq(1, Count1) ],
+%%  T3 = erlang:system_time(millisecond),
+%%  Size1 = dlss_segment:get_size(dlss_schema_common_2),
+%%  ct:pal("root size ~p MB, time ~p",[Size1/?MB,?TIMER(T3-T2)]),
+%%
+%%  % The root is full, create another one
+%%  ok = dlss_storage:new_root_segment(schema_common),
+%%  [
+%%    dlss_schema_common_4,
+%%    dlss_schema_common_2,
+%%    dlss_schema_common_3,
+%%    dlss_schema_common_1
+%%  ]=dlss_storage:get_segments(schema_common),
+%%
+%%  [{_,dlss_schema_common_2},{_,dlss_schema_common_3},{_,dlss_schema_common_1}] = dlss_storage:get_children(dlss_schema_common_4),
+%%  [{_,dlss_schema_common_3},{_,dlss_schema_common_1}] = dlss_storage:get_children(dlss_schema_common_2),
+%%  [] = dlss_storage:get_children(dlss_schema_common_3),
+%%  [] = dlss_storage:get_children(dlss_schema_common_1),
+%%  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_4),
+%%  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
+%%  {ok,#{ level := 2, key := SplitKey }} = dlss_storage:segment_params(dlss_schema_common_1),
+%%  {ok,#{ level := 2, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_3),
+%%
+%%  % Level 2 segments are to absorb their parent dlss_schema_common_2.
+%%  % They do it by order, first absorbs its keys the segment with the smallest key,
+%%  % then next and so on
+%%  ?LOGINFO("start absorbing dlss_schema_common_2, initail size ~p",[ dlss_segment:get_size(dlss_schema_common_2)/?MB ]),
+%%  ?LOGINFO("absorb to dlss_schema_common_3, initail size ~p",[ dlss_segment:get_size(dlss_schema_common_3)/?MB ]),
+%%  dlss_storage:absorb_parent( dlss_schema_common_3 ),
+%%  T4 = erlang:system_time(millisecond),
+%%  ?LOGINFO("dlss_schema_common_3 has absorbed its keys, dlss_schema_common_2 size ~p, dlss_schema_common_3 size ~p, time ~p",[
+%%    dlss_segment:get_size(dlss_schema_common_2)/?MB,
+%%    dlss_segment:get_size(dlss_schema_common_3)/?MB,
+%%    ?TIMER(T4-T3)
+%%  ]),
+%%
+%%  % The parent still contains key belonging to the dlss_schema_common_1
+%%  false = dlss_segment:is_empty( dlss_schema_common_2 ),
+%%
+%%  ?LOGINFO("absorb to dlss_schema_common_1, initail size ~p",[ dlss_segment:get_size(dlss_schema_common_1)/?MB ]),
+%%  dlss_storage:absorb_parent( dlss_schema_common_1 ),
+%%  T5 = erlang:system_time(millisecond),
+%%  ?LOGINFO("dlss_schema_common_1 has absorbed its keys, dlss_schema_common_2 size ~p, dlss_schema_common_1 size ~p, time ~p",[
+%%    dlss_segment:get_size(dlss_schema_common_2)/?MB,
+%%    dlss_segment:get_size(dlss_schema_common_1)/?MB,
+%%    ?TIMER(T5-T4)
+%%  ]),
+%%
+%%  % Now the parent must be empty
+%%  true = dlss_segment:is_empty( dlss_schema_common_2 ),
+%%
+%%  ?LOGINFO("removing dlss_schema_common_2"),
+%%  dlss_storage:absorb_segment( dlss_schema_common_2 ),
+%%
+%%  % Check the schema
+%%  [
+%%    dlss_schema_common_4,
+%%    dlss_schema_common_3,
+%%    dlss_schema_common_1
+%%  ]=dlss_storage:get_segments(schema_common),
+%%
+%%  [{_,dlss_schema_common_3},{_,dlss_schema_common_1}] = dlss_storage:get_children(dlss_schema_common_4),
+%%  [] = dlss_storage:get_children(dlss_schema_common_3),
+%%  [] = dlss_storage:get_children(dlss_schema_common_1),
+%%  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_4),
+%%  {ok,#{ level := 1, key := SplitKey }} = dlss_storage:segment_params(dlss_schema_common_1),
+%%  {ok,#{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_3),
 
   ok.
 

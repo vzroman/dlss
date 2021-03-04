@@ -168,6 +168,7 @@ loop( Storage, Type, Node )->
   case pending_transformation( Storage, Type, Node ) of
     { Operation, Segment } ->
 
+      ?LOGDEBUG("transformation: ~p ~p",[ Operation, Segment ]),
       % Master commits the schema transformation if it is finished
       hash_confirm( Operation, Segment, Node );
     _->
@@ -196,9 +197,11 @@ sync_copies( Storage, Node )->
             Master = master_node( Copies ),
             Version = maps:get( Master, Copies ),
 
+            ?LOGINFO("add ~p copy to ~p",[ S, Node ]),
             % The segment must have a copy on the Node
             case dlss_segment:add_node( S, Node ) of
               ok ->
+                ?LOGINFO("~p successfully copied to ~p",[ S, Node ]),
                 % The segment has just copied, take the version from the parent
                 ok = dlss_storage:set_segment_version( S, Node, Version );
               { error, Error }->
@@ -206,8 +209,11 @@ sync_copies( Storage, Node )->
             end;
           { false, true }->
             % The segment is to be removed from the node
+            ?LOGINFO("remove ~p copy from ~p",[ S, Node ]),
             case dlss_segment:remove_node(S,Node) of
-              ok->ok;
+              ok->
+                ?LOGINFO("~p successfully removed from ~p",[ S, Node ]),
+                ok;
               {error,Error}->
                 ?LOGERROR("~p unable to remove a copy from ~p, error ~p",[ S, Node, Error ])
             end;
@@ -234,6 +240,7 @@ pending_transformation( Storage, Type, Node )->
     [{ Segment, #{level := Level} = Params } | _ ]->
       % The segment is under transformation
       Operation = which_operation( Level ),
+      ?LOGDEBUG("~p: ~p level ~p",[ Operation, Segment, Level ]),
       if
         Operation =:= split->
           %----------split---------------------------------------
@@ -246,10 +253,16 @@ pending_transformation( Storage, Type, Node )->
                   #dump{hash = _H}->_H;
                   _-><<>>
                 end,
+              ?LOGINFO("split: child ~p, parent ~p, init hash ~p",[
+                Segment, Parent, InitHash
+              ]),
               case split_segment( Parent, Segment, Type, InitHash ) of
                 {ok, NewHash }->
+                  ?LOGINFO("split finish: child ~p, parent ~p, new hash ~p",[
+                    Segment, Parent, NewHash
+                  ]),
                   % Update the version of the segment in the schema
-                  ok = dlss_storage:set_segment_version( Segment, Node, Dump#dump{hash = NewHash, version = Version }  );
+                  ok = dlss_storage:set_segment_version( Segment, Node, #dump{hash = NewHash, version = Version }  );
                 {error, SplitError}->
                   ?LOGERROR("~p error on splitting, error ~p",[ Segment, SplitError ])
               end;
@@ -297,10 +310,11 @@ split_segment( Parent, Segment, Type, Hash )->
     end,
 
   {ok, #{ level:= Level}} = dlss_storage:segment_params( Segment ),
-  ToSize = segment_level_limit( Level ) / 2,
+  ToSize = segment_level_limit( round(Level) ) *?MB * ?ENV( segment_split_median, ?DEFAULT_SPLIT_MEDIAN ),
 
   OnBatch=
-    fun(K,Count,Size)->
+    fun(K,Count,_Size)->
+      Size = dlss_segment:get_size( Segment ),
       ?LOGINFO("~p splitting from ~p: key ~p, count ~p, size ~p",[
         Segment,
         Parent,
@@ -343,10 +357,16 @@ merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], So
           #dump{hash = _H}->_H;
           _-><<>>
         end,
+      ?LOGINFO("merge: source ~p, target ~p, from ~p, to ~p, init hash ~p",[
+        Source, S, FromKey, ToKey, InitHash
+      ]),
       case merge_segment( S, Source, FromKey, ToKey, Type, InitHash ) of
         {ok, NewHash }->
+          ?LOGINFO("merged sucessully: source ~p, target ~p, from ~p, to ~p, new hash ~p",[
+            Source, S, FromKey, ToKey, NewHash
+          ]),
           % Update the version of the segment in the schema
-          ok = dlss_storage:set_segment_version( S, Node, Dump#dump{hash = NewHash, version = Version }  );
+          ok = dlss_storage:set_segment_version( S, Node, #dump{hash = NewHash, version = Version }  );
         {error, MergeError}->
           ?LOGERROR("~p error on merging to ~p, error ~p",[ Source, S, MergeError ])
       end;
@@ -440,6 +460,7 @@ master_commit( split, Segment, Master, #{version := Version,copies:=Copies})->
       % The master has already updated its version
       case not_confirmed( Version, Hash, Copies ) of
         [] ->
+          ?LOGINFO("split commit: ~p, copies ~p",[ Segment, Copies ]),
           dlss_storage:split_commit( Segment );
         Nodes->
           % There are still nodes that are not confirmed the hash yet
@@ -470,6 +491,7 @@ master_commit( merge, Segment, _Node, _Params )->
       end || S <- Children ],
   case [ {S,W} || {S, W } <- Children1, length(W)>0 ] of
     []->
+      ?LOGINFO("merge commit: ~p",[ Segment ]),
       dlss_storage:merge_commit( Segment );
     Wait->
       ?LOGINFO("~p merging is not finished yet, waiting for ~p",[ Wait ]),
@@ -491,21 +513,29 @@ check_hash( _Other, Segment, Node, Master, #{version:=Version,copies:=Copies} )-
       % The master has already updated its hash
       case Copies of
         #{ Node := #dump{ version = Version, hash = Hash }}->
+          ?LOGDEBUG("~p confirm hash ~p",[ Segment, Hash ]),
           % The hash for the Node is confirmed
           ok;
-        #{ Node := #dump{ version = Version } }->
+        #{ Node := #dump{ version = Version, hash = Invalid } }->
           % The version of the segment for the Node has a different hash.
           % We purge the local copy of the segment to let the sync mechanism to reload it
           % next cycle
+          ?LOGWARNING("~p invalid hash ~p, master hash ~p, drop local copy",[ Segment, Invalid, Hash ]),
           dlss_segment:remove_node( Segment, Node );
-        _->
+        #{ Node := Dump }->
+          ?LOGDEBUG("~p local copy is not updated yet: version ~p, local ~p",[Version,Dump]),
           % The segment has not updated yet
           ok
-      end
+      end;
+    _->
+      ?LOGDEBUG("check hash ~p, master ~p is not ready yet: ~p",[
+        Segment, Master, maps:get(Master,Copies)
+      ]),
+      ok
   end.
 
 not_confirmed( Version, Hash, Copies )->
-  [ N || { N, #dump{version = V,hash = H}} <- Copies, (V=/=Version) or (H=/=Hash)  ].
+  [ N || { N, #dump{version = V,hash = H}} <- maps:to_list(Copies), (V=/=Version) or (H=/=Hash)  ].
 
 
 %%============================================================================
@@ -518,7 +548,11 @@ purge_stale( Storage, Node )->
         case dlss_segment:dirty_prev( S, FirstKey ) of
           '$end_of_table'->ok;
           ToKey->
-            dlss_rebalance:delete_until( S, ToKey )
+            ?LOGINFO("~p purge stale head to ~p",[ S,ToKey ]),
+            dlss_rebalance:delete_until( S, ToKey ),
+            ?LOGINFO("~p has perged stale head, schema first key ~p, actual first key ~p",[
+              S, FirstKey, dlss_segment:dirty_first( S )
+            ])
         end;
       _->
         % The node does not have a copy of the segment
@@ -537,10 +571,12 @@ check_limits( Storage, Node )->
       end || S <- dlss_storage:get_segments(Storage) ],
   case check_segment_limit( Segments, Node ) of
     Segment when Segment=/=undefined->
+      ?LOGINFO("~p has reached the limit, queue a split",[Segment]),
       dlss_storage:split_segment( Segment );
     undefined->
       case check_level_limits( Segments, Node ) of
         Segment when Segment =/=undefined ->
+          ?LOGINFO("level has reached the limit, queue merge ~p",[Segment]),
           dlss_storage:merge_segment(Segment);
         undefined ->
           ok
@@ -553,7 +589,7 @@ check_segment_limit([{ Segment, #{level:=Level, copies:=Copies}}| Rest], Node)->
       Size = dlss_segment:get_size( Segment ),
       Limit = segment_level_limit( Level ),
       if
-        Size > Limit-> Segment;
+        Size > (Limit * ?MB)-> Segment;
         true ->
           check_segment_limit( Rest, Node )
       end;
@@ -601,7 +637,7 @@ master_node( Copies )->
   end.
 
 which_operation(Level)->
-  Floor = math:floor( Level ),
+  Floor = round(math:floor( Level )),
   if
     round(Level) =:= Floor ->
       % If the level is closer to the upper level then it is the split

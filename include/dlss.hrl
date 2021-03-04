@@ -27,6 +27,9 @@
   2 => 1024 * 100
 }). % MB
 
+-define(DEFAULT_SPLIT_MEDIAN, 0.65).
+
+
 -record(kv,{key,value}).
 
 -define(ERROR(Error),erlang:error(Error)).

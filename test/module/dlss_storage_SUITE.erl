@@ -45,8 +45,6 @@
   storage_range_select_limit/1
 ]).
 
--define(MB,1048576).
-
 all()->
   [
     service_api

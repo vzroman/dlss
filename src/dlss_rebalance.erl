@@ -142,14 +142,18 @@ delete_until( Segment, ToKey )->
   delete_until( Type, Segment, ToKey ).
 delete_until( disc, Segment, ToKey0 )->
   ToKey = mnesia_eleveldb:encode_key( ToKey0 ),
-  mnesia_eleveldb:dirty_iterator( Segment,fun( { K, _V }, _Acc )->
+  mnesia_eleveldb:dirty_iterator( Segment,fun( { K, _V }, Acc )->
     if
-      K > ToKey -> stop ;
-      true ->
-        mnesia_eleveldb:bulk_delete( Segment,[ K ] ),
-        ok
+      K > ToKey ->
+        mnesia_eleveldb:bulk_delete( Segment, Acc ),
+        stop ;
+      length(Acc) >= ?BATCH_SIZE ->
+        mnesia_eleveldb:bulk_delete( Segment,Acc ),
+        [K];
+      true->
+        [K|Acc]
     end
-  end, ok, '$start_of_table' ),
+  end, [], '$start_of_table' ),
   ok;
 delete_until( _EtsBased, Segment, ToKey )->
 
