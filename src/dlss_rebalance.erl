@@ -54,15 +54,20 @@
 %%=================================================================
 %%	COPY
 %%=================================================================
-copy( Source, Target, Copy, FromKey, OnBatch, Hash )->
+copy( Source, Target, Copy, FromKey0, OnBatch, Hash )->
 
   #{ type:= Type }=dlss_segment:get_info( Source ),
-  { Read, Write } =
+  { Read, Write, FromKey } =
     if
       Type =:= disc ->
-        { disc_bulk_read, disc_bulk_write };
+        _From =
+          if
+            FromKey0 =:= '$start_of_table' -> FromKey0 ;
+            true -> mnesia_eleveldb:encode_key(FromKey0)
+          end,
+        { disc_bulk_read, disc_bulk_write, _From };
       true ->
-        { ets_bulk_read, ets_bulk_write }
+        { ets_bulk_read, ets_bulk_write, FromKey0 }
     end,
 
   ReadNode = mnesia:table_info( Source, where_to_read ),

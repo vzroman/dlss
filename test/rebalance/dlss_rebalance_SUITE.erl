@@ -188,6 +188,7 @@ schema_common(_Config)->
   % Run supervisor loop
   T4 = erlang:system_time(millisecond),
   dlss_storage_supervisor:loop( schema_common, disc, node() ),
+  % It is going to split dlss_schema_common_1 to dlss_schema_common_4
   T5 = erlang:system_time(millisecond),
 
   [
@@ -198,9 +199,39 @@ schema_common(_Config)->
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
   {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_schema_common_3),
   {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_schema_common_4),
-  {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_schema_common_3),
+  {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_schema_common_1),
 
   ?LOGINFO("finish splitting ~p, time ~p, split key ~p",[dlss_schema_common_1, ?TIMER(T5-T4), SplitKey1]),
+
+  % Run supervisor loop
+  dlss_storage_supervisor:loop( schema_common, disc, node() ),
+  % It is going to purge in dlss_schema_common_1 keys that were moved to dlss_schema_common_4
+  % then it is going to detect that level 1 has reached its limit and to move
+  % dlss_schema_common_3 to the level 2
+  [
+    dlss_schema_common_2,
+    dlss_schema_common_3, % level 2 but the key is smaller than in level 1 segments
+    dlss_schema_common_4,dlss_schema_common_1
+  ]=dlss_storage:get_segments(schema_common),
+
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_schema_common_4),
+  {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_schema_common_1),
+  {ok, #{ level := 2, key := {x,1} }} = dlss_storage:segment_params(dlss_schema_common_3),
+
+  % Run supervisor loop
+  dlss_storage_supervisor:loop( schema_common, disc, node() ),
+  % No limits are broken - no changes
+  [
+    dlss_schema_common_2,
+    dlss_schema_common_3, % level 2 but the key is smaller than in level 1 segments
+    dlss_schema_common_4,dlss_schema_common_1
+  ]=dlss_storage:get_segments(schema_common),
+
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_schema_common_4),
+  {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_schema_common_1),
+  {ok, #{ level := 2, key := {x,1} }} = dlss_storage:segment_params(dlss_schema_common_3),
 
 %%
 %%  % Spawn a new segment for storage

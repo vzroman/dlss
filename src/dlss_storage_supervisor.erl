@@ -332,7 +332,13 @@ split_segment( Parent, Segment, Type, Hash )->
       end
     end,
 
-  dlss_rebalance:copy( Parent, Segment, Copy, '$start_of_table', OnBatch,  Hash ).
+  {ok, #{ key:= From0}} = dlss_storage:segment_params( Parent ),
+  From=
+    if
+      From0 =:='_'-> '$start_of_table' ;
+      true -> From0
+    end,
+  dlss_rebalance:copy( Parent, Segment, Copy, From, OnBatch,  Hash ).
 
 %---------------------MERGE---------------------------------------------------
 merge_level([_Prev, Next = {_S, #{key:=K2}}| Tail ], Source, #{key:=Key} = Params, Node, Type )
@@ -606,7 +612,8 @@ check_level_limits([{ Segment, #{ level:= Level ,copies := Copies }} | Rest], No
       case level_count_limit(Level) of
         Limit when is_integer(Limit)->
           if
-            length(LevelSegments) + 1 >= Limit ->
+            length([Segment|LevelSegments]) > Limit ->
+              % +1 because the first segment in the level is already caught
               Segment;
             true ->
               check_level_limits( Tail, Node )
@@ -662,6 +669,6 @@ level_count_limit( 0 )->
 level_count_limit( Level ) when Level >= 2->
   % The lowest level can have any number of segments
   unlimited;
-level_count_limit( Level )->
-  ?ENV( buffer_level_limit, maps:get(Level,?DEFAULT_SEGMENT_LIMITS) ) * ?MB.
+level_count_limit( _Level )->
+  ?ENV( buffer_level_limit, ?DEFAULT_BUFFER_LIMIT ) .
 

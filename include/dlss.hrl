@@ -28,6 +28,7 @@
 }). % MB
 
 -define(DEFAULT_SPLIT_MEDIAN, 0.55).
+-define(DEFAULT_BUFFER_LIMIT, 10).
 
 
 -record(kv,{key,value}).
