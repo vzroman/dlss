@@ -27,7 +27,7 @@
   2 => 1024 * 100
 }). % MB
 
--define(DEFAULT_SPLIT_MEDIAN, 0.65).
+-define(DEFAULT_SPLIT_MEDIAN, 0.55).
 
 
 -record(kv,{key,value}).

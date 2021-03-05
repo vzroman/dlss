@@ -165,21 +165,42 @@ schema_common(_Config)->
   ]=dlss_storage:get_segments(schema_common),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
-  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_schema_common_1),
   {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_schema_common_3),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_schema_common_1),
   ?LOGINFO("finish splitting ~p, time ~p, split key ~p",[dlss_schema_common_1, ?TIMER(T3-T2), SplitKey0]),
 
   % Run supervisor loop
   dlss_storage_supervisor:loop( schema_common, disc, node() ),
-  % No limits are broken, no changes
+  % dlss_schema_common_1 is not rebalanced at leveldb yet, so it still breaks
+  % the limit, new split is queued
   [
     dlss_schema_common_2,
-    dlss_schema_common_3,dlss_schema_common_1
+    dlss_schema_common_3,dlss_schema_common_1,
+    dlss_schema_common_4 % it is to split dlss_common_1
   ]=dlss_storage:get_segments(schema_common),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
-  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_schema_common_1),
   {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_schema_common_3),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_schema_common_1),
+  {ok, #{ level := 1.1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_schema_common_4),
+
+
+  % Run supervisor loop
+  T4 = erlang:system_time(millisecond),
+  dlss_storage_supervisor:loop( schema_common, disc, node() ),
+  T5 = erlang:system_time(millisecond),
+
+  [
+    dlss_schema_common_2,
+    dlss_schema_common_3,dlss_schema_common_4,dlss_schema_common_1
+  ]=dlss_storage:get_segments(schema_common),
+
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_2),
+  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_schema_common_3),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_schema_common_4),
+  {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_schema_common_3),
+
+  ?LOGINFO("finish splitting ~p, time ~p, split key ~p",[dlss_schema_common_1, ?TIMER(T5-T4), SplitKey1]),
 
 %%
 %%  % Spawn a new segment for storage
