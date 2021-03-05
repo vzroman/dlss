@@ -121,6 +121,8 @@ copy_loop( Read, Write, FromKey, OnItem, OnBatch, Hash0, Size0, Count0 )->
       ReadError -> ?ERROR( ReadError )
   end.
 
+copy_items( ['$end_of_table'|_], _OnItem )->
+  [];
 copy_items( [Rec|Tail], OnItem )->
   case OnItem( Rec ) of
     stop-> [];

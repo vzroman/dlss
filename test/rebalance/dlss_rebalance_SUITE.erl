@@ -233,6 +233,76 @@ schema_common(_Config)->
   {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_schema_common_1),
   {ok, #{ level := 2, key := {x,1} }} = dlss_storage:segment_params(dlss_schema_common_3),
 
+  % add 1 GB more records
+  T6 = erlang:system_time(millisecond),
+  ct:pal("root size ~p MB",[dlss_segment:get_size(dlss_schema_common_2)/?MB]),
+  Count1 = 20000000,
+  [ begin
+      if
+        V rem 100000 =:=0 ->
+          ct:pal("write ~p",[V]);
+        true ->ok
+      end,
+      ok = dlss:dirty_write(schema_common, {x, V * 2 }, {y, binary:copy(integer_to_binary(V), 100)})
+    end || V <- lists:seq(1, Count1) ],
+  Size1 = dlss_segment:get_size(dlss_schema_common_2),
+  T7 = erlang:system_time(millisecond),
+  ct:pal("root size ~p MB, time ~p",[Size1/?MB, ?TIMER(T7-T6)]),
+
+  % Run supervisor
+  dlss_storage_supervisor:loop( schema_common, disc, node() ),
+  % dlss_schema_common_2 is full, a new root is created and dlss_schema_common_2 is enqueued to merge with level 1 segments
+  [
+    dlss_schema_common_5,
+    dlss_schema_common_3, % level 2 but the key {x,1} is the smallest
+    dlss_schema_common_2, % former root
+    dlss_schema_common_4,dlss_schema_common_1
+  ]=dlss_storage:get_segments(schema_common),
+
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_5),
+  {ok,#{ level := 0.9, key := {x,2} }} = dlss_storage:segment_params(dlss_schema_common_2),
+  {ok, #{ level := 1, key := SplitKey0, version:=L1Version }} = dlss_storage:segment_params(dlss_schema_common_4),
+  {ok, #{ level := 1, key := SplitKey1, version:=L1Version }} = dlss_storage:segment_params(dlss_schema_common_1),
+  {ok, #{ level := 2, key := {x,1} }} = dlss_storage:segment_params(dlss_schema_common_3),
+
+  % Run supervisor
+  T8 = erlang:system_time(millisecond),
+  dlss_storage_supervisor:loop( schema_common, disc, node() ),
+  % first dlss_schema_common_4 takes its keys from dlss_schema_common_2
+  T9 = erlang:system_time(millisecond),
+
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_5),
+  {ok,#{ level := 0.9, key := {x,2} }} = dlss_storage:segment_params(dlss_schema_common_2),
+  {ok, #{ level := 1, key := {x,2} }} = dlss_storage:segment_params(dlss_schema_common_4),
+  {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_schema_common_1),
+  {ok, #{ level := 2, key := {x,1} }} = dlss_storage:segment_params(dlss_schema_common_3),
+
+  ?LOGINFO("splitting ~p to ~p, time ~p, size ~p",[
+    dlss_schema_common_2,
+    dlss_schema_common_4,
+    ?TIMER(T9-T8),
+    dlss_segment:get_size(dlss_schema_common_4) / ?MB
+  ]),
+
+  % Run supervisor
+  T10 = erlang:system_time(millisecond),
+  dlss_storage_supervisor:loop( schema_common, disc, node() ),
+  % first dlss_schema_common_4 takes its keys from dlss_schema_common_2
+  T11 = erlang:system_time(millisecond),
+
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_schema_common_5),
+  {ok,#{ level := 0.9, key := {x,2} }} = dlss_storage:segment_params(dlss_schema_common_2),
+  {ok, #{ level := 1, key := {x,2} }} = dlss_storage:segment_params(dlss_schema_common_4),
+  {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_schema_common_1),
+  {ok, #{ level := 2, key := {x,1} }} = dlss_storage:segment_params(dlss_schema_common_3),
+
+  ?LOGINFO("splitting ~p to ~p, time ~p, size ~p",[
+    dlss_schema_common_2,
+    dlss_schema_common_1,
+    ?TIMER(T11-T10),
+    dlss_segment:get_size(dlss_schema_common_1) / ?MB
+  ]),
+
 %%
 %%  % Spawn a new segment for storage
 %%  ok = dlss_storage:spawn_segment(dlss_schema_common_1),

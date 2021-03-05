@@ -273,9 +273,12 @@ pending_transformation( Storage, Type, Node )->
         Operation =:= merge->
           %----------merge---------------------------------------
           MergeLevel = round(Level),
-          MergeTo =
+          [ {S0 , P0 } | MergeTo ] =
             [ {S, P} || { S, #{level := L} = P } <- Segments, L=:=MergeLevel],
-          merge_level( MergeTo, Segment, Params, Node, Type )
+          % The first segment takes keys from the parent's head even if they are
+          % smaller than its first key
+          #{ key := FromKey } = Params,
+          merge_level( [ {S0, P0#{key => FromKey }} | MergeTo], Segment, Params, Node, Type )
       end,
       % The segment is under transformation
       {Operation, Segment}
@@ -349,6 +352,9 @@ merge_level([_Prev, Next = {_S, #{key:=K2}}| Tail ], Source, #{key:=Key} = Param
 merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], Source, Params, Node, Type )->
   % This is the segment that is currently copies the keys from the source
   case Copies of
+    #{ Node := #dump{version = Version} }->
+      % The segment is already updated
+      merge_level( Tail, Source, Params, Node, Type );
     #{ Node := Dump } when Dump=:=undefined; Dump#dump.version < Version->
       % This node hosts the target segment, it must to play its role
       ToKey =
