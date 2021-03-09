@@ -171,8 +171,7 @@ schema_common(_Config)->
 
   % Run supervisor loop
   dlss_storage_supervisor:loop( schema_common, disc, node() ),
-  % dlss_schema_common_1 is not rebalanced at leveldb yet, so it still breaks
-  % the limit, new split is queued
+  % The schema is balanced now
   [
     dlss_schema_common_2,
     dlss_schema_common_3,dlss_schema_common_1,
@@ -184,6 +183,10 @@ schema_common(_Config)->
   {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_schema_common_1),
   {ok, #{ level := 1.1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_schema_common_4),
 
+  ?LOGDEBUG("BEFORE: dlss_schema_common_4 first ~p, dlss_schema_common_1 first ~p",[
+    dlss_segment:dirty_first(dlss_schema_common_4),
+    dlss_segment:dirty_first(dlss_schema_common_1)
+  ]),
 
   % Run supervisor loop
   T4 = erlang:system_time(millisecond),
@@ -191,6 +194,7 @@ schema_common(_Config)->
   % It is going to split dlss_schema_common_1 to dlss_schema_common_4
   T5 = erlang:system_time(millisecond),
 
+  ?LOGDEBUG("AFTER: dlss_schema_common_4 first ~p",[dlss_segment:dirty_first(dlss_schema_common_4)]),
   [
     dlss_schema_common_2,
     dlss_schema_common_3,dlss_schema_common_4,dlss_schema_common_1

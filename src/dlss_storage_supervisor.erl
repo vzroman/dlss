@@ -316,7 +316,7 @@ split_segment( Parent, Segment, Type, Hash )->
   ToSize = segment_level_limit( round(Level) ) *?MB * ?ENV( segment_split_median, ?DEFAULT_SPLIT_MEDIAN ),
 
   OnBatch=
-    fun(K,Count,_Size)->
+    fun(K,Count)->
       Size = dlss_segment:get_size( Segment ),
       ?LOGINFO("~p splitting from ~p: key ~p, count ~p, size ~p",[
         Segment,
@@ -439,13 +439,12 @@ merge_segment( Target, Source, FromKey0, ToKey0, Type, Hash )->
     end,
 
   OnBatch=
-    fun(K,Count,Size)->
-      ?LOGINFO("~p merging from ~p: key ~p, count ~p, size ~p",[
+    fun(K,Count)->
+      ?LOGINFO("~p merging from ~p: key ~p, count ~p",[
         Target,
         Source,
         if Type =:=disc-> mnesia_eleveldb:decode_key(K); true ->K end,
-        Count,
-        Size / ?MB
+        Count
       ]),
 
       % Stop only when
@@ -562,6 +561,7 @@ purge_stale( Storage, Node )->
           ToKey->
             ?LOGINFO("~p purge stale head to ~p",[ S,ToKey ]),
             dlss_rebalance:delete_until( S, ToKey ),
+
             ?LOGINFO("~p has perged stale head, schema first key ~p, actual first key ~p",[
               S, FirstKey, dlss_segment:dirty_first( S )
             ])

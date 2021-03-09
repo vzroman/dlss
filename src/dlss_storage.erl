@@ -293,7 +293,8 @@ split_segment( Storage, Segment )->
 
     ok
   end) of
-    {ok,ok}->ok;
+    {ok,ok}->
+      ok;
     SchemaError->
       case dlss_backend:delete_segment( NewSegment ) of
         ok->ok;

@@ -84,7 +84,7 @@ copy( Source, Target, Copy, FromKey0, OnBatch, Hash )->
 
   HashRef0 = crypto:hash_update( crypto:hash_init(sha256), Hash ),
 
-  HashRef = copy_loop( ReadBatch ,WriteBatch, FromKey, Copy, OnBatch, HashRef0, _Size = 0, _Count = 0 ),
+  HashRef = copy_loop( ReadBatch ,WriteBatch, FromKey, Copy, OnBatch, HashRef0, _Count = 0 ),
 
   if
     Type =/=disc -> dump_segment( Target );
@@ -94,11 +94,11 @@ copy( Source, Target, Copy, FromKey0, OnBatch, Hash )->
   { ok, crypto:hash_final( HashRef ) }.
 
 
-copy_loop( Read, Write, FromKey, OnItem, OnBatch, Hash0, Size0, Count0 )->
+copy_loop( Read, Write, FromKey, OnItem, OnBatch, Hash0, Count0 )->
   case Read( FromKey ) of
     Batch when is_list(Batch), length(Batch)>0 ->
       ToWrite = copy_items( Batch, OnItem ),
-      { Hash1, Size1 } = update_hash_size( ToWrite, Hash0, Size0 ),
+      Hash1 = update_hash( ToWrite, Hash0 ),
       Write( ToWrite ),
       if
         length(ToWrite) < length(Batch) ->
@@ -110,12 +110,12 @@ copy_loop( Read, Write, FromKey, OnItem, OnBatch, Hash0, Size0, Count0 )->
         true ->
           { LastKey, _} = lists:last( Batch ),
           Count1 = Count0 + length(ToWrite),
-          case OnBatch( LastKey, Count1, Size1 ) of
+          case OnBatch( LastKey, Count1 ) of
             stop->
               % Stop is requested by the client's OnBatch callback
               Hash1;
             _->
-              copy_loop( Read, Write, LastKey, OnItem, OnBatch, Hash1, Size1, Count1 )
+              copy_loop( Read, Write, LastKey, OnItem, OnBatch, Hash1, Count1 )
           end
       end;
       ReadError -> ?ERROR( ReadError )
@@ -133,39 +133,25 @@ copy_items( [], _OnItem )->
   [].
 
 
-update_hash_size([ Rec | Tail ], HashRef, Size )->
-  Rec1 = term_to_binary( Rec ),
-  RecSize =
-    case Rec of
-      { put, _, _ }->byte_size( Rec1 );
-      _-> 0
-    end,
-  update_hash_size( Tail, crypto:hash_update(HashRef,Rec1), Size + RecSize );
-update_hash_size( [], HashRef, Size )->
-  { HashRef, Size}.
+update_hash([ Rec | Tail ], HashRef )->
+  update_hash( Tail, rec_hash( Rec, HashRef ) );
+update_hash( [], HashRef )->
+  HashRef.
+rec_hash( {put,K,V}, HashRef )->
+  crypto:hash_update(HashRef,<<"@put@",K/binary,"@",V/binary>>);
+rec_hash( {delete,K}, HashRef )->
+  crypto:hash_update(HashRef,<<"@delete@",K/binary>>).
 
 delete_until( Segment, ToKey )->
   #{ type:= Type }=dlss_segment:get_info( Segment ),
   delete_until( Type, Segment, ToKey ).
 delete_until( disc, Segment, ToKey0 )->
   ToKey = mnesia_eleveldb:encode_key( ToKey0 ),
-  mnesia_eleveldb:dirty_iterator( Segment,fun( { K, _V }, Acc )->
-    if
-      K > ToKey ->
-        mnesia_eleveldb:bulk_delete( Segment, Acc ),
-        stop ;
-      length(Acc) >= ?BATCH_SIZE ->
-        mnesia_eleveldb:bulk_delete( Segment,Acc ),
-        [K];
-      true->
-        [K|Acc]
-    end
-  end, [], '$start_of_table' ),
-  ok;
+  delete_disc_until( disc_bulk_read(Segment,'$start_of_table'), Segment, ToKey );
 delete_until( _EtsBased, Segment, ToKey )->
 
   mnesia:ets(fun()->
-    delete_batch_until( dlss_segment:dirty_scan( Segment, '$start_of_table', ToKey, ?BATCH_SIZE ), ToKey, Segment )
+    delete_ets_until( dlss_segment:dirty_scan( Segment, '$start_of_table', ToKey, ?BATCH_SIZE ), ToKey, Segment )
   end),
 
   % Dump the segment after cleaning
@@ -173,16 +159,27 @@ delete_until( _EtsBased, Segment, ToKey )->
 
   ok.
 
-delete_batch_until( Records, ToKey, Segment ) when length(Records) > 0 ->
+delete_disc_until( Records, Segment, ToKey )->
+  ToDelete = [ K || {K,_V} <- Records, K<ToKey ],
+  mnesia_eleveldb:bulk_delete( Segment, ToDelete ),
+  if
+    length(ToDelete) >= ?BATCH_SIZE ->
+      delete_disc_until( disc_bulk_read(Segment,lists:last(ToDelete)), Segment, ToKey );
+    true ->
+      % There are no more records to seek through
+      ok
+  end.
+
+delete_ets_until( Records, ToKey, Segment ) when length(Records) > 0 ->
   [ dlss_segment:delete( Segment, K ) || {K,_V} <- Records ],
   if
     length(Records)>=?BATCH_SIZE ->
       {LastKey, _} = lists:last( Records ),
-      delete_batch_until( dlss_segment:dirty_scan( Segment, LastKey, ToKey, ?BATCH_SIZE ), ToKey, Segment );
+      delete_ets_until( dlss_segment:dirty_scan( Segment, LastKey, ToKey, ?BATCH_SIZE ), ToKey, Segment );
     true ->
       ok
   end;
-delete_batch_until( [], _ToKey, _Segment )->
+delete_ets_until( [], _ToKey, _Segment )->
   ok.
 
 
@@ -192,8 +189,8 @@ delete_batch_until( [], _ToKey, _Segment )->
 disc_bulk_read( Segment, FromKey )->
   lists:reverse(mnesia_eleveldb:dirty_iterator( Segment,fun( Rec, Acc )->
     if
-      length(Acc)>?BATCH_SIZE -> stop ;
-      true -> [ Rec| Acc ]
+      length(Acc) >= ?BATCH_SIZE -> stop ;
+      true -> [ Rec|Acc ]
     end
   end, [], FromKey )).
 
