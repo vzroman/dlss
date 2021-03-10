@@ -160,7 +160,7 @@ delete_until( _EtsBased, Segment, ToKey )->
   ok.
 
 delete_disc_until( Records, Segment, ToKey )->
-  ToDelete = [ K || {K,_V} <- Records, K<ToKey ],
+  ToDelete = [ K || {K,_V} <- Records, K=<ToKey ],
   mnesia_eleveldb:bulk_delete( Segment, ToDelete ),
   if
     length(ToDelete) >= ?BATCH_SIZE ->

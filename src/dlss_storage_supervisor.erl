@@ -344,11 +344,6 @@ split_segment( Parent, Segment, Type, Hash )->
   dlss_rebalance:copy( Parent, Segment, Copy, From, OnBatch,  Hash ).
 
 %---------------------MERGE---------------------------------------------------
-merge_level([_Prev, Next = {_S, #{key:=K2}}| Tail ], Source, #{key:=Key} = Params, Node, Type )
-  when Key>=K2->
-  % The first key in the source segment is bigger is bigger than the first key
-  % of the next segment, so there are no keys for the S1 segment in the source
-  merge_level([Next|Tail], Source,Params, Node, Type );
 merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], Source, Params, Node, Type )->
   % This is the segment that is currently copies the keys from the source
   case Copies of
@@ -360,7 +355,10 @@ merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], So
       ToKey =
         case Tail of
           [{_, #{ key := _NextKey }}| _]->
-            dlss_segment:dirty_prev( Source, _NextKey );
+            case dlss_segment:dirty_prev( Source, _NextKey ) of
+              '$end_of_table'->_NextKey;
+              _ToKey->_ToKey
+            end;
           _->
             '$end_of_table'
         end,
@@ -390,20 +388,14 @@ merge_level( [], _Source, _Params, _Node, _Type )->
   % There is no locally hosted segments to merge to
   ok.
 
-merge_segment( Target, Source, FromKey0, ToKey0, Type, Hash )->
+merge_segment( Target, Source, FromKey, ToKey0, Type, Hash )->
 
   % Prepare the deleted flag
-  { Deleted, FromKey, ToKey } =
+  { Deleted, ToKey } =
     if
       Type=:=disc ->
         {
           mnesia_eleveldb:encode_val('@deleted@'),
-          if
-            FromKey0 =:= '$start_of_table'->
-              '$start_of_table';
-            true ->
-              mnesia_eleveldb:encode_key(FromKey0)
-          end,
           if
             ToKey0 =:= '$end_of_table'->
               '$end_of_table';
@@ -413,7 +405,6 @@ merge_segment( Target, Source, FromKey0, ToKey0, Type, Hash )->
         };
       true ->{
         '@deleted@',
-        FromKey0,
         ToKey0
       }
     end,
@@ -505,7 +496,7 @@ master_commit( merge, Segment, _Node, _Params )->
       ?LOGINFO("merge commit: ~p",[ Segment ]),
       dlss_storage:merge_commit( Segment );
     Wait->
-      ?LOGINFO("~p merging is not finished yet, waiting for ~p",[ Wait ]),
+      ?LOGINFO("~p merging is not finished yet, waiting for ~p",[ Segment, Wait ]),
       ok
   end.
 
@@ -562,8 +553,8 @@ purge_stale( Storage, Node )->
             ?LOGINFO("~p purge stale head to ~p",[ S,ToKey ]),
             dlss_rebalance:delete_until( S, ToKey ),
 
-            ?LOGINFO("~p has perged stale head, schema first key ~p, actual first key ~p",[
-              S, FirstKey, dlss_segment:dirty_first( S )
+            ?LOGINFO("~p has perged stale head, schema first key ~p, actual first key ~p, size ~p",[
+              S, FirstKey, dlss_segment:dirty_first( S ), dlss_segment:get_size(S) / ?MB
             ])
         end;
       _->
