@@ -318,7 +318,7 @@ split_segment( Parent, Segment, Type, Hash )->
   OnBatch=
     fun(K,Count)->
       Size = dlss_segment:get_size( Segment ),
-      ?LOGINFO("~p splitting from ~p: key ~p, count ~p, size ~p",[
+      ?LOGDEBUG("~p splitting from ~p: key ~p, count ~p, size ~p",[
         Segment,
         Parent,
         if Type =:=disc-> mnesia_eleveldb:decode_key(K); true ->K end,
@@ -431,7 +431,7 @@ merge_segment( Target, Source, FromKey, ToKey0, Type, Hash )->
 
   OnBatch=
     fun(K,Count)->
-      ?LOGINFO("~p merging from ~p: key ~p, count ~p",[
+      ?LOGDEBUG("~p merging from ~p: key ~p, count ~p",[
         Target,
         Source,
         if Type =:=disc-> mnesia_eleveldb:decode_key(K); true ->K end,

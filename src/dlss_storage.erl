@@ -415,7 +415,33 @@ split_commit( Sgm, #sgm{lvl = Level }=Prn )->
 %%  Merge procedure
 %%--------------------------------------------------------------------------------
 merge_segment( Segment )->
-  merge_segment(Segment, get_children(Segment) ).
+  MergeTo=
+    case get_children(Segment) of
+      []->[];
+      Children->
+        FirstKey =
+          case segment_by_name( Segment ) of
+            {ok, #sgm{ key = '_' } }->
+              dlss_segment:dirty_first(Segment);
+            {ok, #sgm{ key = { _FirstKey } } }->
+              _FirstKey
+          end,
+        Last = lists:last(Children),
+        LastKey = dlss_segment:dirty_last( Last ),
+        if
+          FirstKey > LastKey->
+            % The segment doesn't have common keys with children, it just
+            % takes its place in the end of the level
+            ?LOGINFO("~p doesn't have coomon keys with ~p, it goes to the end of the level",[
+              Segment,Children
+            ]),
+            [] ;
+          true ->
+            Children
+        end
+    end,
+  merge_segment(Segment, MergeTo ).
+
 merge_segment( Segment, [] )->
   % The segment has no children to merge with, move it directly level down
   { ok, Sgm = #sgm{ lvl = Level } } = segment_by_name( Segment ),
