@@ -365,7 +365,9 @@ split_commit( Segment )->
   Parent = parent_segment( Segment ),
   {ok, Sgm } = segment_by_name( Segment ),
   {ok, Prn } = segment_by_name( Parent ),
-
+  ?LOGDEBUG("commit split from ~p to ~p",[
+    Parent,Segment
+  ]),
   split_commit( Sgm, Prn ).
 
 split_commit( Sgm, #sgm{lvl = Level }=Prn )->
@@ -377,7 +379,6 @@ split_commit( Sgm, #sgm{lvl = Level }=Prn )->
     Segment = dlss_segment:read( dlss_schema, Sgm, write ),
     Parent = dlss_segment:read( dlss_schema, Prn, write ),
 
-    First0 = dlss_segment:first( Segment ),
     Last0 = dlss_segment:last( Segment ),
     Next0 =
       if
@@ -386,23 +387,19 @@ split_commit( Sgm, #sgm{lvl = Level }=Prn )->
         true ->
           dlss_segment:next( Parent, Last0 )
       end,
-    First =
-      if
-        First0 =:='$end_of_table' ->'_';
-        true -> { First0 }
-      end,
     Next =
       if
         Next0 =:='$end_of_table' ->'_';
         true -> { Next0 }
       end,
 
-    % Update the segment
+    % Remove old versions
     ok = dlss_segment:delete(dlss_schema, Sgm , write ),
-    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level, key = First }, Segment, write ),
-
-    % Update the parent
     ok = dlss_segment:delete(dlss_schema, Prn , write ),
+
+
+    % Add the new versions
+    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level }, Segment, write ),
     ok = dlss_segment:write( dlss_schema, Prn#sgm{ key = Next }, Parent, write ),
 
     ok
@@ -446,18 +443,26 @@ merge_segment( Segment, [] )->
   % The segment has no children to merge with, move it directly level down
   { ok, Sgm = #sgm{ lvl = Level } } = segment_by_name( Segment ),
 
+  % The next segment has to take '_' as the first key
+  NextSgm = next_sibling( Sgm ),
+
   case dlss:transaction(fun()->
     % Set a lock on the segment
     Segment = dlss_segment:read( dlss_schema, Sgm, write ),
-    First0 = dlss_segment:first( Segment ),
-    First =
-      if
-        First0 =:='$end_of_table'->'_' ;
-        true -> { First0 }
-      end,
+
     % Update the segment
     ok = dlss_segment:delete(dlss_schema, Sgm , write ),
-    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ key = First, lvl = Level + 1 }, Segment, write ),
+    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ key = '_', lvl = Level + 1 }, Segment, write ),
+
+    % Update the next segment
+    if
+      NextSgm =/= undefined->
+        NextSegment = dlss_segment:read( dlss_schema, NextSgm, write ),
+        ok = dlss_segment:delete(dlss_schema, NextSgm , write ),
+        ok = dlss_segment:write( dlss_schema, NextSgm#sgm{ key = '_' }, NextSegment, write );
+      true ->
+        ok
+    end,
 
     ok
   end) of
@@ -475,13 +480,6 @@ merge_segment( Segment, Children )->
     % Set a lock on the segment
     Segment = dlss_segment:read( dlss_schema, Sgm, write ),
 
-    First0 = dlss_segment:first( Segment ),
-    First =
-      if
-        First0 =:='$end_of_table'->'_' ;
-        true -> { First0 }
-      end,
-
     % Increment the version of the children to merge with
     [ begin
         {ok,S1 = #sgm{ver = V}} = segment_by_name( S ),
@@ -493,7 +491,7 @@ merge_segment( Segment, Children )->
 
     % Update the segment
     ok = dlss_segment:delete(dlss_schema, Sgm , write ),
-    ok = dlss_segment:write( dlss_schema, Sgm#sgm{key = First , lvl = Level + 0.9 }, Segment, write ),
+    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level + 0.9 }, Segment, write ),
 
     ok
   end) of
@@ -507,45 +505,40 @@ merge_commit( Segment )->
 
   { ok, Sgm } = segment_by_name( Segment ),
 
-  Children =
-    [ begin {ok,S1} = segment_by_name(S), S1 end|| S <- get_children( Segment ) ],
+  % The next segment has to take '_' as the first key
+  NextSgm = next_sibling( Sgm ),
 
-  merge_commit( Sgm, Children ).
-
-merge_commit( Sgm, Children )->
   % Set a version for a segment in the schema
   case dlss:transaction(fun()->
-    % Set a lock on the segment
-    Merged = dlss_segment:read( dlss_schema, Sgm, write ),
-    [ begin
-
-        Segment = dlss_segment:read( dlss_schema, S, write ),
-        First = dlss_segment:first( Segment ),
-
-        % Update the segment
-        ok = dlss_segment:delete(dlss_schema, S , write ),
-        ok = dlss_segment:write( dlss_schema, S#sgm{ key = { First } }, Segment, write )
-
-      end || S <- Children ],
 
     % Remove the merged segment
     ok = dlss_segment:delete(dlss_schema, Sgm , write ),
 
-    Merged
+    % Update the next segment
+    if
+      NextSgm =/= undefined->
+        NextSegment = dlss_segment:read( dlss_schema, NextSgm, write ),
+        ok = dlss_segment:delete(dlss_schema, NextSgm , write ),
+        ok = dlss_segment:write( dlss_schema, NextSgm#sgm{ key = '_' }, NextSegment, write );
+      true ->
+        ok
+    end,
+
+    ok
   end) of
-    {ok, Merged } ->
-      ?LOGINFO("removing merged segment ~p",[Merged]),
-      case dlss_backend:delete_segment( Merged ) of
+    {ok, ok } ->
+      ?LOGINFO("removing merged segment ~p",[ Segment ]),
+      case dlss_backend:delete_segment( Segment ) of
         ok->ok;
         {error,Error}->
           ?LOGERROR("unable to remove segment ~p, reason ~p",[
-            Merged,
+            Segment,
             Error
           ])
       end;
     {error, Error} ->
       ?LOGERROR("error on merge commit ~p, error ~p",[
-        dlss_segment:dirty_read( dlss_schema, Sgm ),
+        Segment,
         Error
       ])
   end.

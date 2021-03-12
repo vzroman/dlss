@@ -136,7 +136,7 @@ disk_rebalance(_Config)->
 
   [dlss_disk_rebalance_2,dlss_disk_rebalance_1]=dlss_storage:get_segments(disk_rebalance),
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_2),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
   [ dlss_disk_rebalance_1 ] = dlss_storage:get_children(dlss_disk_rebalance_2),
   [] = dlss_storage:get_children(dlss_disk_rebalance_1),
 
@@ -149,8 +149,8 @@ disk_rebalance(_Config)->
   ]=dlss_storage:get_segments(disk_rebalance),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_2),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
-  {ok, #{ level := 1.1, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
+  {ok, #{ level := 1.1, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
 
   % Run supervisor loop
   T2 = erlang:system_time(millisecond),
@@ -163,7 +163,7 @@ disk_rebalance(_Config)->
   ]=dlss_storage:get_segments(disk_rebalance),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_2),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
   {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
   ?LOGINFO("finish splitting ~p, time ~p, split key ~p",[dlss_disk_rebalance_1, ?TIMER(T3-T2), SplitKey0]),
 
@@ -176,7 +176,7 @@ disk_rebalance(_Config)->
   ]=dlss_storage:get_segments(disk_rebalance),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_2),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
   {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
 
   % add 1 GB more records
@@ -200,14 +200,14 @@ disk_rebalance(_Config)->
   % dlss_disk_rebalance_2 is full, a new root is created and dlss_disk_rebalance_2 is enqueued to merge with level 1 segments
   [
     dlss_disk_rebalance_4,
-    dlss_disk_rebalance_3, % It is at a lower level than dlss_disk_rebalance_2 but its key is smaller, therefore it goes earlier
     dlss_disk_rebalance_2,
+    dlss_disk_rebalance_3,
     dlss_disk_rebalance_1
   ]=dlss_storage:get_segments(disk_rebalance),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_4),
-  {ok,#{ level := 0.9, key := {x,2} }} = dlss_storage:segment_params(dlss_disk_rebalance_2),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
+  {ok,#{ level := 0.9, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_2),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
   {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
 
   % Run supervisor
@@ -217,8 +217,8 @@ disk_rebalance(_Config)->
   T7 = erlang:system_time(millisecond),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_4),
-  {ok,#{ level := 0.9, key := {x,2} }} = dlss_storage:segment_params(dlss_disk_rebalance_2),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
+  {ok,#{ level := 0.9, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_2),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
   {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
 
   ?LOGINFO("merging ~p to ~p, time ~p, size ~p",[
@@ -241,7 +241,7 @@ disk_rebalance(_Config)->
   ]=dlss_storage:get_segments(disk_rebalance),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_4),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
   {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
 
   ?LOGINFO("merging ~p to ~p, time ~p, size ~p",[
@@ -261,7 +261,7 @@ disk_rebalance(_Config)->
   ]=dlss_storage:get_segments(disk_rebalance),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_4),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
   {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
   {ok, #{ level := 1.1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_disk_rebalance_5),
 
@@ -275,7 +275,7 @@ disk_rebalance(_Config)->
   ]=dlss_storage:get_segments(disk_rebalance),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_4),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
   {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_disk_rebalance_5),
   {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
 
@@ -293,9 +293,9 @@ disk_rebalance(_Config)->
   % As level 2 doesn't contain any segments yet dlss_disk_rebalance_3
   % goes directly to level 2
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_4),
-  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_disk_rebalance_5),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_5),
   {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
-  {ok, #{ level := 2, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
+  {ok, #{ level := 2, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
 
   ok.
 
@@ -342,7 +342,7 @@ ramdisk_rebalance(_Config)->
 
   [dlss_ramdisc_rebalance_2,dlss_ramdisc_rebalance_1]=dlss_storage:get_segments(ramdisc_rebalance),
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_2),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
   [ dlss_ramdisc_rebalance_1 ] = dlss_storage:get_children(dlss_ramdisc_rebalance_2),
   [] = dlss_storage:get_children(dlss_ramdisc_rebalance_1),
 
@@ -355,8 +355,8 @@ ramdisk_rebalance(_Config)->
   ]=dlss_storage:get_segments(ramdisc_rebalance),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_2),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
-  {ok, #{ level := 1.1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
+  {ok, #{ level := 1.1, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
 
   % Run supervisor loop
   T2 = erlang:system_time(millisecond),
@@ -369,7 +369,7 @@ ramdisk_rebalance(_Config)->
   ]=dlss_storage:get_segments(ramdisc_rebalance),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_2),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
   {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
   ?LOGINFO("finish splitting ~p, time ~p, split key ~p",[dlss_ramdisc_rebalance_1, ?TIMER(T3-T2), SplitKey0]),
 
@@ -382,7 +382,7 @@ ramdisk_rebalance(_Config)->
   ]=dlss_storage:get_segments(ramdisc_rebalance),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_2),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
   {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
 
   % add 1 GB more records
@@ -407,14 +407,13 @@ ramdisk_rebalance(_Config)->
   % dlss_ramdisc_rebalance_2 is full, a new root is created and dlss_ramdisc_rebalance_2 is enqueued to merge with level 1 segments
   [
     dlss_ramdisc_rebalance_4,
-    dlss_ramdisc_rebalance_3, % It is at a lower level than dlss_ramdisc_rebalance_2 but its key is smaller, therefore it goes earlier
     dlss_ramdisc_rebalance_2,
-    dlss_ramdisc_rebalance_1
+    dlss_ramdisc_rebalance_3, dlss_ramdisc_rebalance_1
   ]=dlss_storage:get_segments(ramdisc_rebalance),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_4),
-  {ok,#{ level := 0.9, key := {x,2} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_2),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok,#{ level := 0.9, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_2),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
   {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
 
   % Run supervisor
@@ -424,8 +423,8 @@ ramdisk_rebalance(_Config)->
   T7 = erlang:system_time(millisecond),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_4),
-  {ok,#{ level := 0.9, key := {x,2} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_2),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok,#{ level := 0.9, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_2),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
   {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
 
   ?LOGINFO("merging ~p to ~p, time ~p, size ~p",[
@@ -448,7 +447,7 @@ ramdisk_rebalance(_Config)->
   ]=dlss_storage:get_segments(ramdisc_rebalance),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_4),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
   {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
 
   ?LOGINFO("merging ~p to ~p, time ~p, size ~p",[
@@ -468,7 +467,7 @@ ramdisk_rebalance(_Config)->
   ]=dlss_storage:get_segments(ramdisc_rebalance),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_4),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
   {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
   {ok, #{ level := 1.1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_5),
 
@@ -482,7 +481,7 @@ ramdisk_rebalance(_Config)->
   ]=dlss_storage:get_segments(ramdisc_rebalance),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_4),
-  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
   {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_5),
   {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
 
@@ -500,9 +499,9 @@ ramdisk_rebalance(_Config)->
   % As level 2 doesn't contain any segments yet dlss_ramdisc_rebalance_3
   % goes directly to level 2
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_4),
-  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_5),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_5),
   {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
-  {ok, #{ level := 2, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok, #{ level := 2, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
 
   ok.
 
