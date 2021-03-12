@@ -33,7 +33,8 @@
 ]).
 
 -export([
-  disk_rebalance/1
+  disk_rebalance/1,
+  ramdisk_rebalance/1
 ]).
 
 -define(TIMER(T),{(T) div 60000, (T) rem 60000}).
@@ -41,6 +42,7 @@
 all()->
   [
     disk_rebalance
+    ,ramdisk_rebalance
   ].
 
 groups()->
@@ -269,7 +271,7 @@ disk_rebalance(_Config)->
   T11 = erlang:system_time(millisecond),
   [
     dlss_disk_rebalance_4,
-    dlss_disk_rebalance_3,dlss_disk_rebalance_1,dlss_disk_rebalance_5
+    dlss_disk_rebalance_3,dlss_disk_rebalance_5,dlss_disk_rebalance_1
   ]=dlss_storage:get_segments(disk_rebalance),
 
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_4),
@@ -295,110 +297,212 @@ disk_rebalance(_Config)->
   {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
   {ok, #{ level := 2, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
 
-%%  % add 1 GB more records
-%%  T12 = erlang:system_time(millisecond),
-%%  ct:pal("root size ~p MB",[dlss_segment:get_size(dlss_disk_rebalance_4)/?MB]),
-%%  Count1 = 20000000,
-%%  [ begin
-%%      if
-%%        V rem 100000 =:=0 ->
-%%          ct:pal("write ~p",[V]);
-%%        true ->ok
-%%      end,
-%%      ok = dlss:dirty_write(disk_rebalance, {x1, V }, {y, binary:copy(integer_to_binary(V), 100)})
-%%    end || V <- lists:seq(1, Count1) ],
-%%  Size2 = dlss_segment:get_size(dlss_disk_rebalance_4),
-%%  T13 = erlang:system_time(millisecond),
-%%  ?LOGDEBUG("root size ~p MB, time ~p",[Size2/?MB, ?TIMER(T11-T10)]),
-%%
-%%  % Run supervisor
-%%  dlss_storage_supervisor:loop( disk_rebalance, disc, node() ),
-%%  % dlss_disk_rebalance_4 is full, a new root is created and dlss_disk_rebalance_4
-%%  % is enqueued to merge with level 1 segments but it has no common keys with them so it
-%%  % just goes to the end of the level 1
-%%  [
-%%    dlss_disk_rebalance_5,
-%%    dlss_disk_rebalance_3,
-%%    dlss_disk_rebalance_1,
-%%    dlss_disk_rebalance_4
-%%  ]=dlss_storage:get_segments(disk_rebalance),
-%%
-%%  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_5),
-%%  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
-%%  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
-%%  {ok,#{ level := 1, key := {x1,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_4),
-%%
-%%  % Run supervisor
-%%  dlss_storage_supervisor:loop( disk_rebalance, disc, node() ),
-%%  % dlss_disk_rebalance_4 is too heavy, it splits
-%%
-%%  [
-%%    dlss_disk_rebalance_5,
-%%    dlss_disk_rebalance_3,
-%%    dlss_disk_rebalance_1,
-%%    dlss_disk_rebalance_4,
-%%    dlss_disk_rebalance_6
-%%  ]=dlss_storage:get_segments(disk_rebalance),
-%%
-%%  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_5),
-%%  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
-%%  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
-%%  {ok,#{ level := 1, key := {x1,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_4),
-%%  {ok,#{ level := 1.1, key := {x1,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_6),
-%%
-%%  % Run supervisor
-%%  T14 = erlang:system_time(millisecond),
-%%  dlss_storage_supervisor:loop( disk_rebalance, disc, node() ),
-%%  % dlss_disk_rebalance_4 splits, dlss_disk_rebalance_4 takes its place in the level 1
-%%  T15 = erlang:system_time(millisecond),
-%%
-%%  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_5),
-%%  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
-%%  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
-%%  {ok,#{ level := 1, key := {x1,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_6),
-%%  {ok,#{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_disk_rebalance_4),
-%%
-%%  ?LOGINFO("splitting ~p to ~p, time ~p, size ~p",[
-%%    dlss_disk_rebalance_4,
-%%    dlss_disk_rebalance_6,
-%%    ?TIMER(T15-T14),
-%%    dlss_segment:get_size(dlss_disk_rebalance_1) / ?MB
-%%  ]),
-%%
-%%  dlss_storage_supervisor:loop( disk_rebalance, disc, node() ),
-%%  % Now the level 1 is overloaded with segments, dlss_disk_rebalance_3 goes to level 2
-%%  % directly because there are no segments to merge with yet
-%%
-%%  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_5),
-%%  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
-%%  {ok,#{ level := 1, key := {x1,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_6),
-%%  {ok,#{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_disk_rebalance_4),
-%%  % Level 2
-%%  {ok, #{ level := 2, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
-%%
-%%  dlss_storage_supervisor:loop( disk_rebalance, disc, node() ),
-%%  % Level 1 is still overloaded, dlss_disk_rebalance_1 is to be merged with
-%%  % level 2 but it has no common keys with dlss_disk_rebalance_3 so it goes
-%%  % directly to the end of level 2
-%%
-%%  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_5),
-%%  {ok,#{ level := 1, key := {x1,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_6),
-%%  {ok,#{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_disk_rebalance_4),
-%%  % Level 2
-%%  {ok, #{ level := 2, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
-%%  {ok, #{ level := 2, key := SplitKey0 }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
-%%
-%%
-%%  dlss_storage_supervisor:loop( disk_rebalance, disc, node() ),
-%%  % The state is sustainable now, no changes
-%%
-%%  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_5),
-%%  {ok,#{ level := 1, key := {x1,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_6),
-%%  {ok,#{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_disk_rebalance_4),
-%%  % Level 2
-%%  {ok, #{ level := 2, key := {x,1} }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
-%%  {ok, #{ level := 2, key := SplitKey0 }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
+  ok.
 
+ramdisk_rebalance(_Config)->
+
+  ct:timetrap(24*3600*1000),
+
+  application:set_env([{ dlss, [
+    {segment_level_limit,[
+      { 0, 512 },
+      { 1, 512 },
+      { 2, 512 }
+    ]},
+    {buffer_level_limit, 2 }
+  ]}]),
+
+  % new storage
+  ok=dlss_storage:add(ramdisc_rebalance,ramdisc),
+
+  % Check for storage Root segment
+  [dlss_ramdisc_rebalance_1]=dlss_storage:get_segments(ramdisc_rebalance),
+  {ok, #{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
+
+  % fill the storage with records (~1 GB)
+  T0 = erlang:system_time(millisecond),
+  ct:pal("root size ~p MB",[dlss_segment:get_size(dlss_ramdisc_rebalance_1)/?MB]),
+  Count0 = 4000000,
+  [ begin
+      if
+        V rem 100000 =:=0 ->
+          ct:pal("write ~p",[V]),
+          timer:sleep(100);
+        true ->ok
+      end,
+      ok = dlss:dirty_write(ramdisc_rebalance, {x, V}, {y, binary:copy(integer_to_binary(V), 100)})
+    end || V <- lists:seq(1, Count0) ],
+  Size0 = dlss_segment:get_size(dlss_ramdisc_rebalance_1),
+  T1 = erlang:system_time(millisecond),
+  ct:pal("root size ~p MB, time ~p",[Size0/?MB, ?TIMER(T1-T0)]),
+
+  % Run supervisor
+  dlss_storage_supervisor:loop( ramdisc_rebalance, ramdisc, node() ),
+  % new root should appear, former takes level 1
+
+  [dlss_ramdisc_rebalance_2,dlss_ramdisc_rebalance_1]=dlss_storage:get_segments(ramdisc_rebalance),
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_2),
+  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
+  [ dlss_ramdisc_rebalance_1 ] = dlss_storage:get_children(dlss_ramdisc_rebalance_2),
+  [] = dlss_storage:get_children(dlss_ramdisc_rebalance_1),
+
+  % Run supervisor loop
+  dlss_storage_supervisor:loop( ramdisc_rebalance, ramdisc, node() ),
+  % dlss_ramdisc_rebalance_1 should be queued to split because it weights more than the limit
+  [
+    dlss_ramdisc_rebalance_2,
+    dlss_ramdisc_rebalance_1,dlss_ramdisc_rebalance_3
+  ]=dlss_storage:get_segments(ramdisc_rebalance),
+
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_2),
+  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
+  {ok, #{ level := 1.1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+
+  % Run supervisor loop
+  T2 = erlang:system_time(millisecond),
+  dlss_storage_supervisor:loop( ramdisc_rebalance, ramdisc, node() ),
+  % the splitting is performed and committed, dlss_ramdisc_rebalance_3 is at level 1
+  T3 = erlang:system_time(millisecond),
+  [
+    dlss_ramdisc_rebalance_2,
+    dlss_ramdisc_rebalance_3,dlss_ramdisc_rebalance_1
+  ]=dlss_storage:get_segments(ramdisc_rebalance),
+
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_2),
+  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
+  ?LOGINFO("finish splitting ~p, time ~p, split key ~p",[dlss_ramdisc_rebalance_1, ?TIMER(T3-T2), SplitKey0]),
+
+  % Run supervisor loop
+  dlss_storage_supervisor:loop( ramdisc_rebalance, ramdisc, node() ),
+  % The schema is balanced now, no changes
+  [
+    dlss_ramdisc_rebalance_2,
+    dlss_ramdisc_rebalance_3,dlss_ramdisc_rebalance_1
+  ]=dlss_storage:get_segments(ramdisc_rebalance),
+
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_2),
+  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
+
+  % add 1 GB more records
+  T4 = erlang:system_time(millisecond),
+  ct:pal("root size ~p MB",[dlss_segment:get_size(dlss_ramdisc_rebalance_2)/?MB]),
+  Count1 = 4000000,
+  [ begin
+      if
+        V rem 100000 =:=0 ->
+          ct:pal("write ~p",[V]),
+          timer:sleep(100);
+        true ->ok
+      end,
+      ok = dlss:dirty_write(ramdisc_rebalance, {x, V * 2 }, {y, binary:copy(integer_to_binary(V), 100)})
+    end || V <- lists:seq(1, Count1) ],
+  Size1 = dlss_segment:get_size(dlss_ramdisc_rebalance_2),
+  T5 = erlang:system_time(millisecond),
+  ?LOGDEBUG("root size ~p MB, time ~p",[Size1/?MB, ?TIMER(T5-T4)]),
+
+  % Run supervisor
+  dlss_storage_supervisor:loop( ramdisc_rebalance, ramdisc, node() ),
+  % dlss_ramdisc_rebalance_2 is full, a new root is created and dlss_ramdisc_rebalance_2 is enqueued to merge with level 1 segments
+  [
+    dlss_ramdisc_rebalance_4,
+    dlss_ramdisc_rebalance_3, % It is at a lower level than dlss_ramdisc_rebalance_2 but its key is smaller, therefore it goes earlier
+    dlss_ramdisc_rebalance_2,
+    dlss_ramdisc_rebalance_1
+  ]=dlss_storage:get_segments(ramdisc_rebalance),
+
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_4),
+  {ok,#{ level := 0.9, key := {x,2} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_2),
+  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
+
+  % Run supervisor
+  T6 = erlang:system_time(millisecond),
+  dlss_storage_supervisor:loop( ramdisc_rebalance, ramdisc, node() ),
+  % first dlss_ramdisc_rebalance_3 takes its keys from dlss_ramdisc_rebalance_2
+  T7 = erlang:system_time(millisecond),
+
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_4),
+  {ok,#{ level := 0.9, key := {x,2} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_2),
+  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
+
+  ?LOGINFO("merging ~p to ~p, time ~p, size ~p",[
+    dlss_ramdisc_rebalance_2,
+    dlss_ramdisc_rebalance_3,
+    ?TIMER(T7-T6),
+    dlss_segment:get_size(dlss_ramdisc_rebalance_3) / ?MB
+  ]),
+
+  % Run supervisor
+  T8 = erlang:system_time(millisecond),
+  dlss_storage_supervisor:loop( ramdisc_rebalance, ramdisc, node() ),
+  % dlss_ramdisc_rebalance_1 takes its keys from dlss_ramdisc_rebalance_2
+  T9 = erlang:system_time(millisecond),
+
+  [
+    dlss_ramdisc_rebalance_4,
+    % dlss_ramdisc_rebalance_2,  this segment is merged to dlss_ramdisc_rebalance_3 and dlss_ramdisc_rebalance_1
+    dlss_ramdisc_rebalance_3,dlss_ramdisc_rebalance_1
+  ]=dlss_storage:get_segments(ramdisc_rebalance),
+
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_4),
+  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
+
+  ?LOGINFO("merging ~p to ~p, time ~p, size ~p",[
+    dlss_ramdisc_rebalance_2,
+    dlss_ramdisc_rebalance_1,
+    ?TIMER(T9-T8),
+    dlss_segment:get_size(dlss_ramdisc_rebalance_1) / ?MB
+  ]),
+
+  % Run supervisor
+  dlss_storage_supervisor:loop( ramdisc_rebalance, ramdisc, node() ),
+  % dlss_ramdisc_rebalance_1 has reached the limit, split
+
+  [
+    dlss_ramdisc_rebalance_4,
+    dlss_ramdisc_rebalance_3,dlss_ramdisc_rebalance_1,dlss_ramdisc_rebalance_5
+  ]=dlss_storage:get_segments(ramdisc_rebalance),
+
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_4),
+  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
+  {ok, #{ level := 1.1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_5),
+
+  % Run supervisor
+  T10 = erlang:system_time(millisecond),
+  dlss_storage_supervisor:loop( ramdisc_rebalance, ramdisc, node() ),
+  T11 = erlang:system_time(millisecond),
+  [
+    dlss_ramdisc_rebalance_4,
+    dlss_ramdisc_rebalance_3,dlss_ramdisc_rebalance_5,dlss_ramdisc_rebalance_1
+  ]=dlss_storage:get_segments(ramdisc_rebalance),
+
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_4),
+  {ok, #{ level := 1, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_5),
+  {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
+
+  ?LOGINFO("finish splitting ~p, time ~p, split key ~p, size ~p",[
+    dlss_ramdisc_rebalance_5,
+    ?TIMER(T11-T10),
+    SplitKey1,
+    dlss_segment:get_size(dlss_ramdisc_rebalance_5) / ?MB
+  ]),
+
+  % Run supervisor
+  dlss_storage_supervisor:loop( ramdisc_rebalance, ramdisc, node() ),
+  % Purge the dlss_ramdisc_rebalance_1 from the keys moved to dlss_ramdisc_rebalance_5.
+  % The level 1 is overloaded, merge dlss_ramdisc_rebalance_3 to level 2
+  % As level 2 doesn't contain any segments yet dlss_ramdisc_rebalance_3
+  % goes directly to level 2
+  {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_4),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_5),
+  {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
+  {ok, #{ level := 2, key := {x,1} }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
 
   ok.
 

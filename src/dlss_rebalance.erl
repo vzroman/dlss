@@ -137,10 +137,8 @@ update_hash([ Rec | Tail ], HashRef )->
   update_hash( Tail, rec_hash( Rec, HashRef ) );
 update_hash( [], HashRef )->
   HashRef.
-rec_hash( {put,K,V}, HashRef )->
-  crypto:hash_update(HashRef,<<"@put@",K/binary,"@",V/binary>>);
-rec_hash( {delete,K}, HashRef )->
-  crypto:hash_update(HashRef,<<"@delete@",K/binary>>).
+rec_hash( Rec, HashRef )->
+  crypto:hash_update(HashRef,term_to_binary(Rec)).
 
 delete_until( Segment, ToKey )->
   #{ type:= Type }=dlss_segment:get_info( Segment ),
@@ -222,6 +220,7 @@ ets_bulk_write( Segment, Records )->
 %%=================================================================
 dump_segment( Segment )->
 
+  ?LOGDEBUG("~p dump",[Segment]),
   Temp = ?TEMP( Segment ),
   Backup = ?BACKUP( Segment ),
   Data = ?DATA( Segment ),
