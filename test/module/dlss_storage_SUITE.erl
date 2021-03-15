@@ -34,7 +34,6 @@
 
 -export([
   service_api/1,
-  segment_children/1,
   get_key_segments/1,
   storage_read/1,
   storage_next/1,
@@ -45,12 +44,10 @@
   storage_range_select_limit/1
 ]).
 
--define(MB,1048576).
 
 all()->
   [
     service_api
-    ,segment_children
     ,get_key_segments
     ,storage_read
     ,storage_next
@@ -123,35 +120,6 @@ service_api(_Config)->
 
   ok.
 
-segment_children(_Config)->
-
-  ok=dlss_storage:add(storage1,disc),
-  disc=dlss_storage:get_type(storage1),
-  [dlss_storage1_1]=dlss_storage:get_segments(storage1),
-
-  ok = dlss_storage:spawn_segment(dlss_storage1_1),
-  [dlss_storage1_1,dlss_storage1_2]=dlss_storage:get_segments(storage1),
-  [{_,dlss_storage1_2}] = dlss_storage:get_children(dlss_storage1_1),
-
-  ok = dlss_storage:spawn_segment(dlss_storage1_2),
-  [dlss_storage1_1,dlss_storage1_2,dlss_storage1_3]=dlss_storage:get_segments(storage1),
-  [{_,dlss_storage1_2},{_,dlss_storage1_3}] = dlss_storage:get_children(dlss_storage1_1),
-  [{_,dlss_storage1_3}] = dlss_storage:get_children(dlss_storage1_2),
-
-  ok = dlss_storage:spawn_segment(dlss_storage1_3),
-  [{_,dlss_storage1_4}] = dlss_storage:get_children(dlss_storage1_3),
-  [
-    {_,dlss_storage1_2},
-    {_,dlss_storage1_3},
-    {_,dlss_storage1_4}
-  ] = dlss_storage:get_children(dlss_storage1_1),
-  [] = dlss_storage:get_children(dlss_storage1_4),
-
-  dlss_storage:remove(storage1),
-  []=dlss_storage:get_storages(),
-  []=dlss_storage:get_segments(),
-
-  ok.
 
 get_key_segments(_Config)->
 
@@ -167,7 +135,7 @@ get_key_segments(_Config)->
   % Two levels
   %------------------------------------------------------
   % Create a new root segment
-  ok = dlss_storage:new_root_segment(storage1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_1
@@ -178,7 +146,7 @@ get_key_segments(_Config)->
     dlss_storage1_1
   ] = dlss_storage:get_key_segments(storage1, {x,20}),
 
-  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_1,
@@ -190,6 +158,7 @@ get_key_segments(_Config)->
     dlss_storage1_1,
     dlss_storage1_3
   ] = dlss_storage:get_key_segments(storage1, {x,20}),
+
 
   % simulate the segments split. Move the first half of records into
   % the newly spawned segment dlss_storage1_3
@@ -201,7 +170,15 @@ get_key_segments(_Config)->
       ok = dlss_segment:dirty_delete(dlss_storage1_1, Key )
     end || V <- lists:seq(1, HalfCount) ],
   % The newborn segment is filled with its keys, move it to the level of the parent
-  dlss_storage:level_up( dlss_storage1_3 ),
+  dlss_storage:split_commit( dlss_storage1_3 ),
+
+  MS=[{
+    #kv{key = '$1', value = '$2'},
+    [],
+    ['$1','$2']
+  }],
+  ?LOGDEBUG("after split commit ~p",[dlss_segment:dirty_select(dlss_schema,MS)]),
+
   % Now it stands before its previous parent
   [
     dlss_storage1_2,
@@ -235,7 +212,7 @@ get_key_segments(_Config)->
   % Three levels
   %------------------------------------------------------
   % split the first segment of the level segments
-  ok = dlss_storage:spawn_segment(dlss_storage1_3),
+  ok = dlss_storage:split_segment(dlss_storage1_3),
   [
     dlss_storage1_2,
     dlss_storage1_3,
@@ -257,7 +234,7 @@ get_key_segments(_Config)->
   ] = dlss_storage:get_key_segments(storage1, {x,10001}),
 
   % split the second segment of the level segments
-  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_3,
@@ -308,7 +285,7 @@ storage_read(_Config)->
   % Two levels
   %------------------------------------------------------
   % Create a new root segment
-  ok = dlss_storage:new_root_segment(storage1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_1
@@ -320,7 +297,7 @@ storage_read(_Config)->
   {y,10020} = dlss_storage:dirty_read(storage1,{x,10020}),
   {y,20000} = dlss_storage:dirty_read(storage1,{x,20000}),
 
-  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_1,
@@ -350,7 +327,7 @@ storage_read(_Config)->
   {y,20000} = dlss_storage:dirty_read(storage1,{x,20000}),
 
   % The newborn segment is filled with its keys, move it to the level of the parent
-  dlss_storage:level_up( dlss_storage1_3 ),
+  dlss_storage:split_commit( dlss_storage1_3 ),
   % Now it stands before its previous parent
   [
     dlss_storage1_2,
@@ -379,7 +356,7 @@ storage_read(_Config)->
   % Three levels
   %------------------------------------------------------
   % Create a new root segment
-  ok = dlss_storage:new_root_segment(storage1),
+  ok = dlss_storage:split_segment(dlss_storage1_2),
   [
     dlss_storage1_4,
     dlss_storage1_2,
@@ -427,7 +404,7 @@ storage_next(_Config)->
   % Two levels
   %------------------------------------------------------
   % Create a new root segment
-  ok = dlss_storage:new_root_segment(storage1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_1
@@ -441,7 +418,7 @@ storage_next(_Config)->
   {x,10021} = dlss_storage:dirty_next(storage1,{x,10020}),
   '$end_of_table' = dlss_storage:dirty_next(storage1,{x,20000}),
 
-  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_1,
@@ -475,7 +452,7 @@ storage_next(_Config)->
   '$end_of_table' = dlss_storage:dirty_next(storage1,{x,20000}),
 
   % The newborn segment is filled with its keys, move it to the level of the parent
-  dlss_storage:level_up( dlss_storage1_3 ),
+  dlss_storage:split_commit( dlss_storage1_3 ),
 
   % check keys
   {x,1} = dlss_storage:dirty_next(storage1,{x,0}),
@@ -513,7 +490,7 @@ storage_next(_Config)->
   % Three levels
   %------------------------------------------------------
   % Create a new root segment
-  ok = dlss_storage:new_root_segment(storage1),
+  ok = dlss_storage:split_segment(dlss_storage1_2),
   [
     dlss_storage1_4,
     dlss_storage1_2,
@@ -575,7 +552,7 @@ storage_prev(_Config)->
   % Two levels
   %------------------------------------------------------
   % Create a new root segment
-  ok = dlss_storage:new_root_segment(storage1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_1
@@ -589,7 +566,7 @@ storage_prev(_Config)->
   {x,10020} = dlss_storage:dirty_prev(storage1,{x,10021}),
   {x,20000} = dlss_storage:dirty_prev(storage1,{x,20001}),
 
-  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_1,
@@ -623,7 +600,7 @@ storage_prev(_Config)->
   {x,20000} = dlss_storage:dirty_prev(storage1,{x,20001}),
 
   % The newborn segment is filled with its keys, move it to the level of the parent
-  dlss_storage:level_up( dlss_storage1_3 ),
+  dlss_storage:split_commit( dlss_storage1_3 ),
 
   % check keys
   '$end_of_table' = dlss_storage:dirty_prev(storage1,{x,1}),
@@ -663,7 +640,7 @@ storage_prev(_Config)->
   % Three levels
   %------------------------------------------------------
   % Create a new root segment
-  ok = dlss_storage:new_root_segment(storage1),
+  ok = dlss_storage:split_segment(dlss_storage1_2),
   [
     dlss_storage1_4,
     dlss_storage1_2,
@@ -724,7 +701,7 @@ storage_first(_Config)->
   % Two levels
   %------------------------------------------------------
   % Create a new root segment
-  ok = dlss_storage:new_root_segment(storage1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_1
@@ -733,7 +710,7 @@ storage_first(_Config)->
   % check keys
   {x,1} = dlss_storage:dirty_first(storage1),
 
-  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_1,
@@ -757,7 +734,7 @@ storage_first(_Config)->
   {x,1} = dlss_storage:dirty_first(storage1),
 
   % The newborn segment is filled with its keys, move it to the level of the parent
-  dlss_storage:level_up( dlss_storage1_3 ),
+  dlss_storage:split_commit( dlss_storage1_3 ),
 
   % check keys
   {x,1} = dlss_storage:dirty_first(storage1),
@@ -780,7 +757,7 @@ storage_first(_Config)->
   % Three levels
   %------------------------------------------------------
   % Create a new root segment
-  ok = dlss_storage:new_root_segment(storage1),
+  ok = dlss_storage:split_segment(dlss_storage1_2),
   [
     dlss_storage1_4,
     dlss_storage1_2,
@@ -842,7 +819,7 @@ storage_last(_Config)->
   % Two levels
   %------------------------------------------------------
   % Create a new root segment
-  ok = dlss_storage:new_root_segment(storage1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_1
@@ -851,7 +828,7 @@ storage_last(_Config)->
   % check keys
   {x,Count} = dlss_storage:dirty_last(storage1),
 
-  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_1,
@@ -875,7 +852,7 @@ storage_last(_Config)->
   {x,Count} = dlss_storage:dirty_last(storage1),
 
   % The newborn segment is filled with its keys, move it to the level of the parent
-  dlss_storage:level_up( dlss_storage1_3 ),
+  dlss_storage:split_commit( dlss_storage1_3 ),
 
   % check keys
   {x,Count} = dlss_storage:dirty_last(storage1),
@@ -896,7 +873,7 @@ storage_last(_Config)->
   % Three levels
   %------------------------------------------------------
   % Create a new root segment
-  ok = dlss_storage:new_root_segment(storage1),
+  ok = dlss_storage:split_segment(dlss_storage1_2),
   [
     dlss_storage1_4,
     dlss_storage1_2,
@@ -974,7 +951,7 @@ storage_range_select(_Config) ->
   % Two levels
   %------------------------------------------------------
   % Create a new root segment
-  ok = dlss_storage:new_root_segment(storage1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_1
@@ -1002,7 +979,7 @@ storage_range_select(_Config) ->
   R2345= [ {{x,V}, {y,V}} || V<- lists:seq(123,2345)],
   R2345 = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345}),
 
-  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_1,
@@ -1066,7 +1043,7 @@ storage_range_select(_Config) ->
   R2345 = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345}),
 
   % The newborn segment is filled with its keys, move it to the level of the parent
-  dlss_storage:level_up( dlss_storage1_3 ),
+  dlss_storage:split_commit( dlss_storage1_3 ),
 
   %------------Check------------------------------------------------
   % The whole table
@@ -1119,7 +1096,7 @@ storage_range_select(_Config) ->
   % Three levels
   %------------------------------------------------------
   % Create a new root segment
-  ok = dlss_storage:new_root_segment(storage1),
+  ok = dlss_storage:split_segment(dlss_storage1_2),
   [
     dlss_storage1_4,
     dlss_storage1_2,
@@ -1216,7 +1193,7 @@ storage_range_select_limit(_Config) ->
   % Two levels
   %------------------------------------------------------
   % Create a new root segment
-  ok = dlss_storage:new_root_segment(storage1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_1
@@ -1249,7 +1226,7 @@ storage_range_select_limit(_Config) ->
   {R2345_100,_} = lists:split(100,R2345_F),
   R2345_100 = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345},100),
 
-  ok = dlss_storage:spawn_segment(dlss_storage1_1),
+  ok = dlss_storage:split_segment(dlss_storage1_1),
   [
     dlss_storage1_2,
     dlss_storage1_1,
@@ -1322,7 +1299,7 @@ storage_range_select_limit(_Config) ->
   R2345_100 = dlss_storage:dirty_range_select(storage1,{x,123},{x,2345},100),
 
   % The newborn segment is filled with its keys, move it to the level of the parent
-  dlss_storage:level_up( dlss_storage1_3 ),
+  dlss_storage:split_commit( dlss_storage1_3 ),
 
   %------------Check------------------------------------------------
   % The whole table

@@ -20,8 +20,6 @@
 
 -include("dlss.hrl").
 
--behaviour(gen_server).
-
 %%=================================================================
 %%	STORAGE READ/WRITE API
 %%=================================================================
@@ -55,47 +53,8 @@
   get_size/1
 ]).
 
-%%=================================================================
-%%	API
-%%=================================================================
--export([
-  start/1,
-  start_link/1,
-  stop/1
-]).
-%%=================================================================
-%%	OTP
-%%=================================================================
--export([
-  init/1,
-  handle_call/3,
-  handle_cast/2,
-  handle_info/2,
-  terminate/2,
-  code_change/3
-]).
-
-%%====================================================================
-%%		Test API
-%%====================================================================
--ifdef(TEST).
-
--export([
-  split/2,
-  split/5
-]).
-
--endif.
-
--record(state,{segment,cycle}).
-
--define(DEFAULT_SCAN_CYCLE,5000).
-
 -define(MAX_SCAN_INTERVAL_BATCH,1000).
 
--define(MB,1048576).
-
--define(PROCESS(Segment), list_to_atom( atom_to_list(Segment) ++ "_sup" ) ).
 
 %%=================================================================
 %%	STORAGE SEGMENT API
@@ -333,155 +292,6 @@ get_size(Segment)->
       erlang:system_info(wordsize) * Memory
   end.
 
-%%=================================================================
-%%	API
-%%=================================================================
-start(Segment)->
-  dlss_schema_sup:start_segment(Segment).
-
-start_link(Segment)->
-  gen_server:start_link({local, ?PROCESS(Segment) }, ?MODULE, [Segment], []).
-
-stop(Segment)->
-  case whereis(?PROCESS(Segment)) of
-    PID when is_pid(PID)->
-      dlss_schema_sup:stop_segment(PID);
-    _ ->
-      { error, not_started }
-  end.
-
-%%=================================================================
-%%	OTP
-%%=================================================================
-init([Segment])->
-
-  ?LOGINFO("starting segment server for ~p pid ~p",[Segment,self()]),
-
-  Cycle=?ENV(segment_scan_cycle, ?DEFAULT_SCAN_CYCLE),
-
-  % Enter the loop
-  self()!loop,
-
-  {ok,#state{
-    segment = Segment,
-    cycle = Cycle
-  }}.
-
-handle_call(_Params, _From, State) ->
-  {reply, {ok,undefined}, State}.
-
-handle_cast({stop,From},State)->
-  From!{stopped,self()},
-  {stop, normal, State};
-handle_cast(_Request,State)->
-  {noreply,State}.
-
-%%============================================================================
-%%	The loop
-%%============================================================================
-handle_info(loop,#state{
-  segment = Segment,
-  cycle = Cycle
-}=State)->
-
-  case dlss_storage:segment_params(Segment) of
-    {ok, Params} ->
-      {ok,_}=timer:send_after(Cycle,loop),
-      case lists:member(Segment,dlss_storage:get_segments(maps:get(storage,Params))) of
-        true->
-          loop( Segment, Params );
-        _->
-          ok
-      end,
-      {noreply,State};
-    { error, Error} ->
-      { stop, Error, State }
-  end.
-
-
-terminate(Reason,#state{segment = Segment})->
-  ?LOGINFO("terminating segment server ~p, reason ~p",[Segment,Reason]),
-  ok.
-
-code_change(_OldVsn, State, _Extra) ->
-  {ok, State}.
-
-
-%%============================================================================
-%%	The Loop
-%%============================================================================
-loop( Segment, #{ level := 0, storage := Storage } )->
-  % The segment is the root segment in its storage.
-  % We watch its size and when it reaches the limit we
-  % create a new root segment for the storage
-  Size = get_size( Segment ) / ?MB, % MB
-  Limit = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT),
-  if
-    Size >= Limit ->
-      ?LOGINFO("the root segment ~p in storage ~p reached the limit ~p, size ~p",[ Segment, Storage, Limit, Size ]),
-      dlss_storage:new_root_segment(Storage);
-    true -> ok
-  end;
-
-loop( Segment, #{ storage := Storage, level := Level } )->
-  case dlss_storage:get_children( Segment ) of
-    [] ->
-      % The segment is at the lowest level.
-      % Check its size and if it has reached the limit split the segment
-      Size = round (get_size( Segment ) / ?MB), % MB
-      Limit = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT),
-      if
-        Size >= Limit ->
-          ?LOGINFO("the segment ~p in storage ~p reached the limit ~p, size ~p, split...",[ Segment, Storage, Limit, Size ]),
-
-          % Create a child segment
-          dlss_storage:spawn_segment(Segment),
-          ok;
-        true ->
-          if
-            Level > 1->
-              % The segment is below the desired level. To take place in upper level it
-              % must absorb its parent
-              case dlss_storage:has_siblings(Segment) of
-                true->
-                  % The parent is to absorbed by its children
-                  dlss_storage:absorb_parent(Segment);
-                _->
-                  % If there are no other children it is the splitting
-                  Parent = dlss_storage:parent_segment(Segment),
-
-                  ?LOGINFO("start splitting ~p",[Parent]),
-                  split( Parent, Segment ),
-
-                  case is_empty(Segment) of
-                    false->
-                      ?LOGINFO("finish splitting ~p",[Parent]),
-                      dlss_storage:level_up( Segment );
-                    _->
-                      ?LOGERROR("empty head segment ~p after splitting ~p",[Segment,Parent])
-                  end,
-                  ok
-              end;
-            true ->
-              % the segment is at the respectable level and is not overwhelmed.
-              % This is a stable state
-              ok
-          end
-      end;
-    _->
-      % The segment has children, that are at the level lower than 1.
-      % They are to absorb their parent to take a place at its level.
-      case is_empty( Segment ) of
-        true ->
-          % The segment has been absorbed by the children
-          ?LOGINFO("the segment ~p in storage ~p is to be absorbed",[Segment,Storage]),
-          dlss_storage:absorb_segment( Segment );
-        _->
-          ok
-      end
-  end.
-
-
 %%============================================================================
 %%	Internal helpers
 %%============================================================================
@@ -495,46 +305,4 @@ get_nodes(Segment)->
     [Result]->Result;
     _->throw(invalid_storage_type)
   end.
-
-split( From, To )->
-  Half = ?ENV( segment_limit, ?DEFAULT_SEGMENT_LIMIT) *?MB / 2,
-  ?LOGINFO("start moving records ~p MB records from ~p to ~p",[ From, To, Half/ ?MB ]),
-  split( From, To, '$start_of_table', Half , 0 ).
-split( From, To, Key, Size, I ) when (I rem 10) =:=0->
-  ToSize = get_size(To),
-  if
-    ToSize>=Size -> ok ;
-    true ->
-      ?LOGINFO("move bulk key ~p from ~p to ~p, parent size ~p, child size ~p, left size ~p MB",[
-        Key,
-        From,
-        To,
-        get_size(From) / ?MB,
-        ToSize / ?MB,
-        round((Size - ToSize)/?MB)
-      ]),
-      split( From, To, Key, Size, I+1 )
-  end;
-split( From, To, Key, Size, I )->
-  Rows = dlss_segment:dirty_scan(From,Key,'$end_of_table',?MAX_SCAN_INTERVAL_BATCH*100),
-  if
-    length(Rows)>=?MAX_SCAN_INTERVAL_BATCH*100 ->
-      move_rows(Rows, From, To),
-      {LastKey,_}=lists:last(Rows),
-      split( From, To, LastKey, Size, I+1 );
-    true ->
-      % It is the end of the From segment take only half of the keys
-      { Head ,_ } = lists:split( length(Rows) div 2, Rows ),
-      move_rows(Head, From, To)
-  end.
-
-move_rows( Rows, From, To )->
-
-  % Make a copy
-  [ ok = dlss_segment:dirty_write( To, K, V ) || {K,V}<-Rows, V=/='@deleted@' ],
-
-  % Delete from the parent
-  [ ok = dlss_segment:dirty_delete( From, K ) || {K,_V}<-Rows  ],
-
-  ok.
 

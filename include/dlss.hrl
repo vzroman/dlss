@@ -19,7 +19,17 @@
 -ifndef(DLSS_STRUCT).
 -define(DLSS_STRUCT,1).
 
--define(DEFAULT_SEGMENT_LIMIT,1024). % MB
+-define(MB,1048576).
+
+-define(DEFAULT_SEGMENT_LIMITS,#{
+  0=> 1024,
+  1=> 1024 * 10,
+  2 => 1024 * 100
+}). % MB
+
+-define(DEFAULT_SPLIT_MEDIAN, 0.55).
+-define(DEFAULT_BUFFER_LIMIT, 10).
+
 
 -record(kv,{key,value}).
 
