@@ -635,7 +635,7 @@ level_segments(Tail,_L, Head)->
 master_node( Copies )->
   Nodes = lists:usort([ N || { N, _Dump } <- maps:to_list( Copies ) ]),
   Ready = dlss:get_ready_nodes( ),
-  case Nodes -- Ready of
+  case Nodes -- (Nodes -- Ready) of
     [ Master | _ ]-> Master;
     _-> undefined
   end.
