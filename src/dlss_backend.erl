@@ -225,9 +225,9 @@ init_backend(#{
           ?LOGINFO("waiting for segemnts availability..."),
           wait_segments(StartTimeout);
         true ->
+          ok=mnesia:start(),
           % Register leveldb backend. !!! Many thanks to Google, Basho and Klarna developers
           mnesia_eleveldb:register(),
-          ok=mnesia:start(),
           ?LOGINFO("node is starting as master"),
           create_schema()
       end;
