@@ -205,14 +205,14 @@ init_backend(#{
   if
     IsFirstStart ->
       ?LOGINFO("schema is not defined yet"),
-      % Register leveldb backend. !!! Many thanks to Google, Basho and Klarna developers
-      mnesia_eleveldb:register(),
       if
         AsNode ->
           ?LOGINFO("node is starting as slave"),
 
           ?LOGINFO("restarting mnesia"),
           ok=mnesia:delete_schema([node()]),
+          % Register leveldb backend. !!! Many thanks to Google, Basho and Klarna developers
+          mnesia_eleveldb:register(),
           ok=mnesia:start(),
 
           ?LOGINFO("waiting for the schema from the master node..."),
@@ -224,6 +224,8 @@ init_backend(#{
           ?LOGINFO("waiting for segemnts availability..."),
           wait_segments(StartTimeout);
         true ->
+          % Register leveldb backend. !!! Many thanks to Google, Basho and Klarna developers
+          mnesia_eleveldb:register(),
           ok=mnesia:start(),
           ?LOGINFO("node is starting as master"),
           create_schema()
