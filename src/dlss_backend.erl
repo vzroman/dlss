@@ -211,9 +211,10 @@ init_backend(#{
 
           ?LOGINFO("restarting mnesia"),
           ok=mnesia:delete_schema([node()]),
+
+          ok=mnesia:start(),
           % Register leveldb backend. !!! Many thanks to Google, Basho and Klarna developers
           mnesia_eleveldb:register(),
-          ok=mnesia:start(),
 
           ?LOGINFO("waiting for the schema from the master node..."),
           wait_for_schema(),
