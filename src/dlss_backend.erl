@@ -198,9 +198,6 @@ init_backend(#{
   ?LOGINFO("starting mnesia"),
   % We want to see in the console what's happening
   mnesia:set_debug_level(debug),
-  % Register leveldb backend. !!! Many thanks to Google, Basho and Klarna developers
-  mnesia_eleveldb:register(),
-  ok=mnesia:start(),
 
   {ok, _} = application:ensure_all_started( mnesia_eleveldb ),
 
@@ -213,10 +210,7 @@ init_backend(#{
           ?LOGINFO("node is starting as slave"),
 
           ?LOGINFO("restarting mnesia"),
-          mnesia:stop(),
           ok=mnesia:delete_schema([node()]),
-          % Register leveldb backend. !!! Many thanks to Google, Basho and Klarna developers
-          mnesia_eleveldb:register(),
           ok=mnesia:start(),
 
           ?LOGINFO("waiting for the schema from the master node..."),
@@ -228,11 +222,14 @@ init_backend(#{
           ?LOGINFO("waiting for segemnts availability..."),
           wait_segments(StartTimeout);
         true ->
+          % Register leveldb backend. !!! Many thanks to Google, Basho and Klarna developers
+          mnesia_eleveldb:register(),
+          ok=mnesia:start(),
+
           ?LOGINFO("node is starting as master"),
           create_schema()
       end;
     true ->
-
       if
         IsForced ->
           ?LOGWARNING("starting in FORCED mode"),
@@ -249,6 +246,7 @@ init_backend(#{
           wait_segments(StartTimeout);
         true ->
           ?LOGINFO("node is starting in normal mode"),
+          ok=mnesia:start(),
 
           ?LOGINFO("waiting for schema availability..."),
           mnesia:wait_for_tables([schema,dlss_schema],?WAIT_SCHEMA_TIMEOUT),
