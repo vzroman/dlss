@@ -538,7 +538,11 @@ check_hash( _Other, Segment, Node, Master, #{version:=Version,copies:=Copies} )-
 
 not_confirmed( Version, Hash, Copies )->
   InvalidHashNodes =
-    [ N || { N, #dump{version = V,hash = H}} <- maps:to_list(Copies), (V=/=Version) or (H=/=Hash)  ],
+    [ N || { N, Dump} <- maps:to_list(Copies),
+      case Dump of
+        #dump{version = Version,hash = Hash} -> false;
+        _->true
+      end ],
   InvalidHashNodes -- [ InvalidHashNodes -- dlss:get_ready_nodes() ].
 
 
