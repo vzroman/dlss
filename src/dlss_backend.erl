@@ -242,7 +242,7 @@ init_backend(#{
           ok=mnesia:start(),
 
           ?LOGINFO("waiting for schema availability..."),
-          mnesia:wait_for_tables([schema,dlss_schema],?WAIT_SCHEMA_TIMEOUT),
+          ok = mnesia:wait_for_tables([schema,dlss_schema],?ENV(schema_start_timeout, ?WAIT_SCHEMA_TIMEOUT)),
 
           ?LOGINFO("waiting for segemnts availability..."),
           wait_segments(StartTimeout);
@@ -251,7 +251,7 @@ init_backend(#{
           ok=mnesia:start(),
 
           ?LOGINFO("waiting for schema availability..."),
-          ok = mnesia:wait_for_tables([schema,dlss_schema],?WAIT_SCHEMA_TIMEOUT),
+          ok = mnesia:wait_for_tables([schema,dlss_schema],?ENV(schema_start_timeout, ?WAIT_SCHEMA_TIMEOUT)),
 
           ?LOGINFO("add local only segments"),
           add_local_only_segments(),
