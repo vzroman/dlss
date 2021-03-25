@@ -52,7 +52,7 @@
 
 
 -define(DEFAULT_START_TIMEOUT, 600000). % 10 min.
--define(WAIT_SCHEMA_TIMEOUT,5000).
+-define(WAIT_SCHEMA_TIMEOUT,60000).
 -define(ATTACH_TIMEOUT,600000). %10 min.
 -define(DEFAULT_MASTER_CYCLE, 1000).
 
@@ -251,7 +251,7 @@ init_backend(#{
           ok=mnesia:start(),
 
           ?LOGINFO("waiting for schema availability..."),
-          mnesia:wait_for_tables([schema,dlss_schema],?WAIT_SCHEMA_TIMEOUT),
+          ok = mnesia:wait_for_tables([schema,dlss_schema],?WAIT_SCHEMA_TIMEOUT),
 
           ?LOGINFO("add local only segments"),
           add_local_only_segments(),
