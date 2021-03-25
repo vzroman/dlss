@@ -50,7 +50,8 @@
   is_empty/1,
   add_node/2,
   remove_node/2,
-  get_size/1
+  get_size/1,
+  set_access_mode/2
 ]).
 
 -define(MAX_SCAN_INTERVAL_BATCH,1000).
@@ -290,6 +291,13 @@ get_size(Segment)->
     _ ->
       % for ram and ramdisc tables the mnesia returns a number of allocated words
       erlang:system_info(wordsize) * Memory
+  end.
+
+set_access_mode( Segment , Mode )->
+  case mnesia:change_table_access_mode(Segment, Mode) of
+    {atomic,ok} -> ok;
+    {aborted,{already_exists,Segment,Mode}}->ok;
+    {aborted,Reason}->{error,Reason}
   end.
 
 %%============================================================================

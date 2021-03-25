@@ -67,6 +67,7 @@ end_per_group(_,_Config)->
 
 init_per_testcase(_, Config)->
   dlss_backend:init_backend(),
+  dlss_node:set_status(node(),ready),
   dlss:add_storage(order_test, disc),
   [Segment] = dlss:get_segments(order_test),
   [

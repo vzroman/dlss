@@ -95,9 +95,14 @@ create_segment(Name,Params)->
   end.
 
 delete_segment(Name)->
-  case mnesia:delete_table(Name) of
-    {atomic,ok}->ok;
-    {aborted,Reason}-> {error, Reason }
+  case dlss_segment:set_access_mode( Name, read_write ) of
+    ok ->
+      case mnesia:delete_table(Name) of
+        {atomic,ok}->ok;
+        {aborted,Reason}-> {error, Reason }
+      end;
+    SetModeError ->
+      SetModeError
   end.
 
 transaction(Fun)->
@@ -288,7 +293,9 @@ create_schema()->
     {type,ordered_set},
     {disc_copies,[node()]},
     {ram_copies,[]}
-  ]).
+  ]),
+  mnesia:change_table_load_order( dlss_schema, 999 ).
+
 
 stop()->
   % TODO. Why doesn't it stop in the context of the calling process?

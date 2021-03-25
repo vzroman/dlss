@@ -51,6 +51,7 @@ groups()->
 %% Init system storages
 init_per_suite(Config)->
   dlss_backend:init_backend(),
+  dlss_node:set_status(node(),ready),
   Config.
 end_per_suite(_Config)->
   dlss_backend:stop(),

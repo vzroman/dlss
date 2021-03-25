@@ -64,6 +64,7 @@ groups()->
 %% Init system storages
 init_per_suite(Config)->
   dlss_backend:init_backend(),
+  dlss_node:set_status(node(),ready),
   Config.
 end_per_suite(_Config)->
   dlss_backend:stop(),
@@ -162,6 +163,8 @@ get_key_segments(_Config)->
 
   % simulate the segments split. Move the first half of records into
   % the newly spawned segment dlss_storage1_3
+  dlss_segment:set_access_mode( dlss_storage1_1, read_write ),
+  dlss_segment:set_access_mode( dlss_storage1_3, read_write ),
   HalfCount = 10000,
   [ begin
       Key = {x, V},
@@ -169,6 +172,8 @@ get_key_segments(_Config)->
       ok = dlss_segment:dirty_write(dlss_storage1_3, Key, Value ),
       ok = dlss_segment:dirty_delete(dlss_storage1_1, Key )
     end || V <- lists:seq(1, HalfCount) ],
+  dlss_segment:set_access_mode( dlss_storage1_1, read_only ),
+  dlss_segment:set_access_mode( dlss_storage1_3, read_only ),
   % The newborn segment is filled with its keys, move it to the level of the parent
   dlss_storage:split_commit( dlss_storage1_3 ),
 
@@ -312,6 +317,8 @@ storage_read(_Config)->
 
   % simulate the segments split. Move the first half of records into
   % the newly spawned segment dlss_storage1_3
+  dlss_segment:set_access_mode( dlss_storage1_1, read_write ),
+  dlss_segment:set_access_mode( dlss_storage1_3, read_write ),
   HalfCount = 10000,
   [ begin
       Key = {x, V},
@@ -319,6 +326,8 @@ storage_read(_Config)->
       ok = dlss_segment:dirty_write(dlss_storage1_3, Key, Value ),
       ok = dlss_segment:dirty_delete(dlss_storage1_1, Key )
     end || V <- lists:seq(1, HalfCount) ],
+  dlss_segment:set_access_mode( dlss_storage1_1, read_only ),
+  dlss_segment:set_access_mode( dlss_storage1_3, read_only ),
 
   % check keys
   {y,1} = dlss_storage:dirty_read(storage1,{x,1}),
@@ -435,6 +444,8 @@ storage_next(_Config)->
 
   % simulate the segments split. Move the first half of records into
   % the newly spawned segment dlss_storage1_3
+  dlss_segment:set_access_mode( dlss_storage1_1, read_write ),
+  dlss_segment:set_access_mode( dlss_storage1_3, read_write ),
   HalfCount = 10000,
   [ begin
       Key = {x, V},
@@ -442,6 +453,8 @@ storage_next(_Config)->
       ok = dlss_segment:dirty_write(dlss_storage1_3, Key, Value ),
       ok = dlss_segment:dirty_delete(dlss_storage1_1, Key )
     end || V <- lists:seq(1, HalfCount) ],
+  dlss_segment:set_access_mode( dlss_storage1_1, read_only ),
+  dlss_segment:set_access_mode( dlss_storage1_3, read_only ),
 
   % check keys
   {x,1} = dlss_storage:dirty_next(storage1,{x,0}),
@@ -583,6 +596,8 @@ storage_prev(_Config)->
 
   % simulate the segments split. Move the first half of records into
   % the newly spawned segment dlss_storage1_3
+  dlss_segment:set_access_mode( dlss_storage1_1, read_write ),
+  dlss_segment:set_access_mode( dlss_storage1_3, read_write ),
   HalfCount = 10000,
   [ begin
       Key = {x, V},
@@ -590,6 +605,8 @@ storage_prev(_Config)->
       ok = dlss_segment:dirty_write(dlss_storage1_3, Key, Value ),
       ok = dlss_segment:dirty_delete(dlss_storage1_1, Key )
     end || V <- lists:seq(1, HalfCount) ],
+  dlss_segment:set_access_mode( dlss_storage1_1, read_only ),
+  dlss_segment:set_access_mode( dlss_storage1_3, read_only ),
 
   % check keys
   '$end_of_table' = dlss_storage:dirty_prev(storage1,{x,1}),
@@ -722,6 +739,8 @@ storage_first(_Config)->
 
   % simulate the segments split. Move the first half of records into
   % the newly spawned segment dlss_storage1_3
+  dlss_segment:set_access_mode( dlss_storage1_1, read_write ),
+  dlss_segment:set_access_mode( dlss_storage1_3, read_write ),
   HalfCount = 10000,
   [ begin
       Key = {x, V},
@@ -729,6 +748,8 @@ storage_first(_Config)->
       ok = dlss_segment:dirty_write(dlss_storage1_3, Key, Value ),
       ok = dlss_segment:dirty_delete(dlss_storage1_1, Key )
     end || V <- lists:seq(1, HalfCount) ],
+  dlss_segment:set_access_mode( dlss_storage1_1, read_only ),
+  dlss_segment:set_access_mode( dlss_storage1_3, read_only ),
 
   % check keys
   {x,1} = dlss_storage:dirty_first(storage1),
@@ -840,6 +861,8 @@ storage_last(_Config)->
 
   % simulate the segments split. Move the first half of records into
   % the newly spawned segment dlss_storage1_3
+  dlss_segment:set_access_mode( dlss_storage1_1, read_write ),
+  dlss_segment:set_access_mode( dlss_storage1_3, read_write ),
   HalfCount = 10000,
   [ begin
       Key = {x, V},
@@ -847,6 +870,8 @@ storage_last(_Config)->
       ok = dlss_segment:dirty_write(dlss_storage1_3, Key, Value ),
       ok = dlss_segment:dirty_delete(dlss_storage1_1, Key )
     end || V <- lists:seq(1, HalfCount) ],
+  dlss_segment:set_access_mode( dlss_storage1_1, read_only ),
+  dlss_segment:set_access_mode( dlss_storage1_3, read_only ),
 
   % check keys
   {x,Count} = dlss_storage:dirty_last(storage1),
@@ -1011,6 +1036,8 @@ storage_range_select(_Config) ->
 
   % simulate the segments split. Move the first half of records into
   % the newly spawned segment dlss_storage1_3
+  dlss_segment:set_access_mode( dlss_storage1_1, read_write ),
+  dlss_segment:set_access_mode( dlss_storage1_3, read_write ),
   HalfCount = 100000,
   [ begin
       Key = {x, V},
@@ -1018,6 +1045,8 @@ storage_range_select(_Config) ->
       ok = dlss_segment:dirty_write(dlss_storage1_3, Key, Value ),
       ok = dlss_segment:dirty_delete(dlss_storage1_1, Key )
     end || V <- lists:seq(1, HalfCount) ],
+  dlss_segment:set_access_mode( dlss_storage1_1, read_only ),
+  dlss_segment:set_access_mode( dlss_storage1_3, read_only ),
   ?LOGDEBUG("---------------------SPLITTING----------------------------"),
 
   %------------Check------------------------------------------------
@@ -1262,6 +1291,8 @@ storage_range_select_limit(_Config) ->
 
   % simulate the segments split. Move the first half of records into
   % the newly spawned segment dlss_storage1_3
+  dlss_segment:set_access_mode( dlss_storage1_1, read_write ),
+  dlss_segment:set_access_mode( dlss_storage1_3, read_write ),
   HalfCount = 100000,
   [ begin
       Key = {x, V},
@@ -1269,6 +1300,8 @@ storage_range_select_limit(_Config) ->
       ok = dlss_segment:dirty_write(dlss_storage1_3, Key, Value ),
       ok = dlss_segment:dirty_delete(dlss_storage1_1, Key )
     end || V <- lists:seq(1, HalfCount) ],
+  dlss_segment:set_access_mode( dlss_storage1_1, read_only ),
+  dlss_segment:set_access_mode( dlss_storage1_3, read_only ),
   ?LOGDEBUG("---------------------SPLITTING----------------------------"),
 
   %------------Check------------------------------------------------
