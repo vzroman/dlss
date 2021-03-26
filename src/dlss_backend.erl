@@ -306,8 +306,8 @@ stop()->
 
 wait_segments(Timeout)->
   Segments=dlss:get_segments(),
-  ?LOGINFO("wait for segments ~p",[Segments]),
-  mnesia:wait_for_tables(Segments,Timeout).
+  ?LOGINFO("~p wait for segments ~p",[Timeout,Segments]),
+  ok = mnesia:wait_for_tables(Segments,Timeout).
 
 set_forced_mode()->
   case mnesia:set_master_nodes([node()]) of
