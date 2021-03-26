@@ -543,7 +543,7 @@ not_confirmed( Version, Hash, Copies )->
         #dump{version = Version,hash = Hash} -> false;
         _->true
       end ],
-  InvalidHashNodes -- [ InvalidHashNodes -- dlss:get_ready_nodes() ].
+  InvalidHashNodes -- dlss:get_ready_nodes().
 
 
 %%============================================================================
