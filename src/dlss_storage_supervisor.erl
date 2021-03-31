@@ -578,21 +578,69 @@ check_limits( Storage, Node )->
         {ok, P} = dlss_storage:segment_params(S),
         {S, P}
       end || S <- dlss_storage:get_segments(Storage) ],
-  case check_segment_limit( Segments, Node ) of
-    Segment when Segment=/=undefined->
-      ?LOGINFO("~p has reached the limit, queue a split",[Segment]),
-      dlss_storage:split_segment( Segment );
-    undefined->
-      case check_level_limits( Segments, Node ) of
-        Segment when Segment =/=undefined ->
-          ?LOGINFO("level has reached the limit, queue merge ~p",[Segment]),
-          dlss_storage:merge_segment(Segment);
-        undefined ->
+
+  % Operations with lower level segments have the priority,
+  % therefore reverse the results to start from the lowest level
+  Levels = lists:reverse( group_by_levels(Segments) ),
+
+  %-------------Step 1. Check per level limits---------------------------------
+  case check_level_limits( Levels, Node ) of
+    {Level, Segment} ->
+      ?LOGINFO("level ~p has reached the limit, queue merge ~p",[Level, Segment]),
+      dlss_storage:merge_segment( Segment );
+    undefined ->
+      %--------Step 2. Check segments size limits------------------------------
+      case check_size_limit( Levels, Node ) of
+        {Level, Segment}->
+          ?LOGINFO("~p from level ~p has reached the limit, queue a split",[Segment, Level]),
+          dlss_storage:split_segment( Segment );
+        undefined->
           ok
       end
   end.
 
-check_segment_limit([{ Segment, #{level:=Level, copies:=Copies}}| Rest], Node)->
+group_by_levels( Segments )->
+  Levels =
+    lists:foldl(fun({_,#{level:=L}} = S,Acc)->
+      LS = maps:get(L,Acc,[]),
+      Acc#{L=>[S|LS]}
+    end,#{},Segments),
+  lists:usort([{L,lists:reverse(S)}||{L,S} <- maps:to_list(Levels)]).
+
+check_level_limits([{Level, Segments } | Rest], Node )->
+  [{ Segment, #{ copies := Copies } } | _ ] = Segments,
+  case master_node( Copies ) of
+    Node->
+      % The node is the master for the first segment, it controls the number
+      % segments in the level
+      Limit = level_count_limit( Level ),
+      % Check the limit
+      if
+        is_integer(Limit), length(Segments) > Limit ->
+          % The level has reached the limit on number of segments
+          {Level, Segment};
+        true ->
+          % The level is ok, check the next
+          check_level_limits( Rest, Node )
+      end;
+    _->
+      check_level_limits( Rest, Node )
+  end;
+check_level_limits([], _Node)->
+  undefined.
+
+check_size_limit([{Level, Segments} | Rest], Node)->
+  case check_segment_size( Segments, Node ) of
+    undefined->
+      check_size_limit( Rest, Node);
+    Segment->
+      % The level has an oversized segment
+      {Level, Segment}
+  end;
+check_size_limit([], _Node)->
+  undefined.
+
+check_segment_size([{ Segment, #{level:=Level, copies:=Copies}}| Rest], Node)->
   case master_node( Copies ) of
     Node->
       Size = dlss_segment:get_size( Segment ),
@@ -600,40 +648,14 @@ check_segment_limit([{ Segment, #{level:=Level, copies:=Copies}}| Rest], Node)->
       if
         Size > (Limit * ?MB)-> Segment;
         true ->
-          check_segment_limit( Rest, Node )
-      end;
-      _->
-      check_segment_limit( Rest, Node )
-  end;
-check_segment_limit([], _Node)->
-  undefined.
-
-check_level_limits([{ Segment, #{ level:= Level ,copies := Copies }} | Rest], Node )->
-  { LevelSegments, Tail } = level_segments( Rest, Level, [] ),
-  case master_node( Copies ) of
-    Node->
-      case level_count_limit(Level) of
-        Limit when is_integer(Limit)->
-          if
-            length([Segment|LevelSegments]) > Limit ->
-              % +1 because the first segment in the level is already caught
-              Segment;
-            true ->
-              check_level_limits( Tail, Node )
-          end;
-          _->
-          check_level_limits( Tail, Node)
+          check_segment_size( Rest, Node )
       end;
     _->
-      check_level_limits( Tail, Node )
+        check_segment_size( Rest, Node )
   end;
-check_level_limits([], _Node)->
+check_segment_size([], _Node)->
   undefined.
 
-level_segments( [S={_,#{ level:=L }}|Rest ], L, Head )->
-  level_segments( Rest, L, [S|Head] );
-level_segments(Tail,_L, Head)->
-  { lists:reverse(Head), Tail }.
 
 %%============================================================================
 %%	Internal helpers
