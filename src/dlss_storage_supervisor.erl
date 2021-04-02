@@ -245,6 +245,9 @@ pending_transformation( Storage, Type, Node )->
         Operation =:= split->
           %----------split---------------------------------------
           case Params of
+            #{ version:=Version, copies := #{ Node := #dump{version = Version}} }->
+              % The version for the node is already updated
+              ok;
             #{ version:=Version, copies := #{ Node := Dump } }->
               % The segment has local copy
               Parent = dlss_storage:parent_segment( Segment ),
@@ -257,7 +260,7 @@ pending_transformation( Storage, Type, Node )->
                 Segment, Parent, InitHash
               ]),
               case split_segment( Parent, Segment, Type, InitHash ) of
-                {ok, NewHash }->
+                {ok, #{ hash:= NewHash} }->
                   ?LOGINFO("split finish: child ~p, parent ~p, new hash ~p",[
                     Segment, Parent, NewHash
                   ]),
@@ -316,7 +319,7 @@ split_segment( Parent, Segment, Type, Hash )->
   ToSize = segment_level_limit( round(Level) ) *?MB * ?ENV( segment_split_median, ?DEFAULT_SPLIT_MEDIAN ),
 
   OnBatch=
-    fun(K,Count)->
+    fun(K,#{ count:=Count})->
       Size = dlss_segment:get_size( Segment ),
       ?LOGDEBUG("~p splitting from ~p: key ~p, count ~p, size ~p",[
         Segment,
@@ -341,7 +344,11 @@ split_segment( Parent, Segment, Type, Hash )->
       From0 =:='_'-> '$start_of_table' ;
       true -> From0
     end,
-  dlss_rebalance:copy( Parent, Segment, Copy, From, OnBatch,  Hash ).
+  Acc0 = #{
+    count => 0,
+    hash => Hash
+  },
+  dlss_rebalance:copy( Parent, Segment, Copy, From, OnBatch, Acc0 ).
 
 %---------------------MERGE---------------------------------------------------
 merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], Source, Params, Node, Type )->
@@ -371,7 +378,7 @@ merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], So
         Source, S, FromKey, ToKey, InitHash
       ]),
       case merge_segment( S, Source, FromKey, ToKey, Type, InitHash ) of
-        {ok, NewHash }->
+        {ok, #{hash := NewHash} }->
           ?LOGINFO("merged sucessully: source ~p, target ~p, from ~p, to ~p, new hash ~p",[
             Source, S, FromKey, ToKey, NewHash
           ]),
@@ -430,7 +437,7 @@ merge_segment( Target, Source, FromKey, ToKey0, Type, Hash )->
     end,
 
   OnBatch=
-    fun(K,Count)->
+    fun(K,#{count := Count})->
       ?LOGDEBUG("~p merging from ~p: key ~p, count ~p",[
         Target,
         Source,
@@ -438,11 +445,14 @@ merge_segment( Target, Source, FromKey, ToKey0, Type, Hash )->
         Count
       ]),
 
-      % Stop only when
+      % Stop only on ToKey
       next
     end,
-
-  dlss_rebalance:copy( Source, Target, Copy, FromKey, OnBatch, Hash ).
+  Acc0 = #{
+    count => 0,
+    hash => Hash
+  },
+  dlss_rebalance:copy( Source, Target, Copy, FromKey, OnBatch, Acc0 ).
 
 %%============================================================================
 %% Confirm schema transformation
@@ -466,7 +476,7 @@ master_commit( split, Segment, Master, #{version := Version,copies:=Copies})->
           dlss_storage:split_commit( Segment );
         Nodes->
           % There are still nodes that are not confirmed the hash yet
-          ?LOGINFO("~p splitting is not finished yet, waiting for ~p",[ Nodes ]),
+          ?LOGINFO("~p splitting is not finished yet, waiting for ~p",[Segment, Nodes]),
           ok
       end;
     _->

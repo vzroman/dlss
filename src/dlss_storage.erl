@@ -1101,7 +1101,7 @@ scan_segment( Segment, StartKey, EndKey, Limit )->
     dlss_segment:dirty_scan(Segment, StartKey, EndKey, Limit)
   catch
       _:{no_exists, _}->[];
-    _:Error->?ERROR(Error)
+    _:Error->?ERROR({Segment,Limit,Error})
   end.
 
 merge_results( [ { Level, Records1 }, { Level, Records2 } | Rest ] )->

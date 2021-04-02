@@ -54,7 +54,7 @@
 %%=================================================================
 %%	COPY
 %%=================================================================
-copy( Source, Target, Copy, FromKey0, OnBatch, Hash )->
+copy( Source, Target, Copy, FromKey0, OnBatch, Acc0 )->
 
   #{ type:= Type }=dlss_segment:get_info( Source ),
   { Read, Write, FromKey } =
@@ -82,40 +82,40 @@ copy( Source, Target, Copy, FromKey0, OnBatch, Hash )->
   WriteBatch=
     fun( Batch )->?MODULE:Write( Target, Batch )  end,
 
-  HashRef0 = crypto:hash_update( crypto:hash_init(sha256), Hash ),
+  HashRef0 = crypto:hash_update( crypto:hash_init(sha256), maps:get(hash, Acc0)),
 
-  HashRef = copy_loop( ReadBatch ,WriteBatch, FromKey, Copy, OnBatch, HashRef0, _Count = 0 ),
+  Acc1 = copy_loop( ReadBatch ,WriteBatch, FromKey, Copy, OnBatch, Acc0#{hash => HashRef0} ),
+  Acc = Acc1#{ hash => crypto:hash_final( maps:get(hash,Acc1) ) },
 
   if
     Type =/=disc -> dump_segment( Target );
     true -> ok
   end,
 
-  { ok, crypto:hash_final( HashRef ) }.
+  { ok, Acc }.
 
 
-copy_loop( Read, Write, FromKey, OnItem, OnBatch, Hash0, Count0 )->
+copy_loop( Read, Write, FromKey, OnItem, OnBatch, Acc0 )->
   case Read( FromKey ) of
     Batch when is_list(Batch), length(Batch)>0 ->
       ToWrite = copy_items( Batch, OnItem ),
-      Hash1 = update_hash( ToWrite, Hash0 ),
+      Acc = update_acc( maps:keys(Acc0), ToWrite, Acc0 ),
       Write( ToWrite ),
       if
         length(ToWrite) < length(Batch) ->
           % Stop is requested by the clients callback
-          Hash1;
+          Acc;
         length(Batch) < ?BATCH_SIZE->
           % There are no more records to keep seeking through if the batch is not full
-          Hash1;
+          Acc;
         true ->
           { LastKey, _} = lists:last( Batch ),
-          Count1 = Count0 + length(ToWrite),
-          case OnBatch( LastKey, Count1 ) of
+          case OnBatch( LastKey, Acc ) of
             stop->
               % Stop is requested by the client's OnBatch callback
-              Hash1;
+              Acc;
             _->
-              copy_loop( Read, Write, LastKey, OnItem, OnBatch, Hash1, Count1 )
+              copy_loop( Read, Write, LastKey, OnItem, OnBatch, Acc )
           end
       end;
       ReadError -> ?ERROR( ReadError )
@@ -132,6 +132,14 @@ copy_items( [Rec|Tail], OnItem )->
 copy_items( [], _OnItem )->
   [].
 
+update_acc( [hash| Rest], ToWrite, #{hash := HashAcc} = Acc )->
+  update_acc( Rest, ToWrite, Acc#{ hash => update_hash( ToWrite, HashAcc ) } );
+update_acc( [count| Rest], ToWrite, #{count := CountAcc} = Acc )->
+  update_acc( Rest, ToWrite, Acc#{ count => CountAcc + length(ToWrite) } );
+update_acc( [size| Rest], ToWrite, #{size := SizeAcc} = Acc )->
+  update_acc( Rest, ToWrite, Acc#{ size => SizeAcc + byte_size( term_to_binary(ToWrite) ) } );
+update_acc( [], _ToWrite, Acc )->
+  Acc.
 
 update_hash([ Rec | Tail ], HashRef )->
   update_hash( Tail, rec_hash( Rec, HashRef ) );
