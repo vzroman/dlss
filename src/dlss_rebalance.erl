@@ -138,6 +138,8 @@ update_acc( [count| Rest], ToWrite, #{count := CountAcc} = Acc )->
   update_acc( Rest, ToWrite, Acc#{ count => CountAcc + length(ToWrite) } );
 update_acc( [size| Rest], ToWrite, #{size := SizeAcc} = Acc )->
   update_acc( Rest, ToWrite, Acc#{ size => SizeAcc + byte_size( term_to_binary(ToWrite) ) } );
+update_acc([batch| Rest], _ToWrite, #{batch := BatchNum} = Acc) ->
+  update_acc(Rest, _ToWrite, Acc#{batch => BatchNum + 1});
 update_acc( [], _ToWrite, Acc )->
   Acc.
 

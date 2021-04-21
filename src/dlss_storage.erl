@@ -60,7 +60,12 @@
   set_segment_version/3,
   split_commit/1,
   merge_segment/1,
-  merge_commit/1
+  merge_commit/1,
+
+  % MasterKey API
+  get_master_key/1,
+  set_master_key/2,
+  remove_master_key/1
 ]).
 
 %%=================================================================
@@ -1158,6 +1163,18 @@ segment_by_name(Name)->
     _-> { error, not_found }
   end.
 
+%----------------------MasterKey API---------------------------
+set_master_key(Segment, Key) ->
+  dirty_write(dlss_schema, Segment, Key),
+  ok.
 
+get_master_key(Segment) ->
+  case dirty_read(dlss_schema, Segment) of
+    not_found -> '$start_of_table';
+    Mkey -> Mkey
+  end.
 
+remove_master_key(Segment) ->
+  dirty_delete(dlss_schema, Segment),
+  ok.
 
