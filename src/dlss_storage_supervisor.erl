@@ -323,7 +323,7 @@ split_segment( Parent, Segment, Type, Hash, IsMaster)->
   OnBatch=
     fun(K,#{ count:=Count, batch:=BatchNum})->
       Size = dlss_segment:get_size( Segment ),
-      ?LOGDEBUG("~p splitting from ~p: key ~p, count ~p, size ~p",[
+      ?LOGDEBUG("DEBUG: ~p splitting from ~p: key ~p, count ~p, size ~p",[
         Segment,
         Parent,
         if Type =:=disc-> mnesia_eleveldb:decode_key(K); true ->K end,
@@ -343,7 +343,7 @@ split_segment( Parent, Segment, Type, Hash, IsMaster)->
               ok
           end;
         true ->
-          dlss_storage:set_master_key(Segment, K)
+          dlss_storage:set_master_key({rebalance, Segment}, K)
       end,
 
       if
@@ -368,7 +368,7 @@ split_segment( Parent, Segment, Type, Hash, IsMaster)->
 
 
 wait_master(Segment, Key) ->
-  MasterKey = dlss_storage:get_master_key(Segment),
+  MasterKey = dlss_storage:get_master_key({rebalance, Segment}),
   if
     Key < MasterKey ->
       ok;
@@ -499,7 +499,7 @@ master_commit( split, Segment, Master, #{version := Version,copies:=Copies})->
       case not_confirmed( Version, Hash, Copies ) of
         [] ->
           ?LOGINFO("split commit: ~p, copies ~p",[ Segment, Copies ]),
-          dlss_storage:remove_master_key(Segment),
+          dlss_storage:remove_master_key({rebalance, Segment}),
           dlss_storage:split_commit( Segment );
         Nodes->
           % There are still nodes that are not confirmed the hash yet

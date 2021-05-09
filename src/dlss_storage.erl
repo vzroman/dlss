@@ -1165,16 +1165,16 @@ segment_by_name(Name)->
 
 %----------------------MasterKey API---------------------------
 set_master_key(Segment, Key) ->
-  dirty_write(dlss_schema, Segment, Key),
+  dirty_write(dlss_schema, {rebalance,Segment}, Key),
   ok.
 
 get_master_key(Segment) ->
-  case dirty_read(dlss_schema, Segment) of
+  case dirty_read(dlss_schema, {rebalance, Segment}) of
     not_found -> '$start_of_table';
     Mkey -> Mkey
   end.
 
 remove_master_key(Segment) ->
-  dirty_delete(dlss_schema, Segment),
+  dirty_delete(dlss_schema, {rebalance, Segment}),
   ok.
 
