@@ -323,12 +323,13 @@ split_segment( Parent, Segment, Type, Hash, IsMaster)->
   OnBatch=
     fun(K,#{ count:=Count, batch:=BatchNum})->
       Size = dlss_segment:get_size( Segment ),
-      ?LOGDEBUG("DEBUG: ~p splitting from ~p: key ~p, count ~p, size ~p",[
+      ?LOGINFO("DEBUG: ~p splitting from ~p: key ~p, count ~p, size ~p, is_master ~p",[
         Segment,
         Parent,
         if Type =:=disc-> mnesia_eleveldb:decode_key(K); true ->K end,
         Count,
-        Size / ?MB
+        Size / ?MB,
+        IsMaster
       ]),
       % We stop splitting when the total size of copied records reaches the half of the limit for the segment.
       % TODO. ATTENTION!!! If nodes have different settings for segments size limits it will lead to different
@@ -373,6 +374,7 @@ wait_master(Segment, Key) ->
     Key < MasterKey ->
       ok;
     true ->
+      ?LOGINFO("Waiting master ..."),
       timer:sleep(?SPLIT_SYNC_DELAY),
       wait_master(Segment, Key)
   end.
