@@ -323,12 +323,13 @@ split_segment( Parent, Segment, Type, Hash, IsMaster)->
   OnBatch=
     fun(K,#{ count:=Count, batch:=BatchNum})->
       Size = dlss_segment:get_size( Segment ),
-      ?LOGINFO("DEBUG: ~p splitting from ~p: key ~p, count ~p, size ~p, is_master ~p",[
+      ?LOGINFO("DEBUG: ~p splitting from ~p: key ~p, count ~p, size ~p, batch_num ~p, is_master ~p",[
         Segment,
         Parent,
         if Type =:=disc-> mnesia_eleveldb:decode_key(K); true ->K end,
         Count,
         Size / ?MB,
+        BatchNum,
         IsMaster
       ]),
       % We stop splitting when the total size of copied records reaches the half of the limit for the segment.
@@ -337,20 +338,25 @@ split_segment( Parent, Segment, Type, Hash, IsMaster)->
       % each time after splitting
       if
         IsMaster == false ->
-          if
-            BatchNum rem 10 =:= 0 ->
-              wait_master(Segment, K);
-            true ->
-              ok
-          end;
+          wait_master(Segment, K);
         true ->
           dlss_storage:set_master_key({rebalance, Segment}, K)
       end,
 
       if
-        Size >= ToSize-> stop ;
-        true -> next
+        IsMaster == true ->
+          if
+            Size >= ToSize->
+              dlss_segment:dirty_write(dlss_schema, {stop,Segment}, stop),
+              stop;
+            true ->
+              dlss_storage:dirty_write(dlss_schema, {stop, Segment}, next),
+              next
+          end;
+        true ->
+          dlss_segment:dirty_read(dlss_schema, {stop, Segment})
       end
+
     end,
 
   {ok, #{ key:= From0}} = dlss_storage:segment_params( Parent ),
@@ -367,17 +373,24 @@ split_segment( Parent, Segment, Type, Hash, IsMaster)->
 
   dlss_rebalance:copy( Parent, Segment, Copy, From, OnBatch, Acc0 ).
 
-
 wait_master(Segment, Key) ->
   MasterKey = dlss_storage:get_master_key({rebalance, Segment}),
   if
-    Key < MasterKey ->
-      ok;
-    true ->
+    MasterKey == '$start_of_table'->
       ?LOGINFO("Waiting master ..."),
       timer:sleep(?SPLIT_SYNC_DELAY),
-      wait_master(Segment, Key)
+      wait_master(Segment, Key);
+    true ->
+      if
+        Key =< MasterKey ->
+          ok;
+        true ->
+          ?LOGINFO("Waiting master ..."),
+          timer:sleep(?SPLIT_SYNC_DELAY),
+          wait_master(Segment, Key)
+      end
   end.
+
 %---------------------MERGE---------------------------------------------------
 merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], Source, Params, Node, Type )->
   % This is the segment that is currently copies the keys from the source
