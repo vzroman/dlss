@@ -350,7 +350,7 @@ split_segment( Parent, Segment, Type, Hash, IsMaster)->
               dlss_segment:dirty_write(dlss_schema, {stop,Segment}, stop),
               stop;
             true ->
-              dlss_storage:dirty_write(dlss_schema, {stop, Segment}, next),
+              dlss_segment:dirty_write(dlss_schema, {stop, Segment}, next),
               next
           end;
         true ->
