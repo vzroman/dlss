@@ -337,26 +337,18 @@ split_segment( Parent, Segment, Type, Hash, IsMaster)->
       % final hash for the segment for participating nodes. And the segment is going to be reloaded from the master
       % each time after splitting
       if
-        IsMaster == false ->
-          wait_master(Segment, K);
-        true ->
-          dlss_storage:set_master_key({rebalance, Segment}, K)
-      end,
-
-      if
         IsMaster == true ->
           if
             Size >= ToSize->
-              dlss_segment:dirty_write(dlss_schema, {stop,Segment}, stop),
+              dlss_storage:set_master_key({rebalance, Segment}, {K, stop}),
               stop;
             true ->
-              dlss_segment:dirty_write(dlss_schema, {stop, Segment}, next),
+              dlss_storage:set_master_key({rebalance, Segment}, {K, next}),
               next
           end;
         true ->
-          dlss_segment:dirty_read(dlss_schema, {stop, Segment})
+          wait_master(Segment,K)
       end
-
     end,
 
   {ok, #{ key:= From0}} = dlss_storage:segment_params( Parent ),
@@ -370,11 +362,10 @@ split_segment( Parent, Segment, Type, Hash, IsMaster)->
     hash => Hash,
     batch => 0
   },
-
   dlss_rebalance:copy( Parent, Segment, Copy, From, OnBatch, Acc0 ).
 
 wait_master(Segment, Key) ->
-  MasterKey = dlss_storage:get_master_key({rebalance, Segment}),
+  {MasterKey, Action} = dlss_storage:get_master_key({rebalance, Segment}),
   if
     MasterKey == '$start_of_table'->
       ?LOGINFO("Waiting master ..."),
@@ -382,8 +373,10 @@ wait_master(Segment, Key) ->
       wait_master(Segment, Key);
     true ->
       if
-        Key =< MasterKey ->
-          ok;
+        Key < MasterKey ->
+          next;
+        Key =:= MasterKey ->
+          Action;
         true ->
           ?LOGINFO("Waiting master ..."),
           timer:sleep(?SPLIT_SYNC_DELAY),

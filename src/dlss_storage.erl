@@ -1171,7 +1171,7 @@ set_master_key({rebalance, Segment}, Key) ->
 get_master_key({rebalance, Segment}) ->
   case dlss_segment:dirty_read(dlss_schema, {rebalance, Segment}) of
     not_found -> '$start_of_table';
-    Mkey -> Mkey
+    MasterKey -> MasterKey
   end.
 
 remove_master_key({rebalance, Segment}) ->
