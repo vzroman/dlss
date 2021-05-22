@@ -22,7 +22,7 @@
 
 -define(PROCESS(Storage), list_to_atom( atom_to_list(Storage) ++ "_sup" ) ).
 -define(DEFAULT_SCAN_CYCLE,5000).
--define(SPLIT_SYNC_DELAY, 5000).
+-define(SPLIT_SYNC_DELAY, 3000).
 
 -record(state,{ storage, type, cycle }).
 -record(dump,{ version, hash }).
@@ -472,7 +472,7 @@ merge_segment( Target, Source, FromKey, ToKey0, Type, Hash )->
 
   OnBatch=
     fun(K,#{count := Count})->
-      ?LOGDEBUG("~p merging from ~p: key ~p, count ~p",[
+      ?LOGINFO("DEBUG: ~p merging from ~p: key ~p, count ~p",[
         Target,
         Source,
         if Type =:=disc-> mnesia_eleveldb:decode_key(K); true ->K end,
