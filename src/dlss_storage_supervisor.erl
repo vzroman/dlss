@@ -22,6 +22,7 @@
 
 -define(PROCESS(Storage), list_to_atom( atom_to_list(Storage) ++ "_sup" ) ).
 -define(DEFAULT_SCAN_CYCLE,5000).
+-define(SPLIT_SYNC_DELAY, 3000).
 
 -record(state,{ storage, type, cycle }).
 -record(dump,{ version, hash }).
@@ -248,7 +249,7 @@ pending_transformation( Storage, Type, Node )->
             #{ version:=Version, copies := #{ Node := #dump{version = Version}} }->
               % The version for the node is already updated
               ok;
-            #{ version:=Version, copies := #{ Node := Dump } }->
+            #{ version:=Version, copies := #{ Node := Dump }=Copies}->
               % The segment has local copy
               Parent = dlss_storage:parent_segment( Segment ),
               InitHash=
@@ -259,7 +260,8 @@ pending_transformation( Storage, Type, Node )->
               ?LOGINFO("split: child ~p, parent ~p, init hash ~p",[
                 Segment, Parent, InitHash
               ]),
-              case split_segment( Parent, Segment, Type, InitHash ) of
+              IsMasterFun = fun()-> Node==master_node(Copies) end,
+              case split_segment( Parent, Segment, Type, InitHash, IsMasterFun) of
                 {ok, #{ hash:= NewHash} }->
                   ?LOGINFO("split finish: child ~p, parent ~p, new hash ~p",[
                     Segment, Parent, NewHash
@@ -288,7 +290,7 @@ pending_transformation( Storage, Type, Node )->
   end.
 
 %---------------------SPLIT---------------------------------------------------
-split_segment( Parent, Segment, Type, Hash )->
+split_segment( Parent, Segment, Type, Hash, IsMasterFun)->
   % Prepare the deleted flag
   Deleted =
     if
@@ -318,23 +320,35 @@ split_segment( Parent, Segment, Type, Hash )->
   {ok, #{ level:= Level}} = dlss_storage:segment_params( Segment ),
   ToSize = segment_level_limit( round(Level) ) *?MB * ?ENV( segment_split_median, ?DEFAULT_SPLIT_MEDIAN ),
 
+  IsMaster = IsMasterFun(),
+
   OnBatch=
-    fun(K,#{ count:=Count})->
+    fun(K,#{ count:=Count })->
       Size = dlss_segment:get_size( Segment ),
-      ?LOGDEBUG("~p splitting from ~p: key ~p, count ~p, size ~p",[
+      ?LOGDEBUG("~p splitting from ~p: key ~p, count ~p, size ~p, is_master ~p",[
         Segment,
         Parent,
         if Type =:=disc-> mnesia_eleveldb:decode_key(K); true ->K end,
         Count,
-        Size / ?MB
+        Size / ?MB,
+        IsMaster
       ]),
       % We stop splitting when the total size of copied records reaches the half of the limit for the segment.
       % TODO. ATTENTION!!! If nodes have different settings for segments size limits it will lead to different
       % final hash for the segment for participating nodes. And the segment is going to be reloaded from the master
       % each time after splitting
       if
-        Size >= ToSize-> stop ;
-        true -> next
+        IsMaster == true ->
+          if
+            Size >= ToSize->
+              dlss_storage:set_master_key( Segment, {K, stop}),
+              stop;
+            true ->
+              dlss_storage:set_master_key( Segment, {K, next}),
+              next
+          end;
+        true ->
+          wait_master(Segment,K)
       end
     end,
 
@@ -349,6 +363,25 @@ split_segment( Parent, Segment, Type, Hash )->
     hash => Hash
   },
   dlss_rebalance:copy( Parent, Segment, Copy, From, OnBatch, Acc0 ).
+
+wait_master(Segment, Key) ->
+  case dlss_storage:get_master_key( Segment ) of
+    not_found->
+      ?LOGINFO("Waiting master to start split..."),
+      timer:sleep(?SPLIT_SYNC_DELAY),
+      wait_master(Segment, Key);
+    {MasterKey, Action}->
+      if
+        Key < MasterKey ->
+          next;
+        Key =:= MasterKey ->
+          Action;
+        true ->
+          ?LOGINFO("Waiting master on ~p...",[ Key ]),
+          timer:sleep(?SPLIT_SYNC_DELAY),
+          wait_master(Segment, Key)
+      end
+  end.
 
 %---------------------MERGE---------------------------------------------------
 merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], Source, Params, Node, Type )->
@@ -473,6 +506,7 @@ master_commit( split, Segment, Master, #{version := Version,copies:=Copies})->
       case not_confirmed( Version, Hash, Copies ) of
         [] ->
           ?LOGINFO("split commit: ~p, copies ~p",[ Segment, Copies ]),
+          dlss_storage:remove_master_key( Segment ),
           dlss_storage:split_commit( Segment );
         Nodes->
           % There are still nodes that are not confirmed the hash yet
