@@ -322,7 +322,7 @@ split_segment( Parent, Segment, Type, Hash, IsMasterFun)->
   ToSize = segment_level_limit( round(Level) ) *?MB * ?ENV( segment_split_median, ?DEFAULT_SPLIT_MEDIAN ),
 
   OnBatch=
-    fun(K,#{ count:=Count, is_master => IsMaster ,batch:=BatchNum}=Acc)->
+    fun(K,#{ count:=Count, is_master := IsMaster ,batch:=BatchNum}=Acc)->
       Size = dlss_segment:get_size( Segment ),
       ?LOGDEBUG("~p splitting from ~p: key ~p, count ~p, size ~p, batch_num ~p, is_master ~p",[
         Segment,
@@ -389,12 +389,12 @@ wait_master(Segment, Key, IsMasterFun, WaitLevel) ->
         Key =:= MasterKey ->
           Action;
         true ->
-          if
-            WaitLevel > ?WAIT_LIMIT andalso IsMasterFun() == true ->
+          case WaitLevel > ?WAIT_LIMIT andalso IsMasterFun() == true of
+            true->
               ?LOGINFO("Master changed, new master is ~p", [node()]),
               dlss_storage:set_master_key(Segment, {Key, next}),
               new_master;
-            true ->
+            _->
                 ?LOGINFO("Waiting master on ~p", [Key]),
                 timer:sleep(?SPLIT_SYNC_DELAY),
                 wait_master(Segment, Key, WaitLevel + 1)
