@@ -23,6 +23,7 @@
 -define(PROCESS(Storage), list_to_atom( atom_to_list(Storage) ++ "_sup" ) ).
 -define(DEFAULT_SCAN_CYCLE,5000).
 -define(SPLIT_SYNC_DELAY, 3000).
+-define(WAIT_LIMIT, 5).
 
 -record(state,{ storage, type, cycle }).
 -record(dump,{ version, hash }).
@@ -260,8 +261,8 @@ pending_transformation( Storage, Type, Node )->
               ?LOGINFO("split: child ~p, parent ~p, init hash ~p",[
                 Segment, Parent, InitHash
               ]),
-              IsMaster = Node==master_node(Copies),
-              case split_segment( Parent, Segment, Type, InitHash, IsMaster) of
+              IsMasterFun = fun () -> Node==master_node(Copies) end,
+              case split_segment( Parent, Segment, Type, InitHash, IsMasterFun) of
                 {ok, #{ hash:= NewHash} }->
                   ?LOGINFO("split finish: child ~p, parent ~p, new hash ~p",[
                     Segment, Parent, NewHash
@@ -290,7 +291,7 @@ pending_transformation( Storage, Type, Node )->
   end.
 
 %---------------------SPLIT---------------------------------------------------
-split_segment( Parent, Segment, Type, Hash, IsMaster)->
+split_segment( Parent, Segment, Type, Hash, IsMasterFun)->
   % Prepare the deleted flag
   Deleted =
     if
@@ -321,7 +322,7 @@ split_segment( Parent, Segment, Type, Hash, IsMaster)->
   ToSize = segment_level_limit( round(Level) ) *?MB * ?ENV( segment_split_median, ?DEFAULT_SPLIT_MEDIAN ),
 
   OnBatch=
-    fun(K,#{ count:=Count, batch:=BatchNum})->
+    fun(K,#{ count:=Count, is_master => IsMaster ,batch:=BatchNum}=Acc)->
       Size = dlss_segment:get_size( Segment ),
       ?LOGDEBUG("~p splitting from ~p: key ~p, count ~p, size ~p, batch_num ~p, is_master ~p",[
         Segment,
@@ -340,14 +341,21 @@ split_segment( Parent, Segment, Type, Hash, IsMaster)->
         IsMaster == true ->
           if
             Size >= ToSize->
-              dlss_storage:set_master_key({rebalance, Segment}, {K, stop}),
+              dlss_storage:set_master_key(Segment, {K, stop}),
               stop;
             true ->
-              dlss_storage:set_master_key({rebalance, Segment}, {K, next}),
-              next
+              dlss_storage:set_master_key(Segment, {K, next}),
+              Acc
           end;
         true ->
-          wait_master(Segment,K)
+          case wait_master(Segment,K, IsMasterFun) of
+            next ->
+              Acc;
+            stop ->
+              stop;
+            new_master ->
+              Acc#{is_master => true}
+          end
       end
     end,
 
@@ -360,27 +368,37 @@ split_segment( Parent, Segment, Type, Hash, IsMaster)->
   Acc0 = #{
     count => 0,
     hash => Hash,
-    batch => 0
+    batch => 0,
+    is_master => IsMasterFun()
   },
   dlss_rebalance:copy( Parent, Segment, Copy, From, OnBatch, Acc0 ).
 
-wait_master(Segment, Key) ->
-  {MasterKey, Action} = dlss_storage:get_master_key({rebalance, Segment}),
-  if
-    MasterKey == '$start_of_table'->
-      ?LOGINFO("Waiting master ..."),
+wait_master(Segment, Key, IsMasterFun) ->
+  wait_master(Segment, Key, IsMasterFun, 0).
+
+wait_master(Segment, Key, IsMasterFun, WaitLevel) ->
+  case dlss_storage:get_master_key(Segment) of
+    not_found ->
+      ?LOGINFO("Waiting master for starting"),
       timer:sleep(?SPLIT_SYNC_DELAY),
-      wait_master(Segment, Key);
-    true ->
+      wait_master(Segment, Key, WaitLevel + 1);
+    {MasterKey, Action} ->
       if
         Key < MasterKey ->
           next;
         Key =:= MasterKey ->
           Action;
         true ->
-          ?LOGINFO("Waiting master ..."),
-          timer:sleep(?SPLIT_SYNC_DELAY),
-          wait_master(Segment, Key)
+          if
+            WaitLevel > ?WAIT_LIMIT andalso IsMasterFun() == true ->
+              ?LOGINFO("Master changed, new master is ~p", [node()]),
+              dlss_storage:set_master_key(Segment, {Key, next}),
+              new_master;
+            true ->
+                ?LOGINFO("Waiting master on ~p", [Key]),
+                timer:sleep(?SPLIT_SYNC_DELAY),
+                wait_master(Segment, Key, WaitLevel + 1)
+          end
       end
   end.
 
@@ -471,7 +489,7 @@ merge_segment( Target, Source, FromKey, ToKey0, Type, Hash )->
     end,
 
   OnBatch=
-    fun(K,#{count := Count})->
+    fun(K,#{count := Count}=Acc)->
       ?LOGDEBUG("~p merging from ~p: key ~p, count ~p",[
         Target,
         Source,
@@ -480,7 +498,9 @@ merge_segment( Target, Source, FromKey, ToKey0, Type, Hash )->
       ]),
 
       % Stop only on ToKey
-      next
+      % Because OnBatch function in split_segment returns NewAcc, we must
+      % return Acc here for consistency
+      Acc
     end,
   Acc0 = #{
     count => 0,
@@ -507,7 +527,7 @@ master_commit( split, Segment, Master, #{version := Version,copies:=Copies})->
       case not_confirmed( Version, Hash, Copies ) of
         [] ->
           ?LOGINFO("split commit: ~p, copies ~p",[ Segment, Copies ]),
-          dlss_storage:remove_master_key({rebalance, Segment}),
+          dlss_storage:remove_master_key(Segment),
           dlss_storage:split_commit( Segment );
         Nodes->
           % There are still nodes that are not confirmed the hash yet
