@@ -90,7 +90,9 @@ To clean up
 Run Tests
 -----
 
-    ./rebar3 ct --spec=./test/module_tests/test.spec
+    ./rebar3 ct --spec=./test/module/test.spec
+    ./rebar3 ct --spec=./test/rebalance/test.spec
+    ./rebar3 ct --spec=./test/load/test.spec
 
 API
 -----
