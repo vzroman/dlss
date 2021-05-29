@@ -22,6 +22,8 @@
 
 -behaviour(gen_server).
 
+-define(MIN_ULIMIT_N, 200000).
+
 %%=================================================================
 %%	API
 %%=================================================================
@@ -88,6 +90,9 @@ handle_info(loop,#state{
   % Keep the loop
   {ok,_}=timer:send_after(Cycle,loop),
 
+  % Check open files limit
+  check_ulimit_n(),
+
   % Scanning procedure
   Started1=
     try scan_storages(Started)
@@ -105,6 +110,37 @@ terminate(Reason,_State)->
 
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
+
+check_ulimit_n()->
+  case get_ulimit_n() of
+    Limit when is_integer(Limit)->
+      if
+        Limit < ?MIN_ULIMIT_N->
+          ?LOGWARNING("The Open Files Limit is lower than recommended, please set it with 'ulimit -n ~p' before starting the application",[
+            ?MIN_ULIMIT_N
+          ]);
+        true ->
+          ok
+      end;
+    _->
+      % Is it an unsupported OS type? What to do?
+      ignore
+  end.
+
+get_ulimit_n()->
+  case os:type() of
+    {unix,_Any}->
+      Limit0 = os:cmd("ulimit -n"),
+      case re:run(Limit0,"^(?<Limit>\\d+).*",[{capture,['Limit'],list}]) of
+        {match,[Limit2]}->
+          list_to_integer(Limit2);
+        _->
+          ?LOGWARNING("unable to find out the open files limit settings"),
+          undefined
+      end;
+    _->
+      undefined
+  end.
 
 %%============================================================================
 %%	The loop
