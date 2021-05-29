@@ -374,14 +374,22 @@ split_segment( Parent, Segment, Type, Hash, IsMasterFun)->
   dlss_rebalance:copy( Parent, Segment, Copy, From, OnBatch, Acc0 ).
 
 wait_master(Segment, Key, IsMasterFun) ->
-  wait_master(Segment, Key, IsMasterFun, 0).
-
-wait_master(Segment, Key, IsMasterFun, WaitLevel) ->
+  wait_master(Segment, Key, IsMasterFun, _IsMaster = false).
+wait_master(Segment, _Key, _IsMasterFun, _IsMaster = true) ->
+  % The node became a new master, continue the split operation as a new master.
+  % Currently we use mnesia engine to synchronize node while starting.
+  % Mnesia makes a full copy of the database if founds its copy to be not the latest.
+  % Therefore if the node takes the role of the master it can keep it without recalculating
+  % even if the former master recovers because the former master is assumed to copy the segment
+  % from other nodes before declaring itself as ready.
+  ?LOGWARNING("splitting ~p, continue as a new master",[Segment]),
+  next;
+wait_master(Segment, Key, IsMasterFun, _IsMaster = false) ->
   case dlss_storage:get_master_key(Segment) of
     not_found ->
-      ?LOGINFO("Waiting master for starting"),
+      ?LOGINFO("splitting ~p, waiting for master to start...",[Segment]),
       timer:sleep(?SPLIT_SYNC_DELAY),
-      wait_master(Segment, Key, WaitLevel + 1);
+      wait_master(Segment, Key, IsMasterFun, IsMasterFun() );
     {MasterKey, Action} ->
       if
         Key < MasterKey ->
@@ -389,16 +397,9 @@ wait_master(Segment, Key, IsMasterFun, WaitLevel) ->
         Key =:= MasterKey ->
           Action;
         true ->
-          case WaitLevel > ?WAIT_LIMIT andalso IsMasterFun() == true of
-            true->
-              ?LOGINFO("Master changed, new master is ~p", [node()]),
-              dlss_storage:set_master_key(Segment, {Key, next}),
-              new_master;
-            _->
-                ?LOGINFO("Waiting master on ~p", [Key]),
-                timer:sleep(?SPLIT_SYNC_DELAY),
-                wait_master(Segment, Key, WaitLevel + 1)
-          end
+          ?LOGINFO("splitting ~p, waiting for master to declare a new milestone key",[Segment]),
+          timer:sleep(?SPLIT_SYNC_DELAY),
+          wait_master(Segment, Key, IsMasterFun, IsMasterFun())
       end
   end.
 

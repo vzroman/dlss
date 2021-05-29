@@ -140,7 +140,7 @@ update_acc( [size| Rest], ToWrite, #{size := SizeAcc} = Acc )->
   update_acc( Rest, ToWrite, Acc#{ size => SizeAcc + byte_size( term_to_binary(ToWrite) ) } );
 update_acc([batch| Rest], _ToWrite, #{batch := BatchNum} = Acc) ->
   update_acc(Rest, _ToWrite, Acc#{batch => BatchNum + 1});
-update_acc([is_master|Rest], _ToWrite, Acc) ->
+update_acc([_Other|Rest], _ToWrite, Acc) ->
   update_acc(Rest, _ToWrite, Acc);
 update_acc( [], _ToWrite, Acc )->
   Acc.
@@ -256,6 +256,12 @@ dump_segment( Segment )->
   ok.
 
 on_init()->
+
+  % TODO. Currently we only recover local operations. And use the mnesia
+  % engine to synchronize segments. Mnesia on start copies the full database
+  % from other nodes if finds its copy is not the latest.
+  % As segments at levels lower than 0 are read only we can optimize the recovery
+  % by copying only those segments which have a different hash value.
 
   Dir = mnesia_lib:dir(),
   BackupFiles = filelib:wildcard( "*" ++ ?BACKUPEXT, Dir ),
