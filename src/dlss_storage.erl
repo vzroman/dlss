@@ -60,7 +60,12 @@
   set_segment_version/3,
   split_commit/1,
   merge_segment/1,
-  merge_commit/1
+  merge_commit/1,
+
+  % MasterKey API
+  get_master_key/1,
+  set_master_key/2,
+  remove_master_key/1
 ]).
 
 %%=================================================================
@@ -1158,6 +1163,15 @@ segment_by_name(Name)->
     _-> { error, not_found }
   end.
 
+%----------------------MasterKey API---------------------------
+set_master_key(Segment, Key) ->
+  dlss_segment:dirty_write(dlss_schema, {rebalance,Segment}, Key),
+  ok.
 
+get_master_key(Segment) ->
+  dlss_segment:dirty_read(dlss_schema, {rebalance, Segment}).
 
+remove_master_key(Segment) ->
+  dlss_segment:dirty_delete(dlss_schema, {rebalance, Segment}),
+  ok.
 
