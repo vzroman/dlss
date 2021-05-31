@@ -154,6 +154,7 @@ segment_params(Name)->
     { ok, #sgm{ str = Str, lvl = Lvl, key = Key, ver = Version, copies = Copies } }->
       % The start key except for '_' is wrapped into a tuple
       % to make the schema properly ordered by start keys
+      ?LOGINFO("DEBUG: copies ~p, stack ~p",[Copies, get_stack()]),
       StartKey =
         case Key of
           { K } -> K;
@@ -204,6 +205,7 @@ add(Name,Type,Options)->
   end,
 
   Copies = maps:from_list([ {N,undefined} ||N<-maps:get(nodes,Params)]),
+  ?LOGINFO("DEBUG: copies ~p, stack ~p",[Copies, get_stack()]),
   % Add the storage to the schema
   ok=dlss_segment:dirty_write(dlss_schema,#sgm{str=Name,key='_',lvl=0,ver = 0,copies = Copies},Root).
 
@@ -291,8 +293,9 @@ split_segment( Storage, Segment )->
     dlss_backend:lock({table,dlss_schema},write),
 
     {ok, Prn = #sgm{ copies = Copies0, lvl = Level }} = segment_by_name( Segment ),
+    ?LOGINFO("DEBUG: copies ~p, stack ~p",[Copies0, get_stack()]),
     Copies = maps:map(fun(_K,_V)->undefined end, Copies0 ),
-
+    ?LOGINFO("DEBUG: copies ~p, stack ~p",[Copies, get_stack()]),
     % Put the new segment on the floating level
     ok = dlss_segment:write(dlss_schema, Prn#sgm{lvl= Level+0.1 ,ver = 0,copies = Copies}, NewSegment , write),
 
@@ -346,7 +349,9 @@ new_root_segment( Storage ) ->
     dlss_backend:lock({table,Root},read),
 
     {ok, #sgm{ copies = Copies0} } = segment_by_name( Root ),
+    ?LOGINFO("DEBUG: copies ~p, stack ~p",[Copies0, get_stack()]),
     Copies = maps:map(fun(_K,_V)->undefined end, Copies0 ),
+    ?LOGINFO("DEBUG: copies ~p, stack ~p",[Copies, get_stack()]),
 
     merge_segment( Root ),
 
@@ -556,7 +561,7 @@ set_segment_version( Segment, Node, Version ) when is_atom(Segment)->
     Error -> Error
   end;
 set_segment_version( #sgm{ copies = Copies } = Sgm, Node, Version )->
-
+  ?LOGINFO("DEBUG: copies ~p, stack ~p",[Copies, get_stack()]),
   % Set a version for a segment in the schema
   case dlss:transaction(fun()->
     % Set a lock on the segment
@@ -564,7 +569,7 @@ set_segment_version( #sgm{ copies = Copies } = Sgm, Node, Version )->
 
     % Update the copies
     Copies1 = Copies#{ Node=>Version },
-
+    ?LOGINFO("DEBUG: copies ~p, stack ~p",[Copies1, get_stack()]),
     % Update the segment
     ok = dlss_segment:delete(dlss_schema, Sgm , write ),
     ok = dlss_segment:write( dlss_schema, Sgm#sgm{ copies = Copies1 }, Segment, write ),
@@ -590,7 +595,7 @@ add_segment_copy( Segment, Node ) when is_atom(Segment)->
     _-> {error, {invalid_segment, Segment} }
   end;
 add_segment_copy( Sgm = #sgm{copies = Copies} , Node )->
-
+  ?LOGINFO("DEBUG: copies ~p, stack ~p",[Copies, get_stack()]),
   case dlss:transaction(fun()->
     % Set a lock on the segment
     % Set a lock on the segment
@@ -602,6 +607,7 @@ add_segment_copy( Sgm = #sgm{copies = Copies} , Node )->
       _->
         % Just add a copy to the schema, the actual copying will do the storage supervisor
         ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+        ?LOGINFO("DEBUG: copies ~p, stack ~p",[Copies#{Node => undefined }, get_stack()]),
         ok = dlss_segment:write( dlss_schema, Sgm#sgm{ copies = Copies#{Node => undefined } }, Segment, write )
     end,
 
@@ -617,7 +623,7 @@ remove_segment_copy( Segment, Node ) when is_atom(Segment)->
     _-> {error, {invalid_segment, Segment} }
   end;
 remove_segment_copy( Sgm = #sgm{copies = Copies} , Node )->
-
+  ?LOGINFO("DEBUG: copies ~p, stack ~p",[Copies, get_stack()]),
   case dlss:transaction(fun()->
     % Set a lock on the segment
     % Set a lock on the segment
@@ -626,6 +632,7 @@ remove_segment_copy( Sgm = #sgm{copies = Copies} , Node )->
       #{Node:=_}->
         % Just add a copy to the schema, the actual copying will do the storage supervisor
         ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+        ?LOGINFO("DEBUG: copies ~p, stack ~p",[maps:without([Node],Copies), get_stack()]),
         ok = dlss_segment:write( dlss_schema, Sgm#sgm{ copies = maps:without([Node],Copies) }, Segment, write );
       _->
         % The copy is already removed
@@ -1175,3 +1182,9 @@ remove_master_key(Segment) ->
   dlss_segment:dirty_delete(dlss_schema, {rebalance, Segment}),
   ok.
 
+get_stack() ->
+  try
+      1=2
+  catch
+      _:_:Stack -> Stack
+  end.

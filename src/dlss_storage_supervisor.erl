@@ -324,7 +324,7 @@ split_segment( Parent, Segment, Type, Hash, IsMasterFun)->
   OnBatch=
     fun(K,#{ count:=Count, is_master := IsMaster ,batch:=BatchNum}=Acc)->
       Size = dlss_segment:get_size( Segment ),
-      ?LOGDEBUG("~p splitting from ~p: key ~p, count ~p, size ~p, batch_num ~p, is_master ~p",[
+      ?LOGINFO("DEBUG: ~p splitting from ~p: key ~p, count ~p, size ~p, batch_num ~p, is_master ~p",[
         Segment,
         Parent,
         if Type =:=disc-> mnesia_eleveldb:decode_key(K); true ->K end,
@@ -341,10 +341,10 @@ split_segment( Parent, Segment, Type, Hash, IsMasterFun)->
         IsMaster == true ->
           if
             Size >= ToSize->
-              dlss_storage:set_master_key(Segment, {K, stop}),
+              dlss_storage:set_master_key(Segment, {K, stop, node()}),
               stop;
             true ->
-              dlss_storage:set_master_key(Segment, {K, next}),
+              dlss_storage:set_master_key(Segment, {K, next, node()}),
               Acc
           end;
         true ->
@@ -365,17 +365,25 @@ split_segment( Parent, Segment, Type, Hash, IsMasterFun)->
       From0 =:='_'-> '$start_of_table' ;
       true -> From0
     end,
+
+  IsMaster =
+    case dlss_storage:get_master_key(Segment) of
+      not_found ->
+        IsMasterFun();
+      _ ->
+        false
+    end,
   Acc0 = #{
     count => 0,
     hash => Hash,
     batch => 0,
-    is_master => IsMasterFun()
+    is_master => IsMaster
   },
   dlss_rebalance:copy( Parent, Segment, Copy, From, OnBatch, Acc0 ).
 
 wait_master(Segment, Key, IsMasterFun) ->
   wait_master(Segment, Key, IsMasterFun, _IsMaster = false).
-wait_master(Segment, _Key, _IsMasterFun, _IsMaster = true) ->
+wait_master(Segment, Key, _IsMasterFun, _IsMaster = true) ->
   % The node became a new master, continue the split operation as a new master.
   % Currently we use mnesia engine to synchronize node while starting.
   % Mnesia makes a full copy of the database if founds its copy to be not the latest.
@@ -383,14 +391,15 @@ wait_master(Segment, _Key, _IsMasterFun, _IsMaster = true) ->
   % even if the former master recovers because the former master is assumed to copy the segment
   % from other nodes before declaring itself as ready.
   ?LOGWARNING("splitting ~p, continue as a new master",[Segment]),
-  next;
+  dlss_storage:set_master_key(Segment, {Key, next, node()}),
+  new_master;
 wait_master(Segment, Key, IsMasterFun, _IsMaster = false) ->
   case dlss_storage:get_master_key(Segment) of
     not_found ->
       ?LOGINFO("splitting ~p, waiting for master to start...",[Segment]),
       timer:sleep(?SPLIT_SYNC_DELAY),
       wait_master(Segment, Key, IsMasterFun, IsMasterFun() );
-    {MasterKey, Action} ->
+    {MasterKey, Action, _Node} ->
       if
         Key < MasterKey ->
           next;
