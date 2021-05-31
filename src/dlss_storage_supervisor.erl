@@ -523,6 +523,7 @@ merge_segment( Target, Source, FromKey, ToKey0, Type, Hash )->
 %%============================================================================
 hash_confirm( Operation, Segment, Node )->
   {ok, #{copies:= Copies} = Params } = dlss_storage:segment_params( Segment ),
+  ?LOGINFO("DEBUG: Copies ~p",[Copies]),
   case master_node( Copies ) of
     Node ->
       master_commit( Operation, Segment,Node, Params );

@@ -154,7 +154,6 @@ segment_params(Name)->
     { ok, #sgm{ str = Str, lvl = Lvl, key = Key, ver = Version, copies = Copies } }->
       % The start key except for '_' is wrapped into a tuple
       % to make the schema properly ordered by start keys
-      ?LOGINFO("DEBUG: segment_name ~p, copies ~p",[Name, Copies]),
       StartKey =
         case Key of
           { K } -> K;
