@@ -1184,7 +1184,10 @@ remove_master_key(Segment) ->
 
 get_stack() ->
   try
-      1=2
+    get_stack(1, 2)
   catch
       _:_:Stack -> Stack
   end.
+
+get_stack(A, B) ->
+  A = B.
