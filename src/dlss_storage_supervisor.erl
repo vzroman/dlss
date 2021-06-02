@@ -370,8 +370,8 @@ split_segment( Parent, Segment, Type, Hash, IsMasterFun)->
     case dlss_storage:get_master_key(Segment) of
       not_found ->
         IsMasterFun();
-      _ ->
-        false
+      {_, _ , Node} ->
+        node() == Node
     end,
   Acc0 = #{
     count => 0,
