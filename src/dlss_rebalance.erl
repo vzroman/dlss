@@ -199,6 +199,7 @@ delete_ets_until( [], _ToKey, _Segment )->
 disc_bulk_read( Segment, FromKey )->
   lists:reverse(mnesia_eleveldb:dirty_iterator( Segment,fun( Rec, Acc )->
     if
+      Rec =:= '$end_of_table'-> Acc;
       length(Acc) >= ?BATCH_SIZE -> stop ;
       true -> [ Rec|Acc ]
     end
