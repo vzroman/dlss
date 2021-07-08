@@ -97,25 +97,30 @@ copy( Source, Target, Copy, FromKey0, OnBatch, Acc0 )->
 
 copy_loop( Read, Write, FromKey, OnItem, OnBatch, Acc0 )->
   case Read( FromKey ) of
-    Batch when is_list(Batch), length(Batch)>0 ->
-      ToWrite = copy_items( Batch, OnItem ),
-      Acc = update_acc( maps:keys(Acc0), ToWrite, Acc0 ),
-      Write( ToWrite ),
+    Batch when is_list(Batch) ->
       if
-        length(ToWrite) < length(Batch) ->
-          % Stop is requested by the clients callback
-          Acc;
-        length(Batch) < ?BATCH_SIZE->
-          % There are no more records to keep seeking through if the batch is not full
-          Acc;
+        length(Batch)=:=0 ->
+          Acc0;
         true ->
-          { LastKey, _} = lists:last( Batch ),
-          case OnBatch( LastKey, Acc ) of
-            stop->
-              % Stop is requested by the client's OnBatch callback
+          ToWrite = copy_items( Batch, OnItem ),
+          Acc = update_acc( maps:keys(Acc0), ToWrite, Acc0 ),
+          Write( ToWrite ),
+          if
+            length(ToWrite) < length(Batch) ->
+              % Stop is requested by the clients callback
               Acc;
-            NewAcc->
-              copy_loop( Read, Write, LastKey, OnItem, OnBatch, NewAcc )
+            length(Batch) < ?BATCH_SIZE->
+              % There are no more records to keep seeking through if the batch is not full
+              Acc;
+            true ->
+              { LastKey, _} = lists:last( Batch ),
+              case OnBatch( LastKey, Acc ) of
+                stop->
+                  % Stop is requested by the client's OnBatch callback
+                  Acc;
+                NewAcc->
+                  copy_loop( Read, Write, LastKey, OnItem, OnBatch, NewAcc )
+              end
           end
       end;
       ReadError -> ?ERROR( ReadError )

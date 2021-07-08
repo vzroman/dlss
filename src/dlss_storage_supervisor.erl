@@ -324,7 +324,7 @@ split_segment( Parent, Segment, Type, Hash, IsMasterFun)->
   OnBatch=
     fun(K,#{ count:=Count, is_master := IsMaster ,batch:=BatchNum}=Acc)->
       Size = dlss_segment:get_size( Segment ),
-      ?LOGDEBUG("~p splitting from ~p: key ~p, count ~p, size ~p, batch_num ~p, is_master ~p",[
+      ?LOGINFO("DEBUG: ~p splitting from ~p: key ~p, count ~p, size ~p, batch_num ~p, is_master ~p",[
         Segment,
         Parent,
         if Type =:=disc-> mnesia_eleveldb:decode_key(K); true ->K end,
