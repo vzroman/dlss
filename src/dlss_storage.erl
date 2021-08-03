@@ -579,11 +579,6 @@ set_segment_version( Segment, Node, Version )->
 %%--------------------------------------------------------------------------------
 %%  Add/Remove segment copies
 %%--------------------------------------------------------------------------------
-%%add_segment_copy( Segment, Node ) when is_atom(Segment)->
-%%  case segment_by_name( Segment ) of
-%%    {ok, Sgm}-> add_segment_copy( Sgm, Node );
-%%    _-> {error, {invalid_segment, Segment} }
-%%  end;
 add_segment_copy( Segment , Node )->
 
   case dlss:transaction(fun()->
