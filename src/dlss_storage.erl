@@ -550,17 +550,12 @@ merge_commit( Segment )->
       ])
   end.
 
-set_segment_version( Segment, Node, Version ) when is_atom(Segment)->
-  case segment_by_name( Segment ) of
-    { ok, Sgm }-> set_segment_version( Sgm, Node, Version );
-    Error -> Error
-  end;
-set_segment_version( #sgm{ copies = Copies } = Sgm, Node, Version )->
+set_segment_version( Segment, Node, Version )->
 
   % Set a version for a segment in the schema
   case dlss:transaction(fun()->
     % Set a lock on the segment
-    Segment = dlss_segment:read( dlss_schema, Sgm, write ),
+    Sgm = #sgm{copies = Copies} = lock_segment(Segment),
 
     % Update the copies
     Copies1 = Copies#{ Node=>Version },
@@ -584,17 +579,17 @@ set_segment_version( #sgm{ copies = Copies } = Sgm, Node, Version )->
 %%--------------------------------------------------------------------------------
 %%  Add/Remove segment copies
 %%--------------------------------------------------------------------------------
-add_segment_copy( Segment, Node ) when is_atom(Segment)->
-  case segment_by_name( Segment ) of
-    {ok, Sgm}-> add_segment_copy( Sgm, Node );
-    _-> {error, {invalid_segment, Segment} }
-  end;
-add_segment_copy( Sgm = #sgm{copies = Copies} , Node )->
+%%add_segment_copy( Segment, Node ) when is_atom(Segment)->
+%%  case segment_by_name( Segment ) of
+%%    {ok, Sgm}-> add_segment_copy( Sgm, Node );
+%%    _-> {error, {invalid_segment, Segment} }
+%%  end;
+add_segment_copy( Segment , Node )->
 
   case dlss:transaction(fun()->
     % Set a lock on the segment
-    % Set a lock on the segment
-    Segment = dlss_segment:read( dlss_schema, Sgm, write ),
+    Sgm = #sgm{copies = Copies} = lock_segment(Segment),
+
     case Copies of
       #{Node:=_}->
         % The copy is already added
@@ -611,17 +606,12 @@ add_segment_copy( Sgm = #sgm{copies = Copies} , Node )->
     Error -> ?ERROR( Error )
   end.
 
-remove_segment_copy( Segment, Node ) when is_atom(Segment)->
-  case segment_by_name( Segment ) of
-    {ok, Sgm}-> remove_segment_copy( Sgm, Node );
-    _-> {error, {invalid_segment, Segment} }
-  end;
-remove_segment_copy( Sgm = #sgm{copies = Copies} , Node )->
+remove_segment_copy( Segment , Node )->
 
   case dlss:transaction(fun()->
     % Set a lock on the segment
-    % Set a lock on the segment
-    Segment = dlss_segment:read( dlss_schema, Sgm, write ),
+    Sgm = #sgm{copies = Copies} = lock_segment(Segment),
+
     case Copies of
       #{Node:=_}->
         % Just add a copy to the schema, the actual copying will do the storage supervisor
@@ -1161,6 +1151,21 @@ segment_by_name(Name)->
   case dlss_segment:dirty_select(dlss_schema,MS) of
     [Key]->{ ok, Key };
     _-> { error, not_found }
+  end.
+
+lock_segment( Segment )->
+  case segment_by_name( Segment ) of
+    { ok, Sgm }->
+      case dlss_segment:read( dlss_schema, Sgm, write ) of
+        Segment -> Sgm;
+        _->
+          % We are here probably because master is changing the segment's config
+          % Waiting for master to finish
+          timer:sleep(10),
+          lock_segment( Segment )
+      end;
+    Error ->
+      ?ERROR(Error)
   end.
 
 %----------------------MasterKey API---------------------------
