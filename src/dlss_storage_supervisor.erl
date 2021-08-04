@@ -25,6 +25,10 @@
 -define(SPLIT_SYNC_DELAY, 3000).
 -define(WAIT_LIMIT, 5).
 
+% The encoded @deleted@ value. Actually this is {[],[],'@deleted@'}
+% because mnesia_eleveldb uses this format
+-define(DELETED, <<131,104,3,106,106,100,0,9,64,100,101,108,101,116,101,100,64>>).
+
 -record(state,{ storage, type, cycle }).
 -record(dump,{ version, hash }).
 
@@ -295,7 +299,7 @@ split_segment( Parent, Segment, Type, Hash, IsMasterFun)->
   % Prepare the deleted flag
   Deleted =
     if
-      Type=:=disc -> mnesia_eleveldb:encode_val('@deleted@');
+      Type=:=disc -> ?DELETED;
       true ->'@deleted@'
     end,
 
@@ -464,7 +468,7 @@ merge_segment( Target, Source, FromKey, ToKey0, Type, Hash )->
     if
       Type=:=disc ->
         {
-          mnesia_eleveldb:encode_val('@deleted@'),
+          ?DELETED,
           if
             ToKey0 =:= '$end_of_table'->
               '$end_of_table';
