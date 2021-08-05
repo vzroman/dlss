@@ -369,8 +369,26 @@ wait_for_master()->
   end.
 
 on_mnesia_event({inconsistent_database, Context, Node})->
-  % TODO. Implement network partitioning auto healing algorithm
-  ?LOGERROR("mnesia inconsistent database: context ~p, node - ~p",[Context,Node]);
+  ?LOGERROR("mnesia inconsistent database: context ~p, node - ~p",[Context,Node]),
+
+  OnPartitioning=
+    case ?ENV(on_partitioning,none) of
+      none->
+        ?LOGINFO("use default partitioning algorithm"),
+        fun default_partitioning/1;
+      {Module,Method}->
+        case is_exported(Module,Method) of
+          {ok,ExternalHandler}->
+            ?LOGINFO("use external partitioning algorithm ~p",[{Module,Method}]),
+            ExternalHandler;
+          {error,HandlerError}->
+            ?LOGERROR("invalid on partitioning handler ~p, error ~p",[{Module,Method},HandlerError]),
+            ?LOGINFO("use default partitioning algorithm"),
+            fun default_partitioning/1
+        end
+    end,
+
+  OnPartitioning( Node );
 
 on_mnesia_event({mnesia_down, Node})->
   ?LOGWARNING( "~p node is down", [Node] ),
@@ -424,6 +442,62 @@ table_attributes(#{
   TypeAttr++LocalContent.
 
 
+default_partitioning( Node )->
+  % TODO. Implement network partitioning auto healing algorithm
 
+  % If this node has a smaller name than Node then it reloads all
+  % the shared data from Node
+  ThisNode = node(),
+  NeedRestart=ThisNode > Node,
+
+  if
+    NeedRestart ->
+      % We just drop local copies of all shared with Node segment
+      ?LOGWARNING("The node ~p is selected as the master, drop the local copy of data and reload it...",[Node]),
+
+      ?LOGINFO("reload dlss schema"),
+      ok = dlss_segment:remove_node( dlss_schema, ThisNode ),
+      ok = dlss_segment:remove_node( dlss_schema, ThisNode ),
+
+      ?LOGINFO("drop local copies of shared segments"),
+      [case dlss_storage:segment_params( S ) of
+         {ok, #{local:=false, copies:= #{ ThisNode:=_, Node:=_ } } } ->
+           % This is a shared with Node segment, drop the local copy of it. It will be reloaded by
+           % the storage supervisor
+           % TODO. If the version of the segment hasn't changed we don't need to reload it
+
+           ?LOGWARNING("drop the local copy of ~p",[ S ]),
+           dlss_segment:remove_node( S, Node );
+         _->
+           ignore
+      end || S <- dlss_storage:get_segments()],
+     ok;
+    true ->
+      % This node is the master
+      ?LOGINFO("This node is selected as master, node ~p is expected to reload the shared data"),
+      ok
+  end.
+
+
+is_exported(Module,Method)->
+  case module_exists(Module) of
+    false->{error,invalid_module};
+    true->
+      case erlang:function_exported(Module,Method,1) of
+        false->{error,invalid_function};
+        true->{ok,fun Module:Method/1}
+      end
+  end.
+
+%% Utility for checking if the module is available
+module_exists(Module)->
+  case code:is_loaded(Module) of
+    {file,_}->true;
+    _->
+      case code:load_file(Module) of
+        {module,_}->true;
+        {error,_}->false
+      end
+  end.
 
 
