@@ -296,31 +296,8 @@ pending_transformation( Storage, Type, Node )->
 
 %---------------------SPLIT---------------------------------------------------
 split_segment( Parent, Segment, Type, Hash, IsMasterFun)->
-  % Prepare the deleted flag
-  Deleted =
-    if
-      Type=:=disc -> ?DELETED;
-      true ->'@deleted@'
-    end,
 
-  OnDelete =
-    case dlss_storage:get_children(Segment) of
-      []->
-        % The lower segment has no children, it is safe to delete keys
-        fun(K)->{delete, K} end;
-      _->
-        % There are lower level segments that may contain the Key, we have to mark
-        % the key as deleted to override values from the lower-level segments
-        fun(K)->{put, K, Deleted} end
-    end,
-
-  Copy=
-    fun({K,V})->
-      if
-        V=:=Deleted -> OnDelete(K);
-        true->{ put, K, V }
-      end
-    end,
+  Copy = fun({K,V})-> { put, K, V } end,
 
   {ok, #{ level:= Level}} = dlss_storage:segment_params( Segment ),
   ToSize = segment_level_limit( round(Level) ) *?MB * ?ENV( segment_split_median, ?DEFAULT_SPLIT_MEDIAN ),
@@ -337,10 +314,7 @@ split_segment( Parent, Segment, Type, Hash, IsMasterFun)->
         BatchNum,
         IsMaster
       ]),
-      % We stop splitting when the total size of copied records reaches the half of the limit for the segment.
-      % TODO. ATTENTION!!! If nodes have different settings for segments size limits it will lead to different
-      % final hash for the segment for participating nodes. And the segment is going to be reloaded from the master
-      % each time after splitting
+
       if
         IsMaster == true ->
           if
@@ -482,23 +456,15 @@ merge_segment( Target, Source, FromKey, ToKey0, Type, Hash )->
       }
     end,
 
-  OnDelete =
-    case dlss_storage:get_children( Target ) of
-      []->
-        % The lower segment has no children, it is safe to delete keys
-        fun(K)->{delete, K} end;
-      _->
-        % There are lower level segments that may contain the Key, we have to mark
-        % the key as deleted to override values from the lower-level segments
-        fun(K)->{put, K, Deleted} end
-    end,
-
   Copy=
     fun({K,V})->
       if
-        ToKey =/= '$end_of_table', K > ToKey -> stop;
-        V =:= Deleted -> OnDelete(K);
-        true->{ put, K, V }
+        ToKey =/= '$end_of_table', K > ToKey ->
+          stop;
+        V =:= Deleted ->
+          {delete, K};
+        true->
+          { put, K, V }
       end
     end,
 
@@ -770,9 +736,9 @@ segment_level_limit( Level )->
 level_count_limit( 0 )->
   % There can be only one root segment
   1;
-level_count_limit( Level ) when Level >= 2->
-  % The lowest level can have any number of segments
-  unlimited;
 level_count_limit( _Level )->
-  ?ENV( buffer_level_limit, ?DEFAULT_BUFFER_LIMIT ) .
+  % A storage always has only 2 levels.
+  % We reject using more levels to minimize @deleted@ records
+  % which in case of 2-level storage exist only in the root segment
+  unlimited.
 

@@ -102,10 +102,8 @@ disk_rebalance(_Config)->
   application:set_env([{ dlss, [
     {segment_level_limit,[
       { 0, 1024 },
-      { 1, 1024 },
-      { 2, 1024 }
-    ]},
-    {buffer_level_limit, 2 }
+      { 1, 1024 }
+    ]}
   ]}]),
 
   % new storage
@@ -290,13 +288,11 @@ disk_rebalance(_Config)->
   % Run supervisor
   dlss_storage_supervisor:loop( disk_rebalance, disc, node() ),
   % Purge the dlss_disk_rebalance_1 from the keys moved to dlss_disk_rebalance_5.
-  % The level 1 is overloaded, merge dlss_disk_rebalance_3 to level 2
-  % As level 2 doesn't contain any segments yet dlss_disk_rebalance_3
-  % goes directly to level 2
+
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_4),
-  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_5),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_disk_rebalance_5),
   {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_disk_rebalance_1),
-  {ok, #{ level := 2, key := '_' }} = dlss_storage:segment_params(dlss_disk_rebalance_3),
 
   ok.
 
@@ -307,10 +303,8 @@ ramdisk_rebalance(_Config)->
   application:set_env([{ dlss, [
     {segment_level_limit,[
       { 0, 512 },
-      { 1, 512 },
-      { 2, 512 }
-    ]},
-    {buffer_level_limit, 2 }
+      { 1, 512 }
+    ]}
   ]}]),
 
   % new storage
@@ -496,13 +490,10 @@ ramdisk_rebalance(_Config)->
   % Run supervisor
   dlss_storage_supervisor:loop( ramdisc_rebalance, ramdisc, node() ),
   % Purge the dlss_ramdisc_rebalance_1 from the keys moved to dlss_ramdisc_rebalance_5.
-  % The level 1 is overloaded, merge dlss_ramdisc_rebalance_3 to level 2
-  % As level 2 doesn't contain any segments yet dlss_ramdisc_rebalance_3
-  % goes directly to level 2
   {ok,#{ level := 0, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_4),
-  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_5),
+  {ok, #{ level := 1, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
+  {ok, #{ level := 1, key := SplitKey0 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_5),
   {ok, #{ level := 1, key := SplitKey1 }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_1),
-  {ok, #{ level := 2, key := '_' }} = dlss_storage:segment_params(dlss_ramdisc_rebalance_3),
 
   ok.
 

@@ -23,8 +23,7 @@
 
 -define(DEFAULT_SEGMENT_LIMITS,#{
   0=> 1024,
-  1=> 1024 * 10,
-  2 => 1024 * 100
+  1=> 1024 * 10
 }). % MB
 
 -define(DEFAULT_SPLIT_MEDIAN, 0.55).
