@@ -443,31 +443,56 @@ table_attributes(#{
 
 
 default_partitioning( Node )->
-  % TODO. Implement network partitioning auto healing algorithm
 
   % If this node has a smaller name than Node then it reloads all
   % the shared data from Node
   ThisNode = node(),
-  NeedRestart=ThisNode > Node,
+  NeedsReload=ThisNode > Node,
 
   if
-    NeedRestart ->
+    NeedsReload ->
       % We just drop local copies of all shared with Node segment
       ?LOGWARNING("The node ~p is selected as the master, drop the local copy of data and reload it...",[Node]),
 
+      % Get local versions of the segments
+      Local =
+        maps:from_list([ begin
+            {ok,P} = dlss_storage:segment_params( S ),
+            {S, P}
+          end || S <- dlss_storage:get_segments()]),
+
       ?LOGINFO("reload dlss schema"),
       ok = dlss_segment:remove_node( dlss_schema, ThisNode ),
-      ok = dlss_segment:remove_node( dlss_schema, ThisNode ),
+      ok = dlss_segment:add_node( dlss_schema, ThisNode ),
 
       ?LOGINFO("drop local copies of shared segments"),
       [case dlss_storage:segment_params( S ) of
-         {ok, #{local:=false, copies:= #{ ThisNode:=_, Node:=_ } } } ->
-           % This is a shared with Node segment, drop the local copy of it. It will be reloaded by
-           % the storage supervisor
-           % TODO. If the version of the segment hasn't changed we don't need to reload it
+         {ok, #{local:=false, copies:= #{ ThisNode:=_, Node:=_ }, level := Level } = P } ->
+           % This is a shared with Node segment.
+           IsUpdated=
+             if
+               Level=:=0->
+                 % The root segment is always reloaded
+                 true;
+               true ->
+                 case maps:get( S, Local, none ) of
+                   P->
+                    % The segment hasn't changed
+                    false;
+                   _->
+                     true
+                 end
+             end,
 
-           ?LOGWARNING("drop the local copy of ~p",[ S ]),
-           dlss_segment:remove_node( S, Node );
+           % if the segment has changed we drop the local copy of it that will be reloaded
+           % by the storage supervisor later
+           if
+             IsUpdated ->
+               ?LOGWARNING("drop the local copy of ~p",[ S ]),
+               dlss_segment:remove_node( S, Node );
+             true ->
+               ignore
+           end;
          _->
            ignore
       end || S <- dlss_storage:get_segments()],
