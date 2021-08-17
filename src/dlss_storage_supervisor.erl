@@ -262,14 +262,14 @@ pending_transformation( Storage, Type, Node )->
                   #dump{hash = _H}->_H;
                   _-><<>>
                 end,
-              ?LOGINFO("split: child ~p, parent ~p, init hash ~p",[
-                Segment, Parent, InitHash
+              ?LOGINFO("split: child ~p, parent ~p, init hash ~p, from key ~p",[
+                Segment, Parent, InitHash, dlss_segment:dirty_first( Parent )
               ]),
               IsMasterFun = fun () -> Node==master_node(Copies) end,
               case split_segment( Parent, Segment, Type, InitHash, IsMasterFun) of
                 {ok, #{ hash:= NewHash} }->
-                  ?LOGINFO("split finish: child ~p, parent ~p, new hash ~p",[
-                    Segment, Parent, NewHash
+                  ?LOGINFO("split finish: child ~p, parent ~p, new hash ~p, to key",[
+                    Segment, Parent, NewHash, dlss_segment:dirty_last( Segment )
                   ]),
                   % Update the version of the segment in the schema
                   ok = dlss_storage:set_segment_version( Segment, Node, #dump{hash = NewHash, version = Version }  );
@@ -297,7 +297,23 @@ pending_transformation( Storage, Type, Node )->
 %---------------------SPLIT---------------------------------------------------
 split_segment( Parent, Segment, Type, Hash, IsMasterFun)->
 
-  Copy = fun({K,V})-> { put, K, V } end,
+  % Prepare the deleted flag
+  Deleted =
+    if
+      Type=:=disc -> ?DELETED;
+      true ->'@deleted@'
+    end,
+
+  Copy =
+    fun
+       ({K,V})->
+         case V of
+           Deleted ->
+             ?LOGINFO("DEBUG: split delete key ~p",[K]),
+             ignore;
+           _->{ put, K, V }
+         end
+     end,
 
   {ok, #{ level:= Level}} = dlss_storage:segment_params( Segment ),
   ToSize = segment_level_limit( round(Level) ) *?MB * ?ENV( segment_split_median, ?DEFAULT_SPLIT_MEDIAN ),
@@ -462,6 +478,7 @@ merge_segment( Target, Source, FromKey, ToKey0, Type, Hash )->
         ToKey =/= '$end_of_table', K > ToKey ->
           stop;
         V =:= Deleted ->
+          ?LOGINFO("DEBUG: merge delete key ~p",[K]),
           {delete, K};
         true->
           { put, K, V }
