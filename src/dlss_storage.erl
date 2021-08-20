@@ -372,7 +372,7 @@ split_commit( Segment )->
   Parent = parent_segment( Segment ),
   {ok, Sgm } = segment_by_name( Segment ),
   {ok, Prn } = segment_by_name( Parent ),
-  ?LOGDEBUG("commit split from ~p to ~p",[
+  ?LOGINFO("commit split from ~p to ~p",[
     Parent,Segment
   ]),
   split_commit( Sgm, Prn ).
@@ -386,13 +386,13 @@ split_commit( Sgm, #sgm{lvl = Level }=Prn )->
     Segment = dlss_segment:read( dlss_schema, Sgm, write ),
     Parent = dlss_segment:read( dlss_schema, Prn, write ),
 
-    Last0 = dlss_segment:last( Segment ),
+    Last0 = dlss_segment:dirty_last( Segment ),
     Next0 =
       if
         Last0=:='$end_of_table'->
-          dlss_segment:first( Parent );
+          dlss_segment:dirty_first( Parent );
         true ->
-          dlss_segment:next( Parent, Last0 )
+          dlss_segment:dirty_next( Parent, Last0 )
       end,
     Next =
       if
@@ -408,6 +408,11 @@ split_commit( Sgm, #sgm{lvl = Level }=Prn )->
     % Add the new versions
     ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level }, Segment, write ),
     ok = dlss_segment:write( dlss_schema, Prn#sgm{ key = Next }, Parent, write ),
+
+    ?LOGINFO("split commit: parent ~p, key ~p, child ~p, key ~p",[
+      Parent, Next,
+      Segment, Sgm#sgm.key
+    ]),
 
     ok
   end) of
