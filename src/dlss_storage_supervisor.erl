@@ -309,7 +309,6 @@ split_segment( Parent, Segment, Type, Hash, IsMasterFun)->
        ({K,V})->
          case V of
            Deleted ->
-             ?LOGINFO("DEBUG: split delete key ~p",[K]),
              ignore;
            _->{ put, K, V }
          end
@@ -478,7 +477,6 @@ merge_segment( Target, Source, FromKey, ToKey0, Type, Hash )->
         ToKey =/= '$end_of_table', K > ToKey ->
           stop;
         V =:= Deleted ->
-          ?LOGINFO("DEBUG: merge delete key ~p",[K]),
           {delete, K};
         true->
           { put, K, V }
