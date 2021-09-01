@@ -462,7 +462,7 @@ default_partitioning( Node )->
           end || S <- dlss_storage:get_segments()]),
 
       ?LOGINFO("reload dlss schema"),
-      ok = dlss_segment:remove_node( dlss_schema, ThisNode ),
+      ok = drop_segment( dlss_schema, ThisNode ),
       ok = dlss_segment:add_node( dlss_schema, ThisNode ),
 
       ?LOGINFO("drop local copies of shared segments"),
@@ -489,7 +489,7 @@ default_partitioning( Node )->
            if
              IsUpdated ->
                ?LOGWARNING("drop the local copy of ~p",[ S ]),
-               dlss_segment:remove_node( S, Node );
+               drop_segment(S, ThisNode);
              true ->
                ignore
            end;
@@ -503,6 +503,15 @@ default_partitioning( Node )->
       ok
   end.
 
+drop_segment(Segment, Node)->
+  Active = mnesia:table_info(Segment, active_replicas),
+  case Active -- [Node] of
+    [_|_]->
+      dlss_segment:remove_node( dlss_schema, Node );
+    _->
+      timer:sleep(1000),
+      drop_segment( Segment, Node )
+  end.
 
 is_exported(Module,Method)->
   case module_exists(Module) of
