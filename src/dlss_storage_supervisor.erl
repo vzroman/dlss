@@ -268,7 +268,7 @@ pending_transformation( Storage, Type, Node )->
               IsMasterFun = fun () -> Node==master_node(Copies) end,
               case split_segment( Parent, Segment, Type, InitHash, IsMasterFun) of
                 {ok, #{ hash:= NewHash} }->
-                  ?LOGINFO("split finish: child ~p, parent ~p, new hash ~p, to key",[
+                  ?LOGINFO("split finish: child ~p, parent ~p, new hash ~p, to key ~p",[
                     Segment, Parent, NewHash, dlss_segment:dirty_last( Segment )
                   ]),
                   % Update the version of the segment in the schema
