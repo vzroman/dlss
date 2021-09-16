@@ -138,6 +138,8 @@ init([])->
   % Subscribe to mnesia events
   mnesia:subscribe( system ),
 
+  timer:send_after(Cycle,on_cycle),
+
   {ok,#state{cycle = Cycle}}.
 
 handle_call(Request, From, State) ->
@@ -159,6 +161,17 @@ handle_info({mnesia_system_event,{mnesia_fatal,Format,Args,_BinaryCore}},_State)
 
 handle_info({mnesia_system_event,Event},State) ->
   on_mnesia_event( Event ),
+  {noreply,State};
+
+handle_info(on_cycle, #state{cycle = Cycle} = State)->
+  timer:send_after( Cycle, on_cycle ),
+
+  Ready = dlss:get_ready_nodes(),
+  Running = mnesia:system_info(running_db_nodes),
+
+  [ dlss_node:set_status(N,down) ||  N <- Ready -- Running ],
+  [ dlss_node:set_status(N,ready) ||  N <- Running -- Ready ],
+
   {noreply,State};
 
 handle_info(Message,State)->
