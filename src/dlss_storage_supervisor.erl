@@ -526,7 +526,7 @@ master_commit( split, Segment, Master, #{version := Version,copies:=Copies})->
           dlss_storage:split_commit( Segment );
         Nodes->
           % There are still nodes that are not confirmed the hash yet
-          ?LOGINFO("~p splitting is not finished yet, waiting for ~p",[Segment, Nodes]),
+          ?LOGDEBUG("~p splitting is not finished yet, waiting for ~p",[Segment, Nodes]),
           ok
       end;
     _->
