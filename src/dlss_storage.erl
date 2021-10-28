@@ -386,37 +386,74 @@ split_commit( Sgm, #sgm{lvl = Level }=Prn )->
     Segment = dlss_segment:read( dlss_schema, Sgm, write ),
     Parent = dlss_segment:read( dlss_schema, Prn, write ),
 
-    Last0 = dlss_segment:dirty_last( Segment ),
-    Next0 =
-      if
-        Last0=:='$end_of_table'->
-          dlss_segment:dirty_first( Parent );
-        true ->
-          dlss_segment:dirty_next( Parent, Last0 )
-      end,
-    Next =
-      if
-        Next0 =:='$end_of_table' ->'_';
-        true -> { Next0 }
-      end,
+    case dlss_segment:dirty_last( Segment ) of
+      '$end_of_table'->
 
-    % Remove old versions
-    ok = dlss_segment:delete(dlss_schema, Sgm , write ),
-    ok = dlss_segment:delete(dlss_schema, Prn , write ),
+        % If the child is empty then the parent has only '@deleted@' records
+        % Neither parent nor child are actually needed
+
+        ?LOGWARNING("split commit: empty child segment, remove both parent ~p and child ~p",[
+          Parent, Segment
+        ]),
+        ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+        ok = dlss_segment:delete(dlss_schema, Prn , write ),
+        [Parent, Segment];
+      Last ->
+
+        case dlss_segment:dirty_next( Parent, Last ) of
+          '$end_of_table' ->
+
+            % If the parent has no more keys then all not '@deleted@' are in the child now
+            % the parent is no longer needed
+
+            ?LOGWARNING("split commit: empty parent segment, remove parent ~p ",[
+              Parent
+            ]),
+
+            ok = dlss_segment:delete(dlss_schema, Prn , write ),
+
+            % Remove old version of the child
+            ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+            % Add new version of the child
+            ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level }, Segment, write ),
+
+            [ Parent ];
+          Next ->
+
+            % The Next is the key on which the parent is split
+            ?LOGINFO("split commit: parent ~p, key ~p, child ~p, key ~p",[
+              Parent, Next,
+              Segment, Sgm#sgm.key
+            ]),
+
+            % Remove old versions
+            ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+            ok = dlss_segment:delete(dlss_schema, Prn , write ),
 
 
-    % Add the new versions
-    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level }, Segment, write ),
-    ok = dlss_segment:write( dlss_schema, Prn#sgm{ key = Next }, Parent, write ),
+            % Add the new versions
+            ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level }, Segment, write ),
+            ok = dlss_segment:write( dlss_schema, Prn#sgm{ key = { Next } }, Parent, write ),
 
-    ?LOGINFO("split commit: parent ~p, key ~p, child ~p, key ~p",[
-      Parent, Next,
-      Segment, Sgm#sgm.key
-    ]),
-
-    ok
+            ok
+        end
+    end
   end) of
-    {ok,ok} -> ok;
+    {ok, ok} ->
+      ok;
+    {ok, ToRemove}->
+      [ begin
+        ?LOGWARNING("removing empty segment ~p",[ S ]),
+        case dlss_backend:delete_segment( S ) of
+          ok->ok;
+          {error,Error}->
+            ?LOGERROR("unable to remove empty segment ~p, reason ~p",[
+              S,
+              Error
+            ])
+        end
+      end || S <- ToRemove ],
+      ok;
     Error -> ?ERROR( Error )
   end.
 

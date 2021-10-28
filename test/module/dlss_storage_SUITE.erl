@@ -177,12 +177,7 @@ get_key_segments(_Config)->
   % The newborn segment is filled with its keys, move it to the level of the parent
   dlss_storage:split_commit( dlss_storage1_3 ),
 
-  MS=[{
-    #kv{key = '$1', value = '$2'},
-    [],
-    ['$1','$2']
-  }],
-  ?LOGDEBUG("after split commit ~p",[dlss_segment:dirty_select(dlss_schema,MS)]),
+  ?LOGDEBUG("after split commit ~p",[ [{S, dlss_storage:segment_params(S)} || S <- dlss_storage:get_segments(storage1)]]),
 
   % Now it stands before its previous parent
   [
