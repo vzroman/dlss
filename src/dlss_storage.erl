@@ -625,7 +625,14 @@ add_segment_copy( Segment , Node )->
 
   case dlss:transaction(fun()->
     % Set a lock on the segment
-    Sgm = #sgm{copies = Copies} = lock_segment(Segment),
+    Sgm = #sgm{copies = Copies, lvl = Lvl} = lock_segment(Segment),
+
+    if
+      Lvl =/= round( Lvl )->
+        exit( under_transformation );
+      true ->
+        ok
+    end,
 
     case Copies of
       #{Node:=_}->
@@ -647,7 +654,14 @@ remove_segment_copy( Segment , Node )->
 
   case dlss:transaction(fun()->
     % Set a lock on the segment
-    Sgm = #sgm{copies = Copies} = lock_segment(Segment),
+    Sgm = #sgm{copies = Copies, lvl = Lvl} = lock_segment(Segment),
+
+    if
+      Lvl =/= round( Lvl )->
+        exit( under_transformation );
+      true ->
+        ok
+    end,
 
     case Copies of
       #{Node:=_}->
