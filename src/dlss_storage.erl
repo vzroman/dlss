@@ -356,9 +356,10 @@ new_root_segment( Storage ) ->
     ok
 
   end) of
-    {ok,ok} ->
+    {ok, ok} ->
       % All the segments lower level 0 are read only
-      dlss_segment:set_access_mode( Root, read_only );
+      % dlss_segment:set_access_mode( Root, read_only );
+      ok;
     SchemaError ->
       case dlss_backend:delete_segment( NewRoot ) of
         ok->ok;
