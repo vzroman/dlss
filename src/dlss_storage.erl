@@ -1108,12 +1108,34 @@ dirty_range_select(Storage, StartKey, EndKey, Limit) ->
     length( Merged ) =:= length( Filtered )->
       % There are no deleted records in the result, therefore it is the maximum that we can find
       Filtered;
+    length( Filtered ) =:= 0->
+      % There are only deleted entries found, keep searching from the next valid key
+      NextKey =
+        if
+          StartKey =:= '$start_of_table'->
+            dirty_first( Storage );
+          true->
+            dirty_next( Storage, StartKey )
+        end,
+      if
+        NextKey =:= '$end_of_table' ->
+          % There are no keys after StartKey
+          [];
+        EndKey =:= '$end_of_table'; NextKey =< EndKey->
+          % Keep searching from the next existing key
+          dirty_range_select( Storage, NextKey, EndKey, Limit );
+        true->
+          % There are no key between StartKey and EndKey
+          []
+      end;
     true ->
       % If we are here then there were deleted records in the result that prevented us
       % from getting the full result, we need to keep searching.
       % Continue from the last key in the full result
-      { Head, [ { LastKey,_} ] } = lists:split( length( Filtered )-1, Filtered ),
+
+      { Head, [ { LastKey,_} ]} = lists:split( length( Filtered )-1, Filtered ),
       Head ++ lists:sublist( dirty_range_select( Storage, LastKey, EndKey, Limit ), Limit - length(Head) )
+
   end.
 
 find_head_segments( Storage, Key )->
