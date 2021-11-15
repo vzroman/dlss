@@ -476,11 +476,11 @@ storage_next(_Config)->
     end || V <- lists:seq(1, Count, 2) ],
 
   % check keys
-  {x,1} = dlss_storage:dirty_next(storage1,{x,0}),
+  {x,2} = dlss_storage:dirty_next(storage1,{x,0}),
   {x,2} = dlss_storage:dirty_next(storage1,{x,1}),
-  {x,21} = dlss_storage:dirty_next(storage1,{x,20}),
-  {x,10001} = dlss_storage:dirty_next(storage1,{x,10000}),
-  {x,10021} = dlss_storage:dirty_next(storage1,{x,10020}),
+  {x,22} = dlss_storage:dirty_next(storage1,{x,20}),
+  {x,10002} = dlss_storage:dirty_next(storage1,{x,10000}),
+  {x,10022} = dlss_storage:dirty_next(storage1,{x,10020}),
   '$end_of_table' = dlss_storage:dirty_next(storage1,{x,20000}),
 
   % safe check keys
@@ -629,8 +629,8 @@ storage_prev(_Config)->
 
   % check keys
   '$end_of_table' = dlss_storage:dirty_prev(storage1,{x,1}),
-  {x,1} = dlss_storage:dirty_prev(storage1,{x,2}),
-  {x,19} = dlss_storage:dirty_prev(storage1,{x,20}),
+  '$end_of_table' = dlss_storage:dirty_prev(storage1,{x,2}),
+  {x,18} = dlss_storage:dirty_prev(storage1,{x,20}),
   {x,10000} = dlss_storage:dirty_prev(storage1,{x,10001}),
   {x,10020} = dlss_storage:dirty_prev(storage1,{x,10021}),
   {x,20000} = dlss_storage:dirty_prev(storage1,{x,20001}),
@@ -672,7 +672,7 @@ storage_prev(_Config)->
   {x,21} = dlss_storage:dirty_prev(storage1,{x,22}),
   {x,10000} = dlss_storage:dirty_prev(storage1,{x,10001}),
   {x,10021} = dlss_storage:dirty_prev(storage1,{x,10022}),
-  {x,19999} = dlss_storage:dirty_prev(storage1,{x,20000}),
+  {x,19998} = dlss_storage:dirty_prev(storage1,{x,20000}),
 
   % safe check keys
   {ok,_}  =  dlss:transaction(fun()->
@@ -761,7 +761,7 @@ storage_first(_Config)->
     end || V <- lists:seq(1, Count, 2) ],
 
   % check keys
-  {x,1} = dlss_storage:dirty_first(storage1),
+  {x,2} = dlss_storage:dirty_first(storage1),
 
   % safe check keys
   {ok,_}  =  dlss:transaction(fun()->
@@ -801,7 +801,7 @@ storage_first(_Config)->
     end || V <- lists:seq(1, Count) ],
 
   % check keys
-  {x,1} = dlss_storage:dirty_first(storage1),
+  '$end_of_table' = dlss_storage:dirty_first(storage1),
 
   % safe check keys
   {ok,_}  =  dlss:transaction(fun()->
@@ -881,7 +881,7 @@ storage_last(_Config)->
   dlss:dirty_delete(storage1, {x, Count}),
 
   % check keys
-  {x,Count} = dlss_storage:dirty_last(storage1),
+  {x,19999} = dlss_storage:dirty_last(storage1),
 
   % safe check keys
   {ok,_}  =  dlss:transaction(fun()->
@@ -918,7 +918,7 @@ storage_last(_Config)->
     end || V <- lists:seq(1, Count) ],
 
   % check keys
-  {x,Count} = dlss_storage:dirty_last(storage1),
+  '$end_of_table' = dlss_storage:dirty_last(storage1),
 
   % safe check keys
   {ok,_}  =  dlss:transaction(fun()->
