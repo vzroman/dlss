@@ -171,6 +171,9 @@ loop( Storage, Type, Node )->
   % Synchronize actual copies configuration to the schema settings
   sync_copies( Storage, Node ),
 
+  % Set read_only mode for low-level segments
+  set_read_only_mode(Storage, Node),
+
   % Perform waiting transformations
   case pending_transformation( Storage, Type, Node ) of
     { Operation, Segment } ->
@@ -229,6 +232,37 @@ sync_copies( Storage, Node )->
             ok
         end
     end || S <- dlss_storage:get_segments(Storage) ],
+  ok.
+
+set_read_only_mode(Storage, Node)->
+  Root = dlss_storage:root_segment(Storage),
+
+  [ case dlss_segment:get_info( S ) of
+      #{ local := true }->
+        % Local only storage types are not synchronized between nodes
+        ok;
+      _->
+        {ok, #{copies := Copies} } = dlss_storage:segment_params(S),
+
+        case master_node( Copies ) of
+          Node->
+            % The node is the master for the segment
+            case dlss_segment:get_access_mode(S) of
+              read_write ->
+                ?LOGINFO("set read_only mode for ~p",[S]),
+                case dlss_segment:set_access_mode(S, read_only) of
+                  ok -> ok;
+                  {error, Error}->
+                    ?LOGWARNING("unable to set read_only for ~p, error ~p",[S,Error])
+                end;
+              _ ->
+                ignore
+            end;
+          _->
+            % The node is not the master of the segment
+            ignore
+        end
+    end || S <- dlss_storage:get_segments(Storage), S =/= Root ],
   ok.
 
 %%============================================================================

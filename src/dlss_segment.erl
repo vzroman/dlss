@@ -54,6 +54,7 @@
   add_node/2,
   remove_node/2,
   get_size/1,
+  get_access_mode/1,
   set_access_mode/2
 ]).
 
@@ -279,7 +280,7 @@ create(Name,#{nodes := Nodes0} = Params0)->
   end.
 
 remove(Name)->
-  case dlss_segment:set_access_mode( Name, read_write ) of
+  case set_access_mode( Name, read_write ) of
     ok ->
       case mnesia:delete_table(Name) of
         {atomic,ok}->ok;
@@ -359,6 +360,9 @@ get_size(Segment)->
       % for ram and ramdisc tables the mnesia returns a number of allocated words
       erlang:system_info(wordsize) * Memory
   end.
+
+get_access_mode( Segment )->
+  mnesia:table_info( Segment, access_mode ).
 
 set_access_mode( Segment , Mode )->
   case mnesia:change_table_access_mode(Segment, Mode) of
