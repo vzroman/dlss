@@ -141,6 +141,8 @@ handle_info({mnesia_system_event,Event},State) ->
 handle_info(on_cycle, #state{cycle = Cycle} = State)->
   timer:send_after( Cycle, on_cycle ),
 
+  purge_stale_segments(),
+
   Ready = dlss:get_ready_nodes(),
   Running = mnesia:system_info(running_db_nodes),
 
@@ -471,6 +473,34 @@ drop_segment(Segment, Node)->
       timer:sleep(1000),
       drop_segment( Segment, Node )
   end.
+
+purge_stale_segments( )->
+
+  Node = node(),
+
+  [case dlss_storage:segment_params( T ) of
+     { error, not_found } ->
+       % The segment does not belong to the schema
+       case dlss_segment:get_info(T) of
+         #{ nodes := [Node|_] } ->
+           % This is the master node for the segment
+           ?LOGINFO("removing stale segment ~p",[T]),
+           case dlss_segment:remove( T ) of
+             ok ->
+               ?LOGINFO("segment ~p was removed succesfully",[T]);
+             {error, Error}->
+               ?LOGWARNING("unable to remove stale segment ~p, error ~p",[ T, Error ])
+           end;
+         _ ->
+           % This node is not the master for the segment, the master will delete it
+           ignore
+       end;
+     _ ->
+       % The segment does not belong to the storage
+       ignore
+   end || T <- dlss_segment:get_local_segments() ],
+
+  ok.
 
 is_exported(Module,Method)->
   case module_exists(Module) of
