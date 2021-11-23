@@ -333,7 +333,7 @@ ets2dcd({Recs, Cont}, Tab, Log) ->
 % dlss_rebalance:dump_test(test1,ramdisc)
 dump_test(Table,Type)->
 
-  dlss_backend:create_segment(Table,#{
+  dlss_segment:create(Table,#{
     type => Type,
     nodes => [node()],
     local => false

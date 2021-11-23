@@ -167,6 +167,13 @@ code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
 
 loop( Storage, Type, Node )->
+
+  % Purge no storage segments
+  purge_no_storage_segments( Node ),
+
+  % purge segments that are removed from the schema
+  purge_stale_segments( Storage, Node ),
+
   % Synchronize actual copies configuration to the schema settings
   sync_copies( Storage, Node ),
 
@@ -185,6 +192,95 @@ loop( Storage, Type, Node )->
       % No active transformations, check limits
       check_limits( Storage, Node )
   end.
+
+%%============================================================================
+%%  Remove storage segments that are not in the schema now
+%%============================================================================
+purge_no_storage_segments( Node )->
+
+  Storages =
+    [ atom_to_binary(S, utf8) || S <- dlss:get_storages() ],
+
+  [case atom_to_binary(T, utf8) of
+     <<"dlss_schema">> ->
+       ignore;
+     <<"dlss_",Tail/binary>> ->
+       Belongs =
+         [ begin
+             L = size(S),
+             case Tail of
+               <<S:L/binary, _/binary>> ->
+                 true;
+               _->
+                 false
+             end
+           end || S <- Storages ],
+       case [ true || true <- Belongs ] of
+         [] ->
+           % The segment does not belong to any storage
+           case dlss_segment:get_info( T ) of
+             #{ nodes := [Node|_] } ->
+               % This is the master node for the segment
+               ?LOGINFO("removing no storage segment ~p",[T]),
+               case dlss_segment:remove( T ) of
+                 ok ->
+                   ?LOGINFO("segment ~p was removed succesfully",[T]);
+                 {error, Error}->
+                   ?LOGWARNING("unable to remove no storage segment ~p, error ~p",[ T, Error ])
+               end;
+             _ ->
+               % This node is not the master for the segment, the master will delete it
+               ignore
+           end;
+         _ ->
+           % The segment belongs to some storage
+           ignore
+       end;
+     _Other ->
+       ignore
+  end || T <- dlss_segment:get_local_segments() ],
+
+  ok.
+
+
+purge_stale_segments( Storage, Node )->
+
+  Prefix = <<"dlss_",(atom_to_binary(Storage, utf8))/binary>>,
+  L = size(Prefix),
+
+  Segments = dlss_storage:get_segments( Storage ),
+
+  [case atom_to_binary(T, utf8) of
+     <<Prefix:L/binary,_/binary>> ->
+       case lists:member(T, Segments ) of
+         true ->
+           % The segment is not stale (it's in the schema)
+           ignore;
+         false->
+           % The segment is not in the schema any more, it needs to be deleted
+           case dlss_segment:get_info(T) of
+             #{ nodes := [Node|_] } ->
+               % This is the master node for the segment
+               ?LOGINFO("removing stale segment ~p",[T]),
+               case dlss_segment:remove( T ) of
+                 ok ->
+                   ?LOGINFO("segment ~p was removed succesfully",[T]);
+                 {error, Error}->
+                   ?LOGWARNING("unable to remove stale segment ~p, error ~p",[ T, Error ])
+               end;
+             _ ->
+               % This node is not the master for the segment, the master will delete it
+               ignore
+           end
+       end;
+     _ ->
+       % The segment does not belong to the storage
+       ignore
+   end || T <- dlss_segment:get_local_segments() ],
+
+  ok.
+
+
 
 %%============================================================================
 %% Obtain/Remove copies of segments of a Storage to the Node

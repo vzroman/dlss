@@ -46,7 +46,10 @@
 %%	SERVICE API
 %%=================================================================
 -export([
+  create/2,
+  remove/1,
   get_info/1,
+  get_local_segments/0,
   is_empty/1,
   add_node/2,
   remove_node/2,
@@ -249,6 +252,43 @@ dirty_delete(Segment,Key)->
 %%=================================================================
 %%	Service API
 %%=================================================================
+create(Name,#{nodes := Nodes0} = Params0)->
+  % The segment can be created only on ready nodes. The nodes that are
+  % not active now will add it later by storage supervisor
+  ReadyNodes = dlss:get_ready_nodes(),
+  Nodes = ordsets:from_list(Nodes0), ordsets:from_list(ReadyNodes),
+
+  if
+    length(Nodes) > 0 ->
+      Params = Params0#{
+        nodes => Nodes
+      },
+
+      Attributes = table_attributes(Params),
+      case mnesia:create_table(Name,[
+        {attributes,record_info(fields,kv)},
+        {record_name,kv},
+        {type,ordered_set}|
+        Attributes
+      ]) of
+        {atomic, ok } -> ok;
+        {aborted, Reason } -> {error, Reason}
+      end;
+    true ->
+      { error, none_of_the_nodes_is_ready }
+  end.
+
+remove(Name)->
+  case dlss_segment:set_access_mode( Name, read_write ) of
+    ok ->
+      case mnesia:delete_table(Name) of
+        {atomic,ok}->ok;
+        {aborted,Reason}-> {error, Reason }
+      end;
+    SetModeError ->
+      SetModeError
+  end.
+
 get_info(Segment)->
   Local = mnesia:table_info(Segment,local_content),
   { Type, Nodes }=get_nodes(Segment),
@@ -258,6 +298,9 @@ get_info(Segment)->
     nodes => Nodes
   }.
 
+get_local_segments()->
+  mnesia:system_info( local_tables ).
+
 is_empty(Segment)->
   case dirty_first(Segment) of
     '$end_of_table'->true;
@@ -265,6 +308,20 @@ is_empty(Segment)->
   end.
 
 add_node(Segment,Node)->
+  add_node(Segment, Node, mnesia:table_info(Segment, access_mode)).
+add_node(Segment, Node, read_only)->
+  % There is a bug in mnesia with adding copies of read_only tables.
+  % Mnesia tries to set lock on the table, for that it takes
+  % where_to_wlock nodes but for read_only tables this list is empty
+  % and mnesia throws a error { no_exists, Tab }.
+  case set_access_mode( Segment, read_write ) of
+    ok ->
+      RemoveResult = add_node(Segment, Node, read_write ),
+      set_access_mode( Segment, read_only ),
+      RemoveResult;
+    AccessError -> AccessError
+  end;
+add_node(Segment,Node, _AccessMode)->
   #{ type:=Type } = get_info(Segment),
   MnesiaType =
     if
@@ -328,3 +385,28 @@ get_nodes(Segment)->
     _->throw(invalid_storage_type)
   end.
 
+table_attributes(#{
+  type:=Type,
+  nodes:=Nodes,
+  local:=IsLocal
+})->
+  TypeAttr=
+    case Type of
+      ram->[
+        {disc_copies,[]},
+        {ram_copies,Nodes}
+      ];
+      ramdisc->[
+        {disc_copies,Nodes},
+        {ram_copies,[]}
+      ];
+      disc->
+        [{leveldb_copies,Nodes}]
+    end,
+
+  LocalContent=
+    if
+      IsLocal->[{local_content,true}];
+      true->[]
+    end,
+  TypeAttr++LocalContent.

@@ -30,8 +30,6 @@
   add_node/1,
   remove_node/1,
   get_nodes/0,
-  create_segment/2,
-  delete_segment/1,
   transaction/1,sync_transaction/1,
   lock/2
 ]).
@@ -81,29 +79,6 @@ remove_node(Node)->
 
 get_nodes()->
   mnesia:system_info(db_nodes).
-
-create_segment(Name,Params)->
-  Attributes = table_attributes(Params),
-  case mnesia:create_table(Name,[
-    {attributes,record_info(fields,kv)},
-    {record_name,kv},
-    {type,ordered_set}|
-    Attributes
-  ]) of
-    {atomic, ok } -> ok;
-    {aborted, Reason } -> {error, Reason}
-  end.
-
-delete_segment(Name)->
-  case dlss_segment:set_access_mode( Name, read_write ) of
-    ok ->
-      case mnesia:delete_table(Name) of
-        {atomic,ok}->ok;
-        {aborted,Reason}-> {error, Reason }
-      end;
-    SetModeError ->
-      SetModeError
-  end.
 
 transaction(Fun)->
   % We use the mnesia engine to deliver the true distributed ACID transactions
@@ -425,35 +400,6 @@ on_mnesia_event({mnesia_info,Format,Args})->
 
 on_mnesia_event(Other)->
   ?LOGINFO("mnesia event: ~p",[Other]).
-
-
-
-table_attributes(#{
-  type:=Type,
-  nodes:=Nodes,
-  local:=IsLocal
-})->
-  TypeAttr=
-    case Type of
-      ram->[
-        {disc_copies,[]},
-        {ram_copies,Nodes}
-      ];
-      ramdisc->[
-        {disc_copies,Nodes},
-        {ram_copies,[]}
-      ];
-      disc->
-        [{leveldb_copies,Nodes}]
-    end,
-
-  LocalContent=
-    if
-      IsLocal->[{local_content,true}];
-      true->[]
-    end,
-  TypeAttr++LocalContent.
-
 
 default_partitioning( Node )->
 

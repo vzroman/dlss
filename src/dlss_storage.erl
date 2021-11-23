@@ -190,7 +190,7 @@ add(Name,Type,Options)->
     Root,
     Params
   ]),
-  case dlss_backend:create_segment(Root,Params) of
+  case dlss_segment:create(Root,Params) of
     ok -> ok;
     { error , Error }->
       ?LOGERROR("unable to create a root segment ~p of type ~p with params ~p for storage ~p, error ~p",[
@@ -209,7 +209,6 @@ add(Name,Type,Options)->
 
 remove(Name)->
   ?LOGWARNING("removing storage ~p",[Name]),
-  Segments = get_segments( Name ),
   case dlss:transaction(fun()->
     % Set a lock on the schema
     dlss_backend:lock({table,dlss_schema},write),
@@ -219,15 +218,6 @@ remove(Name)->
     reset_id(Name)
   end) of
     {ok,_} ->
-      [case dlss_backend:delete_segment(S) of
-         ok -> ok;
-         { error, Error } ->
-           ?LOGERROR("backend error on removing segment ~p storage ~p, error ~p",[
-             S,
-             Name,
-             Error
-           ])
-       end|| S<-Segments],
       ?LOGINFO("storage ~p removed",[Name]),
       ok;
     {error,Error} ->
@@ -241,7 +231,6 @@ remove(Name)->
 remove(Storage,#sgm{str=Storage}=Sgm)->
   Table=dlss_segment:dirty_read(dlss_schema,Sgm),
   ?LOGWARNING("removing segment ~p storage ~p",[Table,Storage]),
-  ok=dlss_segment:delete(dlss_schema,Sgm,write),
   remove(Storage,dlss_segment:dirty_next(dlss_schema,Sgm));
 remove(_Storage,_Sgm)->
   % '$end_of_table'
@@ -272,7 +261,7 @@ split_segment( Storage, Segment )->
   ]),
 
   %% Creating a new table for the new segment
-  case dlss_backend:create_segment(NewSegment, Params) of
+  case dlss_segment:create(NewSegment, Params) of
     ok -> ok;
     { error, CreateError }->
       ?LOGERROR("unable to create a new split segment ~p with params ~p for storage ~p, error ~p",[
@@ -301,11 +290,6 @@ split_segment( Storage, Segment )->
     {ok,ok}->
       ok;
     SchemaError->
-      case dlss_backend:delete_segment( NewSegment ) of
-        ok->ok;
-        RemoveError->
-          ?LOGERROR("unable to remove ~p segment, error ~p",[ NewSegment, RemoveError ])
-      end,
       ?ERROR( SchemaError )
   end.
 
@@ -324,7 +308,7 @@ new_root_segment( Storage ) ->
   ]),
 
   %% Creating a new table for New Root
-  case dlss_backend:create_segment(NewRoot,Params) of
+  case dlss_segment:create(NewRoot,Params) of
     ok -> ok;
     { error, CreateError }->
       ?LOGERROR("unable to create a new root segment ~p with params ~p for storage ~p, error ~p",[
@@ -361,11 +345,6 @@ new_root_segment( Storage ) ->
       % dlss_segment:set_access_mode( Root, read_only );
       ok;
     SchemaError ->
-      case dlss_backend:delete_segment( NewRoot ) of
-        ok->ok;
-        RemoveError->
-          ?LOGERROR("unable to remove ~p segment, error ~p",[ NewRoot, RemoveError ])
-      end,
       ?ERROR( SchemaError )
   end.
 
@@ -397,8 +376,7 @@ split_commit( Sgm, #sgm{lvl = Level }=Prn )->
           Parent, Segment
         ]),
         ok = dlss_segment:delete(dlss_schema, Sgm , write ),
-        ok = dlss_segment:delete(dlss_schema, Prn , write ),
-        [Parent, Segment];
+        ok = dlss_segment:delete(dlss_schema, Prn , write );
       Last ->
 
         case dlss_segment:dirty_next( Parent, Last ) of
@@ -416,9 +394,7 @@ split_commit( Sgm, #sgm{lvl = Level }=Prn )->
             % Remove old version of the child
             ok = dlss_segment:delete(dlss_schema, Sgm , write ),
             % Add new version of the child
-            ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level }, Segment, write ),
-
-            [ Parent ];
+            ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level }, Segment, write );
           Next ->
 
             % The Next is the key on which the parent is split
@@ -434,26 +410,14 @@ split_commit( Sgm, #sgm{lvl = Level }=Prn )->
 
             % Add the new versions
             ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level }, Segment, write ),
-            ok = dlss_segment:write( dlss_schema, Prn#sgm{ key = { Next } }, Parent, write ),
-
-            ok
+            ok = dlss_segment:write( dlss_schema, Prn#sgm{ key = { Next } }, Parent, write )
         end
-    end
+    end,
+
+    % Transaction end
+    ok
   end) of
     {ok, ok} ->
-      ok;
-    {ok, ToRemove}->
-      [ begin
-        ?LOGWARNING("removing empty segment ~p",[ S ]),
-        case dlss_backend:delete_segment( S ) of
-          ok->ok;
-          {error,Error}->
-            ?LOGERROR("unable to remove empty segment ~p, reason ~p",[
-              S,
-              Error
-            ])
-        end
-      end || S <- ToRemove ],
       ok;
     Error -> ?ERROR( Error )
   end.
@@ -577,15 +541,7 @@ merge_commit( Segment )->
     ok
   end) of
     {ok, ok } ->
-      ?LOGINFO("removing merged segment ~p",[ Segment ]),
-      case dlss_backend:delete_segment( Segment ) of
-        ok->ok;
-        {error,Error}->
-          ?LOGERROR("unable to remove segment ~p, reason ~p",[
-            Segment,
-            Error
-          ])
-      end;
+      ok;
     {error, Error} ->
       ?LOGERROR("error on merge commit ~p, error ~p",[
         Segment,
