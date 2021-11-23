@@ -310,17 +310,9 @@ is_empty(Segment)->
 add_node(Segment,Node)->
   add_node(Segment, Node, mnesia:table_info(Segment, access_mode)).
 add_node(Segment, Node, read_only)->
-  % There is a bug in mnesia with adding copies of read_only tables.
-  % Mnesia tries to set lock on the table, for that it takes
-  % where_to_wlock nodes but for read_only tables this list is empty
-  % and mnesia throws a error { no_exists, Tab }.
-  case set_access_mode( Segment, read_write ) of
-    ok ->
-      RemoveResult = add_node(Segment, Node, read_write ),
-      set_access_mode( Segment, read_only ),
-      RemoveResult;
-    AccessError -> AccessError
-  end;
+  in_read_write_mode(Segment, fun()->
+    add_node(Segment, Node, read_write )
+  end);
 add_node(Segment,Node, _AccessMode)->
   #{ type:=Type } = get_info(Segment),
   MnesiaType =
@@ -337,23 +329,27 @@ add_node(Segment,Node, _AccessMode)->
 remove_node(Segment,Node)->
   remove_node(Segment, Node, mnesia:table_info(Segment, access_mode)).
 remove_node(Segment, Node, read_only)->
-  % There is a bug in mnesia with removing copies of read_only tables.
-  % Mnesia tries to set lock on the table, for that it takes
-  % where_to_wlock nodes but for read_only tables this list is empty
-  % and mnesia throws a error { no_exists, Tab }.
-  case set_access_mode( Segment, read_write ) of
-    ok ->
-      RemoveResult = remove_node(Segment, Node, read_write ),
-      set_access_mode( Segment, read_only ),
-      RemoveResult;
-    AccessError -> AccessError
-  end;
+  in_read_write_mode(Segment, fun()->
+    remove_node(Segment, Node, read_write )
+  end);
 remove_node(Segment, Node, _AccessMode)->
   case mnesia:del_table_copy(Segment,Node) of
     {atomic,ok}->ok;
     {aborted,Reason}->{error,Reason}
   end.
 
+in_read_write_mode(Segment,Fun)->
+  % There is a bug in mnesia with adding/removing copies of read_only tables.
+  % Mnesia tries to set lock on the table, for that it takes
+  % where_to_wlock nodes but for read_only tables this list is empty
+  % and mnesia throws a error { no_exists, Tab }.
+  case set_access_mode( Segment, read_write ) of
+    ok ->
+      Result = Fun(),
+      set_access_mode( Segment, read_only ),
+      Result;
+    AccessError -> AccessError
+  end.
 %----------Calculate the size (bytes) occupied by the segment-------
 get_size(Segment)->
   Memory = mnesia:table_info(Segment,memory),
