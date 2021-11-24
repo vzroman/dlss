@@ -53,9 +53,11 @@
 -define(WAIT_SCHEMA_TIMEOUT,24*3600*1000). % 1 day
 -define(ATTACH_TIMEOUT,600000). %10 min.
 -define(DEFAULT_MASTER_CYCLE, 1000).
+-define(SEGMENT_REMOVE_DELAY, 5 * 60000). % 5 minutes
 
 -record(state,{
-  cycle
+  cycle,
+  to_delete
 }).
 
 %%=================================================================
@@ -115,7 +117,7 @@ init([])->
 
   timer:send_after(Cycle,on_cycle),
 
-  {ok,#state{cycle = Cycle}}.
+  {ok,#state{cycle = Cycle, to_delete = #{}}}.
 
 handle_call(Request, From, State) ->
   ?LOGWARNING("backend got an unexpected call resquest ~p from ~p",[Request,From]),
@@ -138,10 +140,10 @@ handle_info({mnesia_system_event,Event},State) ->
   on_mnesia_event( Event ),
   {noreply,State};
 
-handle_info(on_cycle, #state{cycle = Cycle} = State)->
+handle_info(on_cycle, #state{cycle = Cycle, to_delete = ToDelete} = State)->
   timer:send_after( Cycle, on_cycle ),
 
-  purge_stale_segments(),
+  ToDelete1 = purge_stale_segments( ToDelete ),
 
   Ready = dlss:get_ready_nodes(),
   Running = mnesia:system_info(running_db_nodes),
@@ -149,7 +151,7 @@ handle_info(on_cycle, #state{cycle = Cycle} = State)->
   [ dlss_node:set_status(N,down) ||  N <- Ready -- Running ],
   [ dlss_node:set_status(N,ready) ||  N <- Running -- Ready ],
 
-  {noreply,State};
+  {noreply,State#state{ to_delete = ToDelete1 }};
 
 handle_info(Message,State)->
   ?LOGWARNING("backend got an unexpected message ~p",[Message]),
@@ -474,33 +476,46 @@ drop_segment(Segment, Node)->
       drop_segment( Segment, Node )
   end.
 
-purge_stale_segments( )->
+
+purge_stale_segments( ToDelete ) ->
 
   Node = node(),
+  Delay = ?ENV(segment_delay_timeout,?DEFAULT_MASTER_CYCLE),
+  erlang:system_time(millisecond),
+  TS = erlang:system_time(millisecond),
 
-  [case dlss_storage:segment_params( T ) of
-     { error, not_found } ->
-       % The segment does not belong to the schema
-       case dlss_segment:get_info(T) of
-         #{ nodes := [Node|_] } ->
-           % This is the master node for the segment
-           ?LOGINFO("removing stale segment ~p",[T]),
-           case dlss_segment:remove( T ) of
-             ok ->
-               ?LOGINFO("segment ~p was removed succesfully",[T]);
-             {error, Error}->
-               ?LOGWARNING("unable to remove stale segment ~p, error ~p",[ T, Error ])
-           end;
-         _ ->
-           % This node is not the master for the segment, the master will delete it
-           ignore
-       end;
-     _ ->
-       % The segment does not belong to the storage
-       ignore
-   end || T <- dlss_segment:get_local_segments() ],
+  lists:foldl(fun(T, Acc)->
+    case dlss_storage:segment_params( T ) of
+      { error, not_found } ->
+        % The segment does not belong to the schema
+        case dlss_segment:get_info(T) of
+          #{ nodes := [Node|_] } ->
+            % This is the master node for the segment
+            TimeOut = maps:get(T, ToDelete, TS + Delay ),
+            if
+              TS > TimeOut ->
+                ?LOGINFO("removing stale segment ~p",[T]),
+                case dlss_segment:remove( T ) of
+                  ok ->
+                    ?LOGINFO("segment ~p was removed succesfully",[T]),
+                    Acc;
+                  {error, Error}->
+                    ?LOGWARNING("unable to remove stale segment ~p, error ~p",[ T, Error ]),
+                    Acc#{ T => TimeOut }
+                end;
+              true ->
+                Acc#{ T => TimeOut }
+            end;
+          _ ->
+            % This node is not the master for the segment, the master will delete it
+            Acc
+        end;
+      _ ->
+        % The segment does not belong to the storage
+        Acc
+    end
+  end, #{}, dlss_segment:get_local_segments() ).
 
-  ok.
 
 is_exported(Module,Method)->
   case module_exists(Module) of
