@@ -221,7 +221,7 @@ dirty_select(Segment,MS)->
 
 %-------------READ----------------------------------------------
 read( Segment, Key )->
-  read( Segment, Key, _Lock = none).
+  read( Segment, Key, _Lock = read).
 read( Segment, Key, Lock)->
   case mnesia:read(Segment,Key,Lock) of
     [#kv{value = Value}]->Value;
