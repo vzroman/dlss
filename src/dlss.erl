@@ -30,6 +30,7 @@
   get_storage_root/1,
   is_local_storage/1,
   get_segments/0,get_segments/1,
+  get_node_segments/1,
   get_local_segments/0,
   get_segment_info/1,
   get_segment_params/1,
@@ -78,6 +79,7 @@ add_node(Node)->
 %-----------------------------------------------------------------
 -spec remove_node(Node :: node()) -> {atomic, ok} | {aborted, Reason :: term()}.
 remove_node(Node)->
+  dlss_storage:remove_all_segments_from( Node ),
   dlss_backend:remove_node(Node).
 
 %-----------------------------------------------------------------
@@ -162,6 +164,18 @@ get_segments()->
 -spec get_segments(Storage :: atom()) -> StorageSegments :: list().
 get_segments(Storage)->
   dlss_storage:get_segments(Storage).
+
+%-----------------------------------------------------------------
+%% @doc Get list of dlss segments for the Node.
+% Returns:
+% [dlss_storage1_1,dlss_storage1_2,dlss_storage1_3 ..]
+% where the element of list is the name of segments of storage storage1
+% and has type of atom
+%% @end
+%-----------------------------------------------------------------
+-spec get_node_segments(Node :: atom()) -> NodeSegments :: list().
+get_node_segments(Node)->
+  dlss_storage:get_segments(Node).
 
 %-----------------------------------------------------------------
 %% @doc Get list of dlss segments that has local copies.

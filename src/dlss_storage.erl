@@ -32,6 +32,7 @@
   is_storage/1,
   get_storages/0,
   get_segments/0,get_segments/1,
+  get_node_segments/1,
 
   root_segment/1,
   segment_params/1,
@@ -54,6 +55,7 @@
   % add/remove segment copies
   add_segment_copy/2,
   remove_segment_copy/2,
+  remove_all_segments_from/1,
 
   % rebalance the storage schema
   split_segment/1,
@@ -131,6 +133,15 @@ get_segments(Storage)->
     ['$1']
   }],
   dlss_segment:dirty_select(dlss_schema,MS).
+
+get_node_segments(Node)->
+  MS=[{
+    #kv{key = #sgm{str = '_',key = '_',lvl = '_',ver = '_',copies = '$2'}, value = '$1'},
+    [],
+    [['$1','$2']]
+  }],
+  AllSegments = dlss_segment:dirty_select(dlss_schema,MS),
+  [ S || [S, #{Node := _}] <- AllSegments].
 
 root_segment(Storage)->
   case dlss_segment:dirty_next(dlss_schema,#sgm{str=Storage,key = '_',lvl = -1 }) of
@@ -324,7 +335,7 @@ new_root_segment( Storage ) ->
   %% Level down all segments to +1
   case dlss:transaction(fun()->
 
-    %% Locking an old Root table
+    %% Locking the schema
     dlss_backend:lock({table,dlss_schema},write),
 
     %% Locking an old Root table
@@ -630,6 +641,21 @@ remove_segment_copy( Segment , Node )->
         % The copy is already removed
         ok
     end,
+
+    ok
+  end) of
+    {ok,ok} -> ok;
+    Error -> ?ERROR( Error )
+  end.
+
+remove_all_segments_from( Node )->
+  case dlss:transaction(fun()->
+
+    % Set lock on schema
+    dlss_backend:lock({table,dlss_schema},write),
+
+    % Remove segments' copies from the node
+    [ remove_segment_copy(S, Node) || S <- get_node_segments( Node ) ],
 
     ok
   end) of
