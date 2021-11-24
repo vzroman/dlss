@@ -214,7 +214,7 @@ remove(Name)->
     dlss_backend:lock({table,dlss_schema},write),
 
     Start=#sgm{str=Name,key='_',lvl = -1},
-    remove(Name,dlss_segment:dirty_next(dlss_schema,Start)),
+    remove(Name,dlss_segment:next(dlss_schema,Start)),
     reset_id(Name)
   end) of
     {ok,_} ->
@@ -229,9 +229,10 @@ remove(Name)->
   end.
 
 remove(Storage,#sgm{str=Storage}=Sgm)->
-  Table=dlss_segment:dirty_read(dlss_schema,Sgm),
+  Table=dlss_segment:read(dlss_schema,Sgm),
   ?LOGWARNING("removing segment ~p storage ~p",[Table,Storage]),
-  remove(Storage,dlss_segment:dirty_next(dlss_schema,Sgm));
+  dlss_segment:delete(dlss_schema,Sgm),
+  remove(Storage,dlss_segment:next(dlss_schema,Sgm));
 remove(_Storage,_Sgm)->
   % '$end_of_table'
   ok.
