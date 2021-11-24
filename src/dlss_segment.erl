@@ -300,7 +300,12 @@ get_info(Segment)->
   }.
 
 get_local_segments()->
-  mnesia:system_info( local_tables ).
+  [T || T <- mnesia:system_info( local_tables ),
+    case atom_to_binary(T, utf8) of
+      <<"dlss_schema">> -> false;
+      <<"dlss_",_/binary>> -> true;
+      _ -> false
+    end].
 
 is_empty(Segment)->
   case dirty_first(Segment) of

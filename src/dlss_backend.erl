@@ -478,31 +478,26 @@ purge_stale_segments( )->
 
   Node = node(),
 
-  [case atom_to_binary(T, utf8) of
-     <<"dlss_schema">> -> ignore;
-     <<"dlss_",_/binary>> ->
-       case dlss_storage:segment_params( T ) of
-         { error, not_found } ->
-           % The segment does not belong to the schema
-           case dlss_segment:get_info(T) of
-             #{ nodes := [Node|_] } ->
-               % This is the master node for the segment
-               ?LOGINFO("removing stale segment ~p",[T]),
-               case dlss_segment:remove( T ) of
-                 ok ->
-                   ?LOGINFO("segment ~p was removed succesfully",[T]);
-                 {error, Error}->
-                   ?LOGWARNING("unable to remove stale segment ~p, error ~p",[ T, Error ])
-               end;
-             _ ->
-               % This node is not the master for the segment, the master will delete it
-               ignore
+  [case dlss_storage:segment_params( T ) of
+     { error, not_found } ->
+       % The segment does not belong to the schema
+       case dlss_segment:get_info(T) of
+         #{ nodes := [Node|_] } ->
+           % This is the master node for the segment
+           ?LOGINFO("removing stale segment ~p",[T]),
+           case dlss_segment:remove( T ) of
+             ok ->
+               ?LOGINFO("segment ~p was removed succesfully",[T]);
+             {error, Error}->
+               ?LOGWARNING("unable to remove stale segment ~p, error ~p",[ T, Error ])
            end;
          _ ->
-           % The segment does not belong to the storage
+           % This node is not the master for the segment, the master will delete it
            ignore
        end;
-     _ -> ignore
+     _ ->
+       % The segment does not belong to the storage
+       ignore
    end || T <- dlss_segment:get_local_segments() ],
 
   ok.

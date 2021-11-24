@@ -30,6 +30,7 @@
   get_storage_root/1,
   is_local_storage/1,
   get_segments/0,get_segments/1,
+  get_local_segments/0,
   get_segment_info/1,
   get_segment_size/1,
   add_storage/2,add_storage/3,
@@ -160,6 +161,17 @@ get_segments()->
 -spec get_segments(Storage :: atom()) -> StorageSegments :: list().
 get_segments(Storage)->
   dlss_storage:get_segments(Storage).
+
+%-----------------------------------------------------------------
+%% @doc Get list of dlss segments that has local copies.
+% Returns:
+% [dlss_storage1_1,dlss_storage1_2,dlss_storage1_3 ..]
+% where the element of list is the name of segments
+% and has type of atom
+%% @end
+%-----------------------------------------------------------------
+get_local_segments()->
+  dlss_segment:get_local_segments().
 
 %-----------------------------------------------------------------
 %% @doc  Get segment info.
