@@ -32,6 +32,7 @@
   get_segments/0,get_segments/1,
   get_local_segments/0,
   get_segment_info/1,
+  get_segment_params/1,
   get_segment_size/1,
   add_storage/2,add_storage/3,
   add_segment_copy/2, remove_segment_copy/2,
@@ -187,6 +188,28 @@ get_local_segments()->
 -spec get_segment_info(Segment :: atom()) -> SegmentInfo :: segment_info() | no_return().
 get_segment_info(Segment) ->
   dlss_segment:get_info(Segment).
+
+%-----------------------------------------------------------------
+%% @doc  Get segment params.
+% Returns map:
+% #{
+%   storage => NameOfStorageSegmentBelongsTo,
+%   level => LevelOfSegmentInStorage,
+%   key => TheFirstKeyInSegment,
+%   version => VersionOfSegment,
+%   copies => #{
+%     <node1> => #{ Params as hash etc },
+%     <node2> => #{ Params as hash etc },
+%     ...
+%   }
+% }
+% or throws Error
+%% @end
+%-----------------------------------------------------------------
+-spec get_segment_params(Segment :: atom()) -> SegmentInfo :: segment_info() | no_return().
+get_segment_params(Segment) ->
+  dlss_storage:segment_params(Segment).
+
 
 %-----------------------------------------------------------------
 %% @doc  Get segment size.
