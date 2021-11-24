@@ -483,13 +483,15 @@ purge_stale_segments( ToDelete ) ->
   Delay = ?ENV(segment_delay_timeout,?DEFAULT_MASTER_CYCLE),
   erlang:system_time(millisecond),
   TS = erlang:system_time(millisecond),
+  ReadyNodes = ordsets:from_list( dlss:get_ready_nodes() ),
 
   lists:foldl(fun(T, Acc)->
     case dlss_storage:segment_params( T ) of
       { error, not_found } ->
         % The segment does not belong to the schema
-        case dlss_segment:get_info(T) of
-          #{ nodes := [Node|_] } ->
+        #{ nodes := Nodes } = dlss_segment:get_info(T),
+        case ordsets:intersection( ordsets:from_list(Nodes), ReadyNodes ) of
+          [Node|_] ->
             % This is the master node for the segment
             TimeOut = maps:get(T, ToDelete, TS + Delay ),
             if
