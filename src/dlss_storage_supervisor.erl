@@ -235,45 +235,70 @@ loop( Storage, Type, Node )->
 %% Obtain/Remove copies of segments of a Storage to the Node
 %%============================================================================
 sync_copies( Storage, Node )->
-  [ case dlss_segment:get_info( S ) of
-      #{ local := true }->
-        % Local only storage types are not synchronized between nodes
-        ok;
-      #{ nodes := Nodes }->
-        {ok, #{copies := Copies} } = dlss_storage:segment_params(S),
-
-        case { maps:is_key( Node, Copies ), lists:member(Node,Nodes) } of
-          { true, false }->
-            % The segment is to be added to the Node
-            Master = master_node( Copies ),
-            Version = maps:get( Master, Copies ),
-
-            ?LOGINFO("add ~p copy to ~p",[ S, Node ]),
-            % The segment must have a copy on the Node
-            case dlss_segment:add_node( S, Node ) of
-              ok ->
-                ?LOGINFO("~p successfully copied to ~p",[ S, Node ]),
-                % The segment has just copied, take the version from the parent
-                ok = dlss_storage:set_segment_version( S, Node, Version );
-              { error, Error }->
-                ?LOGERROR("~p unable to add a copy to ~p, error ~p", [ S, Node, Error ] )
-            end;
-          { false, true }->
-            % The segment is to be removed from the node
-            ?LOGINFO("remove ~p copy from ~p",[ S, Node ]),
-            case dlss_segment:remove_node(S,Node) of
-              ok->
-                ?LOGINFO("~p successfully removed from ~p",[ S, Node ]),
-                ok;
-              {error,Error}->
-                ?LOGERROR("~p unable to remove a copy from ~p, error ~p",[ S, Node, Error ])
-            end;
-          _->
-            % The segment is already synchronized with the schema
-            ok
-        end
-    end || S <- dlss_storage:get_segments(Storage) ],
+  [ sync_segment_copies(S, Node) || S <- dlss_storage:get_segments(Storage) ],
   ok.
+
+sync_segment_copies( S, Node )->
+  case dlss_segment:get_info( S ) of
+    #{ local := true }->
+      % Local only storage types are not synchronized between nodes
+      ok;
+    #{ nodes := Nodes }->
+      {ok, #{copies := Copies} } = dlss_storage:segment_params(S),
+
+      case { maps:is_key( Node, Copies ), lists:member(Node,Nodes) } of
+        { true, false }->
+          % The segment is to be added to the Node
+          Master = master_node( Copies ),
+          Version = maps:get( Master, Copies ),
+
+          ?LOGINFO("add ~p copy to ~p",[ S, Node ]),
+          % The segment must have a copy on the Node
+          case dlss_segment:add_node( S, Node ) of
+            ok ->
+              {ok, #{copies := CopiesAfter} } = dlss_storage:segment_params(S),
+              case maps:get( master_node( Copies ), CopiesAfter ) of
+                Version ->
+                  ?LOGINFO("~p successfully copied to ~p",[ S, Node ]),
+                  % The segment has just copied, take the version from the parent.
+                  % If the segment was transformed during the copying then the hash
+                  % verification will fail on the next cycle and segment will be dropped
+                  % again.
+                  ok = dlss_storage:set_segment_version( S, Node, Version );
+                _NewVersion->
+                  % The segment was transformed during the copying. We may have an
+                  % inconsistent copy
+                  ?LOGWARNING("~p was transformed during copying to ~p, repeat the operation",[ S, Node ]),
+                  case dlss_segment:remove_node( S, Node ) of
+                    ok ->
+                      % Try again
+                      sync_segment_copies( S, Node );
+                    {error, DropError}->
+                      ?LOGERROR("unable to remove ~p from ~p, error ~p",[ S, Node, DropError ]),
+                      % We deliberately set the old version of the segment, to make it
+                      % fail hash verification during the next cycle
+                      ok = dlss_storage:set_segment_version( S, Node, Version )
+                  end
+              end;
+            { error, Error }->
+              ?LOGERROR("~p unable to add a copy to ~p, error ~p", [ S, Node, Error ] )
+          end;
+        { false, true }->
+          % The segment is to be removed from the node
+          ?LOGINFO("remove ~p copy from ~p",[ S, Node ]),
+          case dlss_segment:remove_node(S,Node) of
+            ok->
+              ?LOGINFO("~p successfully removed from ~p",[ S, Node ]),
+              ok;
+            {error,Error}->
+              ?LOGERROR("~p unable to remove a copy from ~p, error ~p",[ S, Node, Error ])
+          end;
+        _->
+          % The segment is already synchronized with the schema
+          ok
+      end
+  end.
+
 
 set_read_only_mode(Storage, Node)->
   Root = dlss_storage:root_segment(Storage),
