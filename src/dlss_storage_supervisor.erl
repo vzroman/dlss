@@ -117,7 +117,7 @@ verify_storage_hash( Storage, Node )->
 
 verify_segment_hash( Segment, Node )->
   case dlss_segment:get_info(Segment) of
-    #{ local => true } ->
+    #{ local := true } ->
       % The segment is local only
       ok;
     _ ->
