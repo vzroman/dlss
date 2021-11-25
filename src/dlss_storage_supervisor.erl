@@ -116,31 +116,37 @@ verify_storage_hash( Storage, Node )->
   ok.
 
 verify_segment_hash( Segment, Node )->
-  {ok, #{copies:= Copies} } = dlss_storage:segment_params( Segment ),
-  case Copies of
-    #{ Node := NodeDump } ->
-      case master_node( Copies ) of
-        Node ->
-          % The node is the master, it's hash is the source of the truth
-          ok;
-        undefined ->
-          % There is no master node for the segment to check with
-          ok;
-        Master->
-          case Copies of
-            #{ Master := NodeDump } ->
-              % The node's hash matches the master's hash
-              ok;
-            #{ Master := MasterDump } ->
-              % The version of the segment for the Node has a different hash.
-              % We purge the copy of the segment to let the sync mechanism to reload it
-              ?LOGWARNING("~p invalid hash ~p, master hash ~p, drop local copy",[ Segment, MasterDump, NodeDump ]),
-              dlss_segment:remove_node( Segment, Node )
-          end
-      end;
+  case dlss_segment:get_info(Segment) of
+    #{ local => true } ->
+      % The segment is local only
+      ok;
     _ ->
-      % The node doesn't have a copy of the segment
-      ok
+      {ok, #{copies:= Copies} } = dlss_storage:segment_params( Segment ),
+      case Copies of
+        #{ Node := NodeDump } ->
+          case master_node( Copies ) of
+            Node ->
+              % The node is the master, it's hash is the source of the truth
+              ok;
+            undefined ->
+              % There is no master node for the segment to check with
+              ok;
+            Master->
+              case Copies of
+                #{ Master := NodeDump } ->
+                  % The node's hash matches the master's hash
+                  ok;
+                #{ Master := MasterDump } ->
+                  % The version of the segment for the Node has a different hash.
+                  % We purge the copy of the segment to let the sync mechanism to reload it
+                  ?LOGWARNING("~p invalid hash ~p, master hash ~p, drop local copy",[ Segment, MasterDump, NodeDump ]),
+                  dlss_segment:remove_node( Segment, Node )
+              end
+          end;
+        _ ->
+          % The node doesn't have a copy of the segment
+          ok
+      end
   end.
 %%=================================================================
 %%	OTP
