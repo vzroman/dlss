@@ -55,7 +55,8 @@
   remove_node/2,
   get_size/1,
   get_access_mode/1,
-  set_access_mode/2
+  set_access_mode/2,
+  in_read_write_mode/2
 ]).
 
 -define(MAX_SCAN_INTERVAL_BATCH,1000).

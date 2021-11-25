@@ -86,10 +86,12 @@ copy( Source, Target, Copy, FromKey0, OnBatch, Acc0 )->
 
   % The loop. We wrap it into transaction to be sure
   % that other nodes don't copy the table during the rebalancing
-  {ok, Acc1} = dlss:transaction(fun()->
-    % Set a lock on the schema
-    dlss_backend:lock({table,Target},write),
-    copy_loop( ReadBatch ,WriteBatch, FromKey, Copy, OnBatch, Acc0#{hash => HashRef0} )
+  {ok, Acc1} = dlss_segment:in_read_write_mode(Target, fun()->
+    dlss:transaction(fun()->
+      % Set a lock on the schema
+      dlss_backend:lock({table,Target},write),
+      copy_loop( ReadBatch ,WriteBatch, FromKey, Copy, OnBatch, Acc0#{hash => HashRef0} )
+    end)
   end),
 
   Acc = Acc1#{ hash => crypto:hash_final( maps:get(hash,Acc1) ) },
@@ -168,10 +170,12 @@ delete_until( Segment, ToKey )->
   #{ type:= Type }=dlss_segment:get_info( Segment ),
   % The loop. We wrap it into transaction to be sure
   % that other nodes don't copy the table during the rebalancing
-  {ok, Result} = dlss:transaction(fun()->
-    % Set a lock on the schema
-    dlss_backend:lock({table,Segment},write),
-    delete_until( Type, Segment, ToKey )
+  {ok, Result} = dlss_segment:in_read_write_mode(Segment,fun()->
+    dlss:transaction(fun()->
+      % Set a lock on the schema
+      dlss_backend:lock({table,Segment},write),
+      delete_until( Type, Segment, ToKey )
+    end)
   end),
   Result.
 delete_until( disc, Segment, ToKey0 )->
