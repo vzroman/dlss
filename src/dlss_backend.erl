@@ -31,7 +31,8 @@
   remove_node/1,
   get_nodes/0,
   transaction/1,sync_transaction/1,
-  lock/2
+  lock/2,
+  verify_hash/0, verify_hash/1
 ]).
 
 %%=================================================================
@@ -241,6 +242,9 @@ init_backend(#{
           ?LOGINFO("waiting for schema availability..."),
           ok = mnesia:wait_for_tables([schema,dlss_schema],?ENV(schema_start_timeout, ?WAIT_SCHEMA_TIMEOUT)),
 
+          ?LOGINFO("verify hash values for hosted storages"),
+          ok = verify_hash( node() ),
+
           ?LOGINFO("waiting for segemnts availability..."),
           wait_segments(StartTimeout);
         true ->
@@ -249,6 +253,9 @@ init_backend(#{
 
           ?LOGINFO("waiting for schema availability..."),
           ok = mnesia:wait_for_tables([schema,dlss_schema],?ENV(schema_start_timeout, ?WAIT_SCHEMA_TIMEOUT)),
+
+          ?LOGINFO("verify hash values for hosted storages"),
+          ok = verify_hash( node() ),
 
           ?LOGINFO("add local only segments"),
           add_local_only_segments(),
@@ -295,6 +302,22 @@ stop()->
     mnesia:stop()
   end).
 
+verify_hash()->
+  [begin
+     ?LOGINFO("verify hash values for node ~p",[N]),
+     verify_hash( N )
+   end || N <- dlss_node:get_ready_nodes() ].
+verify_hash( Node )->
+
+  [begin
+     ?LOGINFO("verify hash values for ~p",[Storage]),
+     [begin
+        ?LOGINFO("verify hash for ~p",[Segment]),
+        dlss_storage_supervisor:verify_segment_hash( Segment, Node )
+      end|| Segment <- dlss_storage:get_segments( Storage ) ]
+   end || Storage <- dlss_storage:get_storages() ],
+
+  ok.
 
 wait_segments(Timeout)->
   Segments=dlss:get_segments(),

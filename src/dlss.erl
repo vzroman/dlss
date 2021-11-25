@@ -34,6 +34,7 @@
   get_local_segments/0,
   get_segment_info/1,
   get_segment_params/1,
+  verify_hash/0, verify_hash/1,
   get_segment_size/1,
   add_storage/2,add_storage/3,
   add_segment_copy/2, remove_segment_copy/2,
@@ -224,7 +225,6 @@ get_segment_info(Segment) ->
 get_segment_params(Segment) ->
   dlss_storage:segment_params(Segment).
 
-
 %-----------------------------------------------------------------
 %% @doc  Get segment size.
 % Returns number of bytes occupied by the segment
@@ -235,6 +235,21 @@ get_segment_params(Segment) ->
 get_segment_size(Segment) ->
   dlss_segment:get_size(Segment).
 
+%-----------------------------------------------------------------
+%% @doc  Verify hash values for the node's segments.
+%% @end
+%-----------------------------------------------------------------
+-spec verify_hash() -> ok | no_return().
+verify_hash() ->
+  dlss_backend:verify_hash().
+%-----------------------------------------------------------------
+%% @doc  Verify hash values for the node's segments.
+% As input function gets Name of storage as atom,
+%% @end
+%-----------------------------------------------------------------
+-spec verify_hash(Storage :: atom()) -> ok | no_return().
+verify_hash(Storage) ->
+  dlss_backend:verify_hash(Storage).
 %-----------------------------------------------------------------
 %% @doc 	Add storage.
 % It adds a new storage to dlss_schema with creating a new Root Segment (table)
