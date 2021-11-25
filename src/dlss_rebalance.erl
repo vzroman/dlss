@@ -85,6 +85,7 @@ copy( Source, Target, Copy, FromKey0, OnBatch, Acc0 )->
   HashRef0 = crypto:hash_update( crypto:hash_init(sha256), maps:get(hash, Acc0)),
 
   Acc1 = copy_loop( ReadBatch ,WriteBatch, FromKey, Copy, OnBatch, Acc0#{hash => HashRef0} ),
+
   Acc = Acc1#{ hash => crypto:hash_final( maps:get(hash,Acc1) ) },
 
   if
@@ -333,7 +334,7 @@ ets2dcd({Recs, Cont}, Tab, Log) ->
 % dlss_rebalance:dump_test(test1,ramdisc)
 dump_test(Table,Type)->
 
-  dlss_backend:create_segment(Table,#{
+  dlss_segment:create(Table,#{
     type => Type,
     nodes => [node()],
     local => false

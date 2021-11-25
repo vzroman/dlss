@@ -30,10 +30,9 @@
   add_node/1,
   remove_node/1,
   get_nodes/0,
-  create_segment/2,
-  delete_segment/1,
   transaction/1,sync_transaction/1,
-  lock/2
+  lock/2,
+  verify_hash/0, verify_hash/1
 ]).
 
 %%=================================================================
@@ -55,9 +54,11 @@
 -define(WAIT_SCHEMA_TIMEOUT,24*3600*1000). % 1 day
 -define(ATTACH_TIMEOUT,600000). %10 min.
 -define(DEFAULT_MASTER_CYCLE, 1000).
+-define(SEGMENT_REMOVE_DELAY, 5 * 60000). % 5 minutes
 
 -record(state,{
-  cycle
+  cycle,
+  to_delete
 }).
 
 %%=================================================================
@@ -81,29 +82,6 @@ remove_node(Node)->
 
 get_nodes()->
   mnesia:system_info(db_nodes).
-
-create_segment(Name,Params)->
-  Attributes = table_attributes(Params),
-  case mnesia:create_table(Name,[
-    {attributes,record_info(fields,kv)},
-    {record_name,kv},
-    {type,ordered_set}|
-    Attributes
-  ]) of
-    {atomic, ok } -> ok;
-    {aborted, Reason } -> {error, Reason}
-  end.
-
-delete_segment(Name)->
-  case dlss_segment:set_access_mode( Name, read_write ) of
-    ok ->
-      case mnesia:delete_table(Name) of
-        {atomic,ok}->ok;
-        {aborted,Reason}-> {error, Reason }
-      end;
-    SetModeError ->
-      SetModeError
-  end.
 
 transaction(Fun)->
   % We use the mnesia engine to deliver the true distributed ACID transactions
@@ -140,7 +118,7 @@ init([])->
 
   timer:send_after(Cycle,on_cycle),
 
-  {ok,#state{cycle = Cycle}}.
+  {ok,#state{cycle = Cycle, to_delete = #{}}}.
 
 handle_call(Request, From, State) ->
   ?LOGWARNING("backend got an unexpected call resquest ~p from ~p",[Request,From]),
@@ -163,8 +141,10 @@ handle_info({mnesia_system_event,Event},State) ->
   on_mnesia_event( Event ),
   {noreply,State};
 
-handle_info(on_cycle, #state{cycle = Cycle} = State)->
+handle_info(on_cycle, #state{cycle = Cycle, to_delete = ToDelete} = State)->
   timer:send_after( Cycle, on_cycle ),
+
+  ToDelete1 = purge_stale_segments( ToDelete ),
 
   Ready = dlss:get_ready_nodes(),
   Running = mnesia:system_info(running_db_nodes),
@@ -172,7 +152,7 @@ handle_info(on_cycle, #state{cycle = Cycle} = State)->
   [ dlss_node:set_status(N,down) ||  N <- Ready -- Running ],
   [ dlss_node:set_status(N,ready) ||  N <- Running -- Ready ],
 
-  {noreply,State};
+  {noreply,State#state{ to_delete = ToDelete1 }};
 
 handle_info(Message,State)->
   ?LOGWARNING("backend got an unexpected message ~p",[Message]),
@@ -262,6 +242,9 @@ init_backend(#{
           ?LOGINFO("waiting for schema availability..."),
           ok = mnesia:wait_for_tables([schema,dlss_schema],?ENV(schema_start_timeout, ?WAIT_SCHEMA_TIMEOUT)),
 
+          ?LOGINFO("verify hash values for hosted storages"),
+          ok = verify_hash( node() ),
+
           ?LOGINFO("waiting for segemnts availability..."),
           wait_segments(StartTimeout);
         true ->
@@ -270,6 +253,9 @@ init_backend(#{
 
           ?LOGINFO("waiting for schema availability..."),
           ok = mnesia:wait_for_tables([schema,dlss_schema],?ENV(schema_start_timeout, ?WAIT_SCHEMA_TIMEOUT)),
+
+          ?LOGINFO("verify hash values for hosted storages"),
+          ok = verify_hash( node() ),
 
           ?LOGINFO("add local only segments"),
           add_local_only_segments(),
@@ -316,6 +302,22 @@ stop()->
     mnesia:stop()
   end).
 
+verify_hash()->
+  [begin
+     ?LOGINFO("verify hash values for node ~p",[N]),
+     verify_hash( N )
+   end || N <- dlss_node:get_ready_nodes() ].
+verify_hash( Node )->
+
+  [begin
+     ?LOGINFO("verify hash values for ~p",[Storage]),
+     [begin
+        ?LOGINFO("verify hash for ~p",[Segment]),
+        dlss_storage_supervisor:verify_segment_hash( Segment, Node )
+      end|| Segment <- dlss_storage:get_segments( Storage ) ]
+   end || Storage <- dlss_storage:get_storages() ],
+
+  ok.
 
 wait_segments(Timeout)->
   Segments=dlss:get_segments(),
@@ -426,35 +428,6 @@ on_mnesia_event({mnesia_info,Format,Args})->
 on_mnesia_event(Other)->
   ?LOGINFO("mnesia event: ~p",[Other]).
 
-
-
-table_attributes(#{
-  type:=Type,
-  nodes:=Nodes,
-  local:=IsLocal
-})->
-  TypeAttr=
-    case Type of
-      ram->[
-        {disc_copies,[]},
-        {ram_copies,Nodes}
-      ];
-      ramdisc->[
-        {disc_copies,Nodes},
-        {ram_copies,[]}
-      ];
-      disc->
-        [{leveldb_copies,Nodes}]
-    end,
-
-  LocalContent=
-    if
-      IsLocal->[{local_content,true}];
-      true->[]
-    end,
-  TypeAttr++LocalContent.
-
-
 default_partitioning( Node )->
 
   % If this node has a smaller name than Node then it reloads all
@@ -525,6 +498,49 @@ drop_segment(Segment, Node)->
       timer:sleep(1000),
       drop_segment( Segment, Node )
   end.
+
+
+purge_stale_segments( ToDelete ) ->
+
+  Node = node(),
+  Delay = ?ENV(segment_delay_timeout,?DEFAULT_MASTER_CYCLE),
+  erlang:system_time(millisecond),
+  TS = erlang:system_time(millisecond),
+  ReadyNodes = ordsets:from_list( dlss:get_ready_nodes() ),
+
+  lists:foldl(fun(T, Acc)->
+    case dlss_storage:segment_params( T ) of
+      { error, not_found } ->
+        % The segment does not belong to the schema
+        #{ nodes := Nodes } = dlss_segment:get_info(T),
+        case ordsets:intersection( ordsets:from_list(Nodes), ReadyNodes ) of
+          [Node|_] ->
+            % This is the master node for the segment
+            TimeOut = maps:get(T, ToDelete, TS + Delay ),
+            if
+              TS > TimeOut ->
+                ?LOGINFO("removing stale segment ~p",[T]),
+                case dlss_segment:remove( T ) of
+                  ok ->
+                    ?LOGINFO("segment ~p was removed succesfully",[T]),
+                    Acc;
+                  {error, Error}->
+                    ?LOGWARNING("unable to remove stale segment ~p, error ~p",[ T, Error ]),
+                    Acc#{ T => TimeOut }
+                end;
+              true ->
+                Acc#{ T => TimeOut }
+            end;
+          _ ->
+            % This node is not the master for the segment, the master will delete it
+            Acc
+        end;
+      _ ->
+        % The segment does not belong to the storage
+        Acc
+    end
+  end, #{}, dlss_segment:get_local_segments() ).
+
 
 is_exported(Module,Method)->
   case module_exists(Module) of

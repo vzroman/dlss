@@ -30,7 +30,11 @@
   get_storage_root/1,
   is_local_storage/1,
   get_segments/0,get_segments/1,
+  get_node_segments/1,
+  get_local_segments/0,
   get_segment_info/1,
+  get_segment_params/1,
+  verify_hash/0, verify_hash/1,
   get_segment_size/1,
   add_storage/2,add_storage/3,
   add_segment_copy/2, remove_segment_copy/2,
@@ -76,6 +80,7 @@ add_node(Node)->
 %-----------------------------------------------------------------
 -spec remove_node(Node :: node()) -> {atomic, ok} | {aborted, Reason :: term()}.
 remove_node(Node)->
+  dlss_storage:remove_all_segments_from( Node ),
   dlss_backend:remove_node(Node).
 
 %-----------------------------------------------------------------
@@ -162,6 +167,29 @@ get_segments(Storage)->
   dlss_storage:get_segments(Storage).
 
 %-----------------------------------------------------------------
+%% @doc Get list of dlss segments for the Node.
+% Returns:
+% [dlss_storage1_1,dlss_storage1_2,dlss_storage1_3 ..]
+% where the element of list is the name of segments of storage storage1
+% and has type of atom
+%% @end
+%-----------------------------------------------------------------
+-spec get_node_segments(Node :: atom()) -> NodeSegments :: list().
+get_node_segments(Node)->
+  dlss_storage:get_segments(Node).
+
+%-----------------------------------------------------------------
+%% @doc Get list of dlss segments that has local copies.
+% Returns:
+% [dlss_storage1_1,dlss_storage1_2,dlss_storage1_3 ..]
+% where the element of list is the name of segments
+% and has type of atom
+%% @end
+%-----------------------------------------------------------------
+get_local_segments()->
+  dlss_segment:get_local_segments().
+
+%-----------------------------------------------------------------
 %% @doc  Get segment info.
 % Returns map:
 % #{
@@ -177,6 +205,27 @@ get_segment_info(Segment) ->
   dlss_segment:get_info(Segment).
 
 %-----------------------------------------------------------------
+%% @doc  Get segment params.
+% Returns map:
+% #{
+%   storage => NameOfStorageSegmentBelongsTo,
+%   level => LevelOfSegmentInStorage,
+%   key => TheFirstKeyInSegment,
+%   version => VersionOfSegment,
+%   copies => #{
+%     <node1> => #{ Params as hash etc },
+%     <node2> => #{ Params as hash etc },
+%     ...
+%   }
+% }
+% or throws Error
+%% @end
+%-----------------------------------------------------------------
+-spec get_segment_params(Segment :: atom()) -> SegmentInfo :: segment_info() | no_return().
+get_segment_params(Segment) ->
+  dlss_storage:segment_params(Segment).
+
+%-----------------------------------------------------------------
 %% @doc  Get segment size.
 % Returns number of bytes occupied by the segment
 % or throws Error
@@ -186,6 +235,21 @@ get_segment_info(Segment) ->
 get_segment_size(Segment) ->
   dlss_segment:get_size(Segment).
 
+%-----------------------------------------------------------------
+%% @doc  Verify hash values for the node's segments.
+%% @end
+%-----------------------------------------------------------------
+-spec verify_hash() -> ok | no_return().
+verify_hash() ->
+  dlss_backend:verify_hash().
+%-----------------------------------------------------------------
+%% @doc  Verify hash values for the node's segments.
+% As input function gets Name of storage as atom,
+%% @end
+%-----------------------------------------------------------------
+-spec verify_hash(Storage :: atom()) -> ok | no_return().
+verify_hash(Storage) ->
+  dlss_backend:verify_hash(Storage).
 %-----------------------------------------------------------------
 %% @doc 	Add storage.
 % It adds a new storage to dlss_schema with creating a new Root Segment (table)
