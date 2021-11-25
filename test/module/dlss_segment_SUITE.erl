@@ -79,6 +79,7 @@ init_per_testcase(_, Config)->
 end_per_testcase(_, Config)->
   Storage=?GET(storage, Config),
   dlss:remove_storage(Storage),
+  dlss_backend:purge_stale_segments(),
   dlss_backend:stop(),
   ok.
 

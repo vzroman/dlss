@@ -116,6 +116,7 @@ service_api(_Config)->
   [dlss_storage3_1]=dlss_storage:get_segments(),
 
   dlss_storage:remove(storage3),
+  dlss_backend:purge_stale_segments(),
   []=dlss_storage:get_storages(),
   []=dlss_storage:get_segments(),
 
@@ -259,6 +260,7 @@ get_key_segments(_Config)->
 
   % Clean up
   dlss_storage:remove(storage1),
+  dlss_backend:purge_stale_segments(),
   []=dlss_storage:get_storages(),
   []=dlss_storage:get_segments(),
 
@@ -381,6 +383,7 @@ storage_read(_Config)->
 
   % Clean up
   dlss_storage:remove(storage1),
+  dlss_backend:purge_stale_segments(),
   []=dlss_storage:get_storages(),
   []=dlss_storage:get_segments(),
 
@@ -532,6 +535,7 @@ storage_next(_Config)->
 
   % Clean up
   dlss_storage:remove(storage1),
+  dlss_backend:purge_stale_segments(),
   []=dlss_storage:get_storages(),
   []=dlss_storage:get_segments(),
 
@@ -689,6 +693,7 @@ storage_prev(_Config)->
 
   % Clean up
   dlss_storage:remove(storage1),
+  dlss_backend:purge_stale_segments(),
   []=dlss_storage:get_storages(),
   []=dlss_storage:get_segments(),
 
@@ -811,6 +816,7 @@ storage_first(_Config)->
 
   % Clean up
   dlss_storage:remove(storage1),
+  dlss_backend:purge_stale_segments(),
   []=dlss_storage:get_storages(),
   []=dlss_storage:get_segments(),
 
@@ -928,6 +934,7 @@ storage_last(_Config)->
 
   % Clean up
   dlss_storage:remove(storage1),
+  dlss_backend:purge_stale_segments(),
   []=dlss_storage:get_storages(),
   []=dlss_storage:get_segments(),
 
@@ -1173,6 +1180,7 @@ storage_range_select(_Config) ->
 
   % Clean up
   dlss_storage:remove(storage1),
+  dlss_backend:purge_stale_segments(),
   []=dlss_storage:get_storages(),
   []=dlss_storage:get_segments(),
 
@@ -1378,6 +1386,7 @@ storage_range_select_limit(_Config) ->
 
   % Clean up
   dlss_storage:remove(storage1),
+  dlss_backend:purge_stale_segments(),
   []=dlss_storage:get_storages(),
   []=dlss_storage:get_segments(),
 

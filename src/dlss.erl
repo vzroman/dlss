@@ -99,7 +99,7 @@ get_nodes()->
 % Returns
 % [node1,node2 ..]
 % where the type of a name of a node is an atom
-%% @end
+%% @enddlss_segment:get_local_segments()
 %-----------------------------------------------------------------
 -spec get_ready_nodes() -> ListOfNode :: list().
 get_ready_nodes()->

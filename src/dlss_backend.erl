@@ -32,7 +32,8 @@
   get_nodes/0,
   transaction/1,sync_transaction/1,
   lock/2,
-  verify_hash/0, verify_hash/1
+  verify_hash/0, verify_hash/1,
+  purge_stale_segments/0
 ]).
 
 %%=================================================================
@@ -498,6 +499,14 @@ drop_segment(Segment, Node)->
       timer:sleep(1000),
       drop_segment( Segment, Node )
   end.
+
+purge_stale_segments()->
+  TimeOut = erlang:system_time(millisecond) - 1000,
+
+  ToDelete =
+    maps:from_list([{S,TimeOut} || S <- dlss_segment:get_local_segments()] ),
+
+  purge_stale_segments(ToDelete).
 
 
 purge_stale_segments( ToDelete ) ->
