@@ -84,7 +84,14 @@ copy( Source, Target, Copy, FromKey0, OnBatch, Acc0 )->
 
   HashRef0 = crypto:hash_update( crypto:hash_init(sha256), maps:get(hash, Acc0)),
 
-  Acc1 = copy_loop( ReadBatch ,WriteBatch, FromKey, Copy, OnBatch, Acc0#{hash => HashRef0} ),
+  % The loop. We wrap it into transaction to be sure
+  % that other nodes don't copy the table during the rebalancing
+  {ok, Acc1} = dlss:transaction(fun()->
+    % Set a lock on the schema
+    dlss_backend:lock({table,Target},write),
+    copy_loop( ReadBatch ,WriteBatch, FromKey, Copy, OnBatch, Acc0#{hash => HashRef0} )
+  end),
+
   Acc = Acc1#{ hash => crypto:hash_final( maps:get(hash,Acc1) ) },
 
   if
@@ -159,7 +166,14 @@ rec_hash( Rec, HashRef )->
 
 delete_until( Segment, ToKey )->
   #{ type:= Type }=dlss_segment:get_info( Segment ),
-  delete_until( Type, Segment, ToKey ).
+  % The loop. We wrap it into transaction to be sure
+  % that other nodes don't copy the table during the rebalancing
+  {ok, Result} = dlss:transaction(fun()->
+    % Set a lock on the schema
+    dlss_backend:lock({table,Segment},write),
+    delete_until( Type, Segment, ToKey )
+  end),
+  Result.
 delete_until( disc, Segment, ToKey0 )->
   ToKey = mnesia_eleveldb:encode_key( ToKey0 ),
   delete_disc_until( disc_bulk_read(Segment,'$start_of_table'), Segment, ToKey );
