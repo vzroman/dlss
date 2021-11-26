@@ -438,67 +438,68 @@ default_partitioning( Node )->
 
   if
     NeedsReload ->
-      % We just drop local copies of all shared with Node segment
-      ?LOGWARNING("The node ~p is selected as the master, drop the local copy of data and reload it...",[Node]),
-
-      % Get local versions of the segments
-      Local =
-        maps:from_list([ begin
-            {ok,P} = dlss_storage:segment_params( S ),
-            {S, P}
-          end || S <- dlss_storage:get_segments()]),
-
-      ?LOGINFO("reload dlss schema"),
-      ok = drop_segment( dlss_schema, ThisNode ),
-      ok = dlss_segment:add_node( dlss_schema, ThisNode ),
-
-      ?LOGINFO("drop local copies of shared segments"),
-      [case dlss_storage:segment_params( S ) of
-         {ok, #{local:=false, copies:= #{ ThisNode:=_, Node:=_ }, level := Level } = P } ->
-           % This is a shared with Node segment.
-           IsUpdated=
-             if
-               Level=:=0->
-                 % The root segment is always reloaded
-                 true;
-               true ->
-                 case maps:get( S, Local, none ) of
-                   P->
-                    % The segment hasn't changed
-                    false;
-                   _->
-                     true
-                 end
-             end,
-
-           % if the segment has changed we drop the local copy of it that will be reloaded
-           % by the storage supervisor later
-           if
-             IsUpdated ->
-               ?LOGWARNING("drop the local copy of ~p",[ S ]),
-               drop_segment(S, ThisNode);
-             true ->
-               ignore
-           end;
-         _->
-           ignore
-      end || S <- dlss_storage:get_segments()],
-     ok;
+      init:restart();
+%%      % We just drop local copies of all shared with Node segment
+%%      ?LOGWARNING("The node ~p is selected as the master, drop the local copy of data and reload it...",[Node]),
+%%
+%%      % Get local versions of the segments
+%%      Local =
+%%        maps:from_list([ begin
+%%            {ok,P} = dlss_storage:segment_params( S ),
+%%            {S, P}
+%%          end || S <- dlss_storage:get_segments()]),
+%%
+%%      ?LOGINFO("reload dlss schema"),
+%%      ok = drop_segment( dlss_schema, ThisNode ),
+%%      ok = dlss_segment:add_node( dlss_schema, ThisNode ),
+%%
+%%      ?LOGINFO("drop local copies of shared segments"),
+%%      [case dlss_storage:segment_params( S ) of
+%%         {ok, #{local:=false, copies:= #{ ThisNode:=_, Node:=_ }, level := Level } = P } ->
+%%           % This is a shared with Node segment.
+%%           IsUpdated=
+%%             if
+%%               Level=:=0->
+%%                 % The root segment is always reloaded
+%%                 true;
+%%               true ->
+%%                 case maps:get( S, Local, none ) of
+%%                   P->
+%%                    % The segment hasn't changed
+%%                    false;
+%%                   _->
+%%                     true
+%%                 end
+%%             end,
+%%
+%%           % if the segment has changed we drop the local copy of it that will be reloaded
+%%           % by the storage supervisor later
+%%           if
+%%             IsUpdated ->
+%%               ?LOGWARNING("drop the local copy of ~p",[ S ]),
+%%               drop_segment(S, ThisNode);
+%%             true ->
+%%               ignore
+%%           end;
+%%         _->
+%%           ignore
+%%      end || S <- dlss_storage:get_segments()],
+%%     ok;
     true ->
       % This node is the master
-      ?LOGINFO("This node is selected as master, node ~p is expected to reload the shared data"),
+      ?LOGINFO("This node is selected as master, node ~p is expected to reload the shared data",[Node]),
       ok
   end.
 
-drop_segment(Segment, Node)->
-  Active = mnesia:table_info(Segment, active_replicas),
-  case Active -- [Node] of
-    [_|_]->
-      dlss_segment:remove_node( dlss_schema, Node );
-    _->
-      timer:sleep(1000),
-      drop_segment( Segment, Node )
-  end.
+%%drop_segment(Segment, Node)->
+%%  Active = mnesia:table_info(Segment, all_nodes),
+%%  case Active -- [Node] of
+%%    [_|_]->
+%%      dlss_segment:remove_node( dlss_schema, Node );
+%%    _->
+%%      timer:sleep(1000),
+%%      drop_segment( Segment, Node )
+%%  end.
 
 purge_stale_segments()->
   TimeOut = erlang:system_time(millisecond) - 1000,
