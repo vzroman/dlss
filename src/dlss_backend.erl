@@ -438,7 +438,7 @@ default_partitioning( Node )->
 
   if
     NeedsReload ->
-      init:restart();
+      init:reboot();
 %%      % We just drop local copies of all shared with Node segment
 %%      ?LOGWARNING("The node ~p is selected as the master, drop the local copy of data and reload it...",[Node]),
 %%
