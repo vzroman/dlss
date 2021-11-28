@@ -315,11 +315,20 @@ set_read_only_mode(Storage, Node)->
             % The node is the master for the segment
             case dlss_segment:get_access_mode(S) of
               read_write ->
-                ?LOGINFO("set read_only mode for ~p",[S]),
-                case dlss_segment:set_access_mode(S, read_only) of
-                  ok -> ok;
-                  {error, Error}->
-                    ?LOGWARNING("unable to set read_only for ~p, error ~p",[S,Error])
+                case wait_for_nodes( S ) of
+                  [] ->
+                    ?LOGINFO("set read_only mode for ~p",[S]),
+                    case dlss_segment:set_access_mode(S, read_only) of
+                      ok -> ok;
+                      {error, Error}->
+                        ?LOGWARNING("unable to set read_only for ~p, error ~p",[S,Error])
+                    end;
+                  WaitNodes ->
+                    % some nodes haven't synchronized the schema yet. They might be copying
+                    % the segment at the moment. If we set read_only while copying
+                    % a segment mnesia will crash down. We need to wait the schema
+                    % to settle down
+                    ?LOGDEBUG("skip set read_only mode for ~p, ~p are not ready",[S, WaitNodes])
                 end;
               _ ->
                 ignore
@@ -330,6 +339,14 @@ set_read_only_mode(Storage, Node)->
         end
     end || S <- dlss_storage:get_segments(Storage), S =/= Root ],
   ok.
+
+wait_for_nodes( Segment )->
+  {ok, #{copies := SchemaCopies} } = dlss_storage:segment_params(Segment),
+  SchemaNodes = ordsets:from_list( maps:keys(SchemaCopies) ),
+  ActualNodes = ordsets:from_list( maps:get(nodes, dlss_segment:get_info(Segment)) ),
+  ActiveNodes = ordsets:from_list( dlss_backend:get_active_nodes() ),
+
+  ordsets:intersection( SchemaNodes, ActiveNodes ) -- ActualNodes.
 
 %%============================================================================
 %% The transformations

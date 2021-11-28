@@ -30,6 +30,7 @@
   add_node/1,
   remove_node/1,
   get_nodes/0,
+  get_active_nodes/0,
   transaction/1,sync_transaction/1,
   lock/2,
   verify_hash/0, verify_hash/1,
@@ -83,6 +84,9 @@ remove_node(Node)->
 
 get_nodes()->
   mnesia:system_info(db_nodes).
+
+get_active_nodes()->
+  mnesia:system_info(running_db_nodes).
 
 transaction(Fun)->
   % We use the mnesia engine to deliver the true distributed ACID transactions

@@ -25,6 +25,7 @@
   add_node/1,remove_node/1,
   get_nodes/0,
   get_ready_nodes/0,
+  get_active_nodes/0,
   get_storages/0,
   get_storage_type/1,
   get_storage_root/1,
@@ -99,11 +100,21 @@ get_nodes()->
 % Returns
 % [node1,node2 ..]
 % where the type of a name of a node is an atom
-%% @enddlss_segment:get_local_segments()
+%% @end
 %-----------------------------------------------------------------
 -spec get_ready_nodes() -> ListOfNode :: list().
 get_ready_nodes()->
   dlss_node:get_ready_nodes().
+
+%-----------------------------------------------------------------
+%% @doc	Get list of active dlss nodes
+% Returns
+% [node1,node2 ..]
+% where the type of a name of a node is an atom
+%% @end
+%-----------------------------------------------------------------
+get_active_nodes()->
+  dlss_backend:get_active_nodes().
 
 %-----------------------------------------------------------------
 %% @doc	Get list of all dlss storages.
