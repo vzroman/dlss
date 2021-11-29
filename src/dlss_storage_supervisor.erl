@@ -872,6 +872,7 @@ check_density( Storage, Node )->
   {ok, #{copies := Copies}} = dlss_storage:segment_params( Root ),
   case master_node( Copies ) of
     Node ->
+
       % The Node is the master for the root segment of the storage, run check
       TS = erlang:system_time( second ),
 
@@ -904,6 +905,7 @@ check_density( Storage, Node )->
 eval_segment_efficiency( Segment )->
 
   #{ type:= Type }=dlss_segment:get_info( Segment ),
+
 
   % Prepare the deleted flag
   DeletedValue =
@@ -941,7 +943,17 @@ eval_segment_efficiency( Segment )->
       true -> 1
     end,
 
-  Density * Sparseness.
+  AbsEfficiency = Density * Sparseness,
+  AbsLost = 1 - AbsEfficiency,
+
+  Size = dlss_segment:get_size( Segment ),
+  Limit = segment_level_limit( 0 ),
+
+  Occupied = Size / ( Limit * ?MB ),
+
+  CorrectedLost = AbsLost * (0.8 - Occupied),
+
+  AbsEfficiency + CorrectedLost.
 
 
 %%============================================================================
