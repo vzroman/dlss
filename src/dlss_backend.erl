@@ -250,6 +250,9 @@ init_backend(#{
           ?LOGINFO("verify hash values for hosted storages"),
           ok = verify_hash( node() ),
 
+          ?LOGINFO("run data synchronization"),
+          ok = sync_data(),
+
           ?LOGINFO("waiting for segemnts availability..."),
           wait_segments(StartTimeout);
         true ->
@@ -259,11 +262,14 @@ init_backend(#{
           ?LOGINFO("waiting for schema availability..."),
           ok = mnesia:wait_for_tables([schema,dlss_schema],?ENV(schema_start_timeout, ?WAIT_SCHEMA_TIMEOUT)),
 
+          ?LOGINFO("add local only segments"),
+          add_local_only_segments(),
+
           ?LOGINFO("verify hash values for hosted storages"),
           ok = verify_hash( node() ),
 
-          ?LOGINFO("add local only segments"),
-          add_local_only_segments(),
+          ?LOGINFO("run data synchronization"),
+          ok = sync_data(),
 
           ?LOGINFO("waiting for segemnts availability..."),
           wait_segments(StartTimeout)
@@ -323,6 +329,13 @@ verify_hash( Node )->
    end || Storage <- dlss_storage:get_storages() ],
 
   ok.
+
+sync_data()->
+  Node = node(),
+  [begin
+     ?LOGINFO("sync data for ~p",[S]),
+     dlss_storage_supervisor:sync_copies(S,Node)
+   end || S <- dlss_node:dlss:get_storages() ].
 
 wait_segments(Timeout)->
   Segments=dlss:get_segments(),

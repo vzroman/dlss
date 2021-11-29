@@ -1044,9 +1044,17 @@ dirty_range_select(Storage, StartKey, EndKey, Limit) ->
   % Order the segments by level and then by start key
   OrderedSegments = lists:usort( Segments ),
 
+  % The segments can contain a lot of @deleted@ records, therefore we try
+  % to embrace a longer range for each segment scanning iteration to cut down
+  % the number of iterations
+  ScanLimit =
+    if
+      is_number(Limit), Limit < 1024 -> 1024;
+      true -> Limit
+    end,
   % scan each segment
   Results =
-    [ { L, scan_segment( S, StartKey, EndKey, Limit) } || [L,_Key, S] <- OrderedSegments ],
+    [ { L, scan_segment( S, StartKey, EndKey, ScanLimit) } || [L,_Key, S] <- OrderedSegments ],
 
   % Merge by segments results
   Merged = merge_results( Results ),

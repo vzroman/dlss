@@ -69,7 +69,8 @@
   start/1,
   start_link/1,
   stop/1,
-  verify_segment_hash/2
+  verify_segment_hash/2,
+  sync_copies/2
 ]).
 %%=================================================================
 %%	OTP
