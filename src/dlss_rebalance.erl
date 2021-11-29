@@ -208,15 +208,16 @@ fold(Fun, Acc, Segment)->
       true -> fun ets_bulk_read/2
     end,
   fold( Read(Segment, '$start_of_table'), Segment, Read, Fun, Acc ).
-fold([{K,V}|Rest], Segment, Read, Fun, Acc ) ->
-  Rest1=
-    if
-      length(Rest) > 0 -> Rest;
-      true -> Read(Segment, K)
-    end,
-  fold(Rest1, Segment, Read, Fun, Fun(K,V,Acc) );
-fold(_End, _Segment, _Read, _Fun, Acc)->
-  Acc.
+fold(Records, Segment, Read, Fun, Acc0 ) ->
+  Acc1 =
+    lists:foldl(Fun, Acc0, Records ),
+
+  if
+    length(Records) < ?BATCH_SIZE -> Acc1;
+    true ->
+      { LastKey, _} = lists:last( Records ),
+      fold(Read(Segment, LastKey), Segment, Read, Fun, Acc1 )
+  end.
 
 
 %%=================================================================

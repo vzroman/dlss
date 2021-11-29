@@ -913,7 +913,7 @@ eval_segment_efficiency( Segment )->
     end,
 
   #{ deleted := Deleted, total := Total, gaps := Gaps }=
-    dlss_rebalance:fold(fun(_K, V, #{
+    dlss_rebalance:fold(fun({_K, V}, #{
       deleted := D, total := T, gaps := G, prev := P
     } = Acc)->
       X = if V =:= DeletedValue-> 0; true -> 1 end,
@@ -922,7 +922,8 @@ eval_segment_efficiency( Segment )->
         total => T + 1,
         gaps => if P =:= 1, X =:= 0 ->  G + 1; true -> G end,
         prev => X
-      }
+      };
+      (_Other, Acc) -> Acc
     end, #{
       deleted => 0, total => 0, gaps => 0, prev => 1
     }, Segment),
