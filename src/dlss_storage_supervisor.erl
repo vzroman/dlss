@@ -918,7 +918,7 @@ eval_segment_efficiency( Segment )->
     } = Acc)->
       X = if V =:= DeletedValue-> 0; true -> 1 end,
       Acc#{
-        deleted => if X -> D; true -> D + 1 end,
+        deleted => if X =:= 0 -> D + 1; true -> D end,
         total => T + 1,
         gaps => if P =:= 1, X =:= 0 ->  G + 1; true -> G end,
         prev => X
@@ -928,6 +928,7 @@ eval_segment_efficiency( Segment )->
       deleted => 0, total => 0, gaps => 0, prev => 1
     }, Segment),
 
+  ?LOGINFO("~p, stat: total ~p, deleted ~p, gaps ~p",[ Segment, Total, Deleted, Gaps ]),
   Density =
     if
       Total > 0 -> ( Total - Deleted ) / Total;
