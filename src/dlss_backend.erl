@@ -335,7 +335,7 @@ sync_data()->
   [begin
      ?LOGINFO("sync data for ~p",[S]),
      dlss_storage_supervisor:sync_copies(S,Node)
-   end || S <- dlss_node:dlss:get_storages() ].
+   end || S <- dlss:get_storages() ].
 
 wait_segments(Timeout)->
   Segments=dlss:get_segments(),

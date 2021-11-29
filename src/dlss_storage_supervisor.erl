@@ -29,7 +29,7 @@
 % because mnesia_eleveldb uses this format
 -define(DELETED, <<131,104,3,106,106,100,0,9,64,100,101,108,101,116,101,100,64>>).
 
--record(state,{ storage, type, cycle }).
+-record(state,{ storage, type, cycle, check_ts }).
 -record(dump,{ version, hash }).
 
 %%=================================================================
@@ -90,7 +90,7 @@
 -ifdef(TEST).
 
 -export([
-  loop/3
+  loop/1
 ]).
 
 -endif.
@@ -165,7 +165,8 @@ init([ Storage ])->
   {ok,#state{
     storage = Storage,
     type = Type,
-    cycle = Cycle
+    cycle = Cycle,
+    check_ts = undefined
   }}.
 
 handle_call(_Params, _From, State) ->
@@ -182,20 +183,20 @@ handle_cast(_Request,State)->
 %%============================================================================
 handle_info(loop,#state{
   storage = Storage,
-  cycle = Cycle,
-  type = Type
+  cycle = Cycle
 }=State)->
 
   % The loop
   {ok,_}=timer:send_after( Cycle, loop ),
 
-  try loop( Storage, Type, node() )
-  catch
-    _:Error:Stack->
-      ?LOGINFO("~p storage supervisor error ~p, stack ~p",[ Storage, Error, Stack ])
-  end,
+  State1 =
+    try loop( State )
+    catch
+      _:Error:Stack->
+        ?LOGINFO("~p storage supervisor error ~p, stack ~p",[ Storage, Error, Stack ])
+    end,
 
-  {noreply,State}.
+  {noreply, State1}.
 
 
 terminate(Reason,#state{storage = Storage})->
@@ -205,7 +206,12 @@ terminate(Reason,#state{storage = Storage})->
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
 
-loop( Storage, Type, Node )->
+loop( #state{ storage =  Storage, type = Type, check_ts = LastCheckTS} = State )->
+
+  Node = node(),
+
+  % Check hash values of storage segments
+  verify_storage_hash( Storage, Node ),
 
   % Synchronize actual copies configuration to the schema settings
   sync_copies( Storage, Node ),
@@ -219,17 +225,40 @@ loop( Storage, Type, Node )->
 
       ?LOGDEBUG("transformation: ~p ~p",[ Operation, Segment ]),
       % Master commits the schema transformation if it is finished
-      hash_confirm( Operation, Segment, Node );
-    _->
+      hash_confirm( Operation, Segment, Node ),
 
-      % Check hash values of storage segments
-      verify_storage_hash( Storage, Node ),
+      State;
+    _->
 
       % Remove stale head
       purge_stale( Storage, Node ),
 
       % No active transformations, check limits
-      check_limits( Storage, Node )
+      TS = erlang:system_time( second ),
+      case check_limits( Storage, Node ) of
+        none ->
+          % No transformations are scheduled, check density of the storage
+          CheckInterval =
+            case ?ENV(dencity_check_interval, ?DEFAULT_DENSITY_CHECK_INTERVAL) of
+              _CheckInterval when is_number(_CheckInterval) -> _CheckInterval;
+              _ -> ?DEFAULT_DENSITY_CHECK_INTERVAL
+            end,
+
+          if
+            not is_number( LastCheckTS ); TS > LastCheckTS + CheckInterval ->
+              % It's time to run density check
+              check_density( Storage, Node ),
+              State#state{ check_ts = TS };
+            true ->
+              % It's too early to check density
+              State
+          end;
+        _ ->
+          % Another transformation has been already scheduled.
+          % We can skip the next storage density check because the storage is going
+          % to be rebalanced after after the ongoing transformation
+          State#state{ check_ts = TS }
+      end
   end.
 
 %%============================================================================
@@ -766,15 +795,17 @@ check_limits( Storage, Node )->
   case check_level_limits( Levels, Node ) of
     {Level, Segment} ->
       ?LOGINFO("level ~p has reached the limit, queue merge ~p",[Level, Segment]),
-      dlss_storage:merge_segment( Segment );
+      dlss_storage:merge_segment( Segment ),
+      merge;
     undefined ->
       %--------Step 2. Check segments size limits------------------------------
       case check_size_limit( Levels, Node ) of
         {Level, Segment}->
           ?LOGINFO("~p from level ~p has reached the limit, queue a split",[Segment, Level]),
-          dlss_storage:split_segment( Segment );
+          dlss_storage:split_segment( Segment ),
+          split;
         undefined->
-          ok
+          none
       end
   end.
 
@@ -835,6 +866,19 @@ check_segment_size([{ Segment, #{level:=Level, copies:=Copies}}| Rest], Node)->
 check_segment_size([], _Node)->
   undefined.
 
+
+check_density( Storage, Node )->
+  Root = dlss_storage:root_segment( Storage ),
+  {ok, #{copies := Copies}} = dlss_storage:segment_params( Root ),
+  case master_node( Copies ) of
+    Node ->
+      % The Node is the master for the root segment of the storage, run check
+      ?LOGINFO("start density check for ~p",[ Storage ]),
+      ok;
+    _ ->
+      % The node is not the master for the root, ignore
+      ignore
+  end.
 
 %%============================================================================
 %%	Internal helpers
