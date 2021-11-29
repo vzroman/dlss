@@ -332,10 +332,13 @@ verify_hash( Node )->
 
 sync_data()->
   Node = node(),
+
   [begin
      ?LOGINFO("sync data for ~p",[S]),
      dlss_storage_supervisor:sync_copies(S,Node)
-   end || S <- dlss:get_storages() ].
+   end || S <- dlss:get_storages() ],
+
+  ok.
 
 wait_segments(Timeout)->
   Segments=dlss:get_segments(),

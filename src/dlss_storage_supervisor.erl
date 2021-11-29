@@ -90,7 +90,7 @@
 -ifdef(TEST).
 
 -export([
-  loop/1
+  loop/3
 ]).
 
 -endif.
@@ -873,12 +873,74 @@ check_density( Storage, Node )->
   case master_node( Copies ) of
     Node ->
       % The Node is the master for the root segment of the storage, run check
+      TS = erlang:system_time( second ),
+
       ?LOGINFO("start density check for ~p",[ Storage ]),
-      ok;
+
+      Efficiency = eval_segment_efficiency( Root ),
+      Limit = ?ENV(density_limit, ?DEFAULT_DENSITY_LIMIT),
+
+      ?LOGINFO("~p efficiency is ~.2f%, limit is ~.2f%", [
+        Storage,
+        Efficiency * 100.0,
+        Limit * 100.0
+      ]),
+
+      if
+        Efficiency < Limit->
+          ?LOGINFO("~p has low efficiency, queue a rebalancing",[ Root ]),
+          dlss_storage:split_segment( Root );
+        true ->
+          ok
+      end,
+
+      ?LOGINFO("finish density check for ~p, duration ~p sec.",[ Storage, erlang:system_time( second ) - TS ]);
     _ ->
       % The node is not the master for the root, ignore
       ignore
   end.
+
+
+eval_segment_efficiency( Segment )->
+
+  #{ type:= Type }=dlss_segment:get_info( Segment ),
+
+  % Prepare the deleted flag
+  DeletedValue =
+    if
+      Type=:=disc -> ?DELETED;
+      true -> '@deleted@'
+    end,
+
+  #{ deleted := Deleted, total := Total, gaps := Gaps }=
+    dlss_rebalance:fold(fun(_K, V, #{
+      deleted := D, total := T, gaps := G, prev := P
+    } = Acc)->
+      X = if V =:= DeletedValue-> 0; true -> 1 end,
+      Acc#{
+        deleted => if X -> D; true -> D + 1 end,
+        total => T + 1,
+        gaps => if P =:= 1, X =:= 0 ->  G + 1; true -> G end,
+        prev => X
+      }
+    end, #{
+      deleted => 0, total => 0, gaps => 0, prev => 1
+    }, Segment),
+
+  Density =
+    if
+      Total > 0 -> ( Total - Deleted ) / Total;
+      true -> 1
+    end,
+
+  Sparseness =
+    if
+      Gaps > 0 -> 0.5 + Gaps / Total ;
+      true -> 1
+    end,
+
+  Density * Sparseness.
+
 
 %%============================================================================
 %%	Internal helpers
@@ -919,4 +981,15 @@ level_count_limit( _Level )->
   % We reject using more levels to minimize @deleted@ records
   % which in case of 2-level storage exist only in the root segment
   unlimited.
+
+%%====================================================================
+%%		Test API
+%%====================================================================
+-ifdef(TEST).
+
+loop( Storage, Type, _Node)->
+  loop( #state{storage = Storage, type = Type } ).
+
+-endif.
+
 
