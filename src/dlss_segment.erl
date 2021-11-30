@@ -340,6 +340,7 @@ remove_node(Segment, Node, read_only)->
     remove_node(Segment, Node, read_write )
   end);
 remove_node(Segment, Node, _AccessMode)->
+  ?LOGINFO("DEBUG: remove segment ~p from node ~p",[Segment,Node]),
   case mnesia:del_table_copy(Segment,Node) of
     {atomic,ok}->ok;
     {aborted,Reason}->{error,Reason}

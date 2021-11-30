@@ -80,6 +80,7 @@ add_node(Node)->
 
 % Remove a node from the schema
 remove_node(Node)->
+  ?LOGINFO("DEBUG: remove node ~p",[Node]),
   mnesia:del_table_copy(schema,Node).
 
 get_nodes()->
