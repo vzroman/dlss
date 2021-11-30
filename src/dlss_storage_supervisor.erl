@@ -239,7 +239,7 @@ loop( #state{ storage =  Storage, type = Type, check_ts = LastCheckTS} = State )
         none ->
           % No transformations are scheduled, check density of the storage
           CheckInterval =
-            case ?ENV(dencity_check_interval, ?DEFAULT_DENSITY_CHECK_INTERVAL) of
+            case ?ENV(density_check_interval, ?DEFAULT_DENSITY_CHECK_INTERVAL) of
               _CheckInterval when is_number(_CheckInterval) -> _CheckInterval;
               _ -> ?DEFAULT_DENSITY_CHECK_INTERVAL
             end,
