@@ -379,14 +379,6 @@ wait_for_nodes( Segment )->
   ActualNodes = ordsets:from_list( maps:get(nodes, dlss_segment:get_info(Segment)) ),
   ActiveNodes = ordsets:from_list( dlss_backend:get_active_nodes() ),
 
-  ?LOGINFO("DEBUG: SchemaNodes ~p, ActualNodes ~p, ActiveNodes ~p, ActualNodes -- ActiveNodes ~p, final ~p",[
-    SchemaNodes,
-    ActualNodes,
-    ActiveNodes,
-    ActualNodes -- ActiveNodes,
-    ordsets:intersection( SchemaNodes, ActiveNodes ) -- ActualNodes
-  ]),
-
   case ActualNodes -- ActiveNodes of
     []->
       % Mnesia schema is ready, check dlss schema

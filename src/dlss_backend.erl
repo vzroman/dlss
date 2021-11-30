@@ -80,7 +80,6 @@ add_node(Node)->
 
 % Remove a node from the schema
 remove_node(Node)->
-  ?LOGINFO("DEBUG: remove node ~p",[Node]),
   mnesia:del_table_copy(schema,Node).
 
 get_nodes()->
@@ -518,7 +517,7 @@ purge_stale_segments( ToDelete ) ->
                         ?LOGINFO("segment ~p was removed succesfully",[T]),
                         Acc;
                       {error, Error}->
-                        ?LOGWARNING("unable to remove stale segment ~p, error ~p",[ T, Error ]),
+                        ?LOGDEBUG("unable to remove stale segment ~p, error ~p",[ T, Error ]),
                         Acc#{ T => TimeOut }
                     end;
                   true ->
@@ -529,7 +528,7 @@ purge_stale_segments( ToDelete ) ->
                 Acc
             end;
           WaitForNodes->
-            ?LOGWARNING("unable to remove stale segment ~p, ~p nodes are not ready",[ T, WaitForNodes ]),
+            ?LOGDEBUG("unable to remove stale segment ~p, ~p nodes are not ready",[ T, WaitForNodes ]),
             Acc
 
         end;
