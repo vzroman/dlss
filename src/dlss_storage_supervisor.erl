@@ -959,7 +959,7 @@ eval_segment_efficiency( Segment )->
             gaps => Gaps,
             avg_record => AvgRecord,
             avg_gap => AvgGap,
-            capacity => Capacity
+            capacity => round(Capacity)
           }]),
 
           % Total efficiency
