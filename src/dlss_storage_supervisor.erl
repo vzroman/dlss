@@ -70,7 +70,10 @@
   start_link/1,
   stop/1,
   verify_segment_hash/2,
-  sync_copies/2
+  sync_copies/2,
+
+  pretty_size/1,
+  pretty_count/1
 ]).
 %%=================================================================
 %%	OTP
@@ -1019,9 +1022,9 @@ pretty_size( Bytes )->
 
 pretty_count( Count )->
   pretty_print([
-    {"B", 10, 9},
-    {"M", 10, 6},
-    {"T", 10, 3},
+    {"bn", 10, 9},
+    {"mn", 10, 6},
+    {"ths", 10, 3},
     {"", 10, 0}
   ], Count).
 
@@ -1045,7 +1048,7 @@ head_units([{N1,U1}|Rest]) when N1 > 0 ->
       [{N1,U1}]
   end;
 head_units([Item])->
-  Item;
+  [Item];
 head_units([_Item|Rest])->
   head_units(Rest).
 
