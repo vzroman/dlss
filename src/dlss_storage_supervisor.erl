@@ -1008,23 +1008,39 @@ level_count_limit( _Level )->
   % which in case of 2-level storage exist only in the root segment
   unlimited.
 
-pretty_size( Size )->
-  Bytes = round(Size),
-  pretty_size([
-    {"TB", 40},
-    {"GB", 30},
-    {"MB", 20},
-    {"KB", 10}
+pretty_size( Bytes )->
+  pretty_print([
+    {"TBytes", 2, 40},
+    {"GBytes", 2, 30},
+    {"MBytes", 2, 20},
+    {"KBytes", 2, 10},
+    {"Bytes", 2, 0}
   ], Bytes).
-pretty_size([{Unit, Pow}| Rest], Size )->
-  UnitSize = round(math:pow(2, Pow)),
-  case Size div UnitSize of
-    0 -> pretty_size( Rest, Size );
-    Count ->
-      integer_to_list(Count) ++ Unit ++ " " ++ pretty_size(Rest, Size rem UnitSize)
+
+pretty_print( Units, Value )->
+  Units1 = eval_units( Units, round(Value) ),
+  Units2 = head_units( Units1 ),
+  string:join([ integer_to_list(N) ++ U || {N,U} <- Units2 ],", ").
+
+
+eval_units([{Unit, Base, Pow}| Rest], Value )->
+  UnitSize = round( math:pow(Base, Pow) ),
+  [{ Value div UnitSize, Unit} | eval_units(Rest, Value rem UnitSize)];
+eval_units([],_Value)->
+  [].
+
+head_units([{N1,U1}|Rest]) when N1 > 0 ->
+  case Rest of
+    [{N2,U2}|_] when N2 > 0->
+      [{N1,U1},{N2,U2}];
+    _ ->
+      [{N1,U1}]
   end;
-pretty_size([], Size )->
-  integer_to_list(Size) ++"B".
+head_units([Item])->
+  Item;
+head_units([_Item|Rest])->
+  head_units(Rest).
+
 
 %%====================================================================
 %%		Test API
