@@ -502,27 +502,35 @@ purge_stale_segments( ToDelete ) ->
       { error, not_found } ->
         % The segment does not belong to the schema
         #{ nodes := Nodes } = dlss_segment:get_info(T),
-        case ordsets:intersection( ordsets:from_list(Nodes), ReadyNodes ) of
-          [Node|_] ->
-            % This is the master node for the segment
-            TimeOut = maps:get(T, ToDelete, TS + Delay ),
-            if
-              TS > TimeOut ->
-                ?LOGINFO("removing stale segment ~p",[T]),
-                case dlss_segment:remove( T ) of
-                  ok ->
-                    ?LOGINFO("segment ~p was removed succesfully",[T]),
-                    Acc;
-                  {error, Error}->
-                    ?LOGWARNING("unable to remove stale segment ~p, error ~p",[ T, Error ]),
+        case ordsets:from_list(Nodes) -- ReadyNodes of
+          [] ->
+            % All segment nodes are ready
+            case ordsets:intersection( ordsets:from_list(Nodes), ReadyNodes ) of
+              [Node|_] ->
+                % This is the master node for the segment
+                TimeOut = maps:get(T, ToDelete, TS + Delay ),
+                if
+                  TS > TimeOut ->
+                    ?LOGINFO("removing stale segment ~p",[T]),
+                    case dlss_segment:remove( T ) of
+                      ok ->
+                        ?LOGINFO("segment ~p was removed succesfully",[T]),
+                        Acc;
+                      {error, Error}->
+                        ?LOGWARNING("unable to remove stale segment ~p, error ~p",[ T, Error ]),
+                        Acc#{ T => TimeOut }
+                    end;
+                  true ->
                     Acc#{ T => TimeOut }
                 end;
-              true ->
-                Acc#{ T => TimeOut }
+              _ ->
+                % This node is not the master for the segment, the master will delete it
+                Acc
             end;
-          _ ->
-            % This node is not the master for the segment, the master will delete it
+          WaitForNodes->
+            ?LOGWARNING("unable to remove stale segment ~p, ~p nodes are not ready",[ T, WaitForNodes ]),
             Acc
+
         end;
       _ ->
         % The segment does not belong to the storage

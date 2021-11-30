@@ -379,7 +379,13 @@ wait_for_nodes( Segment )->
   ActualNodes = ordsets:from_list( maps:get(nodes, dlss_segment:get_info(Segment)) ),
   ActiveNodes = ordsets:from_list( dlss_backend:get_active_nodes() ),
 
-  ordsets:intersection( SchemaNodes, ActiveNodes ) -- ActualNodes.
+  case ActualNodes -- ActiveNodes of
+    []->
+      % Mnesia schema is ready, check dlss schema
+      ordsets:intersection( SchemaNodes, ActiveNodes ) -- ActualNodes;
+    MnesiaWait ->
+      MnesiaWait
+  end.
 
 %%============================================================================
 %% The transformations
@@ -804,7 +810,14 @@ check_limits( Storage, Node )->
       %--------Step 2. Check segments size limits------------------------------
       case check_size_limit( Levels, Node ) of
         {Level, Segment}->
-          ?LOGINFO("~p from level ~p has reached the limit, queue a split",[Segment, Level]),
+          Size = dlss_segment:get_size( Segment ),
+          Limit = segment_level_limit( Level ),
+          ?LOGINFO("~p from size ~p level ~p has reached the limit ~p, queue a split",[
+            Segment,
+            pretty_size(Size),
+            pretty_size(Limit * ?MB),
+            Level
+          ]),
           dlss_storage:split_segment( Segment ),
           split;
         undefined->
