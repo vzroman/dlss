@@ -1021,7 +1021,7 @@ pretty_size([{Unit, Pow}| Rest], Size )->
   case Size div UnitSize of
     0 -> pretty_size( Rest, Size );
     Count ->
-      integer_to_list(Count) ++ Unit ++ " "+pretty_size(Rest, Size rem UnitSize)
+      integer_to_list(Count) ++ Unit ++ " " ++ pretty_size(Rest, Size rem UnitSize)
   end;
 pretty_size([], Size )->
   integer_to_list(Size) ++"B".
