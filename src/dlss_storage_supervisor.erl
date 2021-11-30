@@ -943,10 +943,13 @@ eval_segment_efficiency( Segment )->
           ?LOGINFO("~p has only deleted records",[ Segment ]),
           1 - ( Size / Limit );
         true ->
-
           AvgRecord = Size / ( Total - Deleted ),
           Capacity = Limit / AvgRecord,
-          AvgGap = Deleted / Gaps,
+          AvgGap =
+            if
+              Gaps > 0 -> Deleted / Gaps;
+              true -> 0
+            end,
 
           ?LOGINFO("~p statistics: ~p",[ Segment, #{
             size => Size,
