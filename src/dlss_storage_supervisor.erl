@@ -1025,7 +1025,7 @@ pretty_count( Count )->
     {"bn", 10, 9},
     {"mn", 10, 6},
     {"ths", 10, 3},
-    {"", 10, 0}
+    {"items", 10, 0}
   ], Count).
 
 pretty_print( Units, Value )->
