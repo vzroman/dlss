@@ -458,7 +458,7 @@ default_partitioning( Node )->
   %TODO. Evaluate which node is cheaper to reboot:
   % 1. Which node has less segments that has only 1 active copy
   % 2. Which node has less segments
-  % 3. Which node has less name
+  % 3. Which node has a greater name
   % Only 3 is implemented at the moment
   NeedsReload=ThisNode > Node,
 
