@@ -952,13 +952,13 @@ eval_segment_efficiency( Segment )->
             end,
 
           ?LOGINFO("~p statistics: ~p",[ Segment, #{
-            size => Size / ?MB,
-            limit => Limit,
+            size => pretty_size(Size),
+            limit => pretty_size(Limit * ?MB),
             total => Total,
             deleted => Deleted,
             gaps => Gaps,
-            avg_record => AvgRecord,
-            avg_gap => AvgGap,
+            avg_record => pretty_size(AvgRecord),
+            avg_gap_length => AvgGap,
             capacity => round(Capacity)
           }]),
 
@@ -1000,13 +1000,31 @@ segment_level_limit( Level )->
   maps:get( Level, Limits ).
 
 level_count_limit( 0 )->
-  % There can be only one root segment
+  % There can be only one root {"B", 0}segment
   1;
 level_count_limit( _Level )->
   % A storage always has only 2 levels.
   % We reject using more levels to minimize @deleted@ records
   % which in case of 2-level storage exist only in the root segment
   unlimited.
+
+pretty_size( Size )->
+  Bytes = round(Size),
+  pretty_size([
+    {"TB", 40},
+    {"GB", 30},
+    {"MB", 20},
+    {"KB", 10}
+  ], Bytes).
+pretty_size([{Unit, Pow}| Rest], Size )->
+  UnitSize = math:pow(2, Pow),
+  case Size div UnitSize of
+    0 -> pretty_size( Rest, Size );
+    Count ->
+      integer_to_list(Count) ++ Unit ++ " "+pretty_size(Rest, Size rem UnitSize)
+  end;
+pretty_size([], Size )->
+  integer_to_list(Size) ++"B".
 
 %%====================================================================
 %%		Test API
