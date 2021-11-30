@@ -953,6 +953,17 @@ eval_segment_efficiency( Segment )->
 
   CorrectedLost = AbsLost * (0.8 - Occupied),
 
+  ?LOGINFO("~p, stat:~r~n total ~p,~r~n deleted ~p,~r~n, gaps ~p,~r~n, density ~p,~r~n, sparseness ~p,~r~n, abs efficiency ~p,~r~n, occupied ~p,~r~n corrected lost ~p",[
+    Segment,
+    Total,
+    Deleted,
+    Gaps,
+    Density,
+    Sparseness,
+    AbsEfficiency,
+    CorrectedLost
+  ]),
+
   AbsEfficiency + CorrectedLost.
 
 
