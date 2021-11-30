@@ -936,7 +936,7 @@ eval_segment_efficiency( Segment )->
       1;
     true ->
       Size = dlss_segment:get_size( Segment ),
-      Limit = segment_level_limit( 0 ),
+      Limit = segment_level_limit( 0 ) * ?MB,
 
       if
         Total =:= Deleted ->
@@ -952,7 +952,7 @@ eval_segment_efficiency( Segment )->
             end,
 
           ?LOGINFO("~p statistics: ~p",[ Segment, #{
-            size => Size,
+            size => Size / ?MB,
             limit => Limit,
             total => Total,
             deleted => Deleted,
