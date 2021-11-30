@@ -248,7 +248,7 @@ loop( #state{ storage =  Storage, type = Type, check_ts = LastCheckTS} = State )
             not is_number( LastCheckTS ); TS > LastCheckTS + CheckInterval ->
               % It's time to run density check
               check_density( Storage, Node ),
-              State#state{ check_ts = TS };
+              State#state{ check_ts = erlang:system_time( second ) };
             true ->
               % It's too early to check density
               State
@@ -930,43 +930,39 @@ eval_segment_efficiency( Segment )->
       deleted => 0, total => 0, gaps => 0, prev => 1
     }, Segment),
 
-  ?LOGINFO("~p, stat: total ~p, deleted ~p, gaps ~p",[ Segment, Total, Deleted, Gaps ]),
-  Density =
-    if
-      Total > 0 -> ( Total - Deleted ) / Total;
-      true -> 1
-    end,
+  if
+    Total =:= 0 ->
+      ?LOGINFO("~p is empty",[ Segment ]),
+      1;
+    true ->
+      Size = dlss_segment:get_size( Segment ),
+      Limit = segment_level_limit( 0 ),
 
-  Sparseness =
-    if
-      Gaps > 0 -> 0.5 + Gaps / Total ;
-      true -> 1
-    end,
+      if
+        Total =:= Deleted ->
+          ?LOGINFO("~p has only deleted records",[ Segment ]),
+          1 - ( Size / Limit );
+        true ->
 
-  AbsEfficiency = Density * Sparseness,
-  AbsLost = 1 - AbsEfficiency,
+          AvgRecord = Size / ( Total - Deleted ),
+          Capacity = Limit / AvgRecord,
+          AvgGap = Deleted / Gaps,
 
-  Size = dlss_segment:get_size( Segment ),
-  Limit = segment_level_limit( 0 ),
+          ?LOGINFO("~p statistics: ~p",[ Segment, #{
+            size => Size,
+            limit => Limit,
+            total => Total,
+            deleted => Deleted,
+            gaps => Gaps,
+            avg_record => AvgRecord,
+            avg_gap => AvgGap,
+            capacity => Capacity
+          }]),
 
-  Occupied = Size / ( Limit * ?MB ),
-
-  CorrectedLost = AbsLost * (0.8 - Occupied),
-
-  ?LOGINFO("~p, stat: ~p",[
-    Segment,
-    #{
-      total => Total,
-      deleted => Deleted,
-      gaps => Gaps,
-      density => Density,
-      sparseness => Sparseness,
-      abs_efficiency => AbsEfficiency,
-      fullness_correction => CorrectedLost
-    }
-  ]),
-
-  AbsEfficiency + CorrectedLost.
+          % Total efficiency
+          (Capacity - AvgGap) / Capacity
+      end
+  end.
 
 
 %%============================================================================
