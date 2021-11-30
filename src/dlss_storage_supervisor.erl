@@ -1017,7 +1017,7 @@ pretty_size( Size )->
     {"KB", 10}
   ], Bytes).
 pretty_size([{Unit, Pow}| Rest], Size )->
-  UnitSize = math:pow(2, Pow),
+  UnitSize = round(math:pow(2, Pow)),
   case Size div UnitSize of
     0 -> pretty_size( Rest, Size );
     Count ->
