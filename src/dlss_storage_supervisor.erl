@@ -954,12 +954,12 @@ eval_segment_efficiency( Segment )->
           ?LOGINFO("~p statistics: ~p",[ Segment, #{
             size => pretty_size(Size),
             limit => pretty_size(Limit),
-            total => Total,
-            deleted => Deleted,
-            gaps => Gaps,
+            total => pretty_count(Total),
+            deleted => pretty_count(Deleted),
+            gaps => pretty_count(Gaps),
             avg_record => pretty_size(AvgRecord),
-            avg_gap_length => AvgGap,
-            capacity => round(Capacity)
+            avg_gap_length => pretty_count(AvgGap),
+            capacity => pretty_count(Capacity)
           }]),
 
           % Total efficiency
@@ -1010,17 +1010,25 @@ level_count_limit( _Level )->
 
 pretty_size( Bytes )->
   pretty_print([
-    {"TBytes", 2, 40},
-    {"GBytes", 2, 30},
-    {"MBytes", 2, 20},
-    {"KBytes", 2, 10},
-    {"Bytes", 2, 0}
+    {"TB", 2, 40},
+    {"GB", 2, 30},
+    {"MB", 2, 20},
+    {"KB", 2, 10},
+    {"B", 2, 0}
   ], Bytes).
+
+pretty_count( Count )->
+  pretty_print([
+    {"B", 10, 9},
+    {"M", 10, 6},
+    {"T", 10, 3},
+    {"", 10, 0}
+  ], Count).
 
 pretty_print( Units, Value )->
   Units1 = eval_units( Units, round(Value) ),
   Units2 = head_units( Units1 ),
-  string:join([ integer_to_list(N) ++ U || {N,U} <- Units2 ],", ").
+  string:join([ integer_to_list(N) ++" " ++ U || {N,U} <- Units2 ],", ").
 
 
 eval_units([{Unit, Base, Pow}| Rest], Value )->
