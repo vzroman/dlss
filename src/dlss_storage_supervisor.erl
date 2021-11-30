@@ -953,7 +953,7 @@ eval_segment_efficiency( Segment )->
 
           ?LOGINFO("~p statistics: ~p",[ Segment, #{
             size => pretty_size(Size),
-            limit => pretty_size(Limit * ?MB),
+            limit => pretty_size(Limit),
             total => Total,
             deleted => Deleted,
             gaps => Gaps,
