@@ -29,6 +29,7 @@
   %-----------------Copy-------------------------------------------
   copy/6,
   delete_until/2,
+  fold/3,
 
   disc_bulk_read/2,
   disc_bulk_write/2,
@@ -197,6 +198,26 @@ delete_ets_until( Records, ToKey, Segment ) when length(Records) > 0 ->
   end;
 delete_ets_until( [], _ToKey, _Segment )->
   ok.
+
+
+fold(Fun, Acc, Segment)->
+  #{ type := Type }=dlss_segment:get_info( Segment ),
+  Read =
+    if
+      Type =:= disc  -> fun disc_bulk_read/2;
+      true -> fun ets_bulk_read/2
+    end,
+  fold( Read(Segment, '$start_of_table'), Segment, Read, Fun, Acc ).
+fold(Records, Segment, Read, Fun, Acc0 ) ->
+  Acc1 =
+    lists:foldl(Fun, Acc0, Records ),
+
+  if
+    length(Records) < ?BATCH_SIZE -> Acc1;
+    true ->
+      { LastKey, _} = lists:last( Records ),
+      fold(Read(Segment, LastKey), Segment, Read, Fun, Acc1 )
+  end.
 
 
 %%=================================================================

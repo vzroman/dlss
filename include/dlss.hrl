@@ -22,12 +22,14 @@
 -define(MB,1048576).
 
 -define(DEFAULT_SEGMENT_LIMITS,#{
-  0=> 1024,
+  0=> 64,
   1=> 1024 * 10
 }). % MB
 
 -define(DEFAULT_SPLIT_MEDIAN, 0.55).
--define(DEFAULT_BUFFER_LIMIT, 10).
+
+-define(DEFAULT_DENSITY_CHECK_INTERVAL, 3600).  % 1 hour
+-define(DEFAULT_DENSITY_LIMIT, 0.8).            % 80 percent
 
 
 -record(kv,{key,value}).

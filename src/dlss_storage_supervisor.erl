@@ -29,7 +29,7 @@
 % because mnesia_eleveldb uses this format
 -define(DELETED, <<131,104,3,106,106,100,0,9,64,100,101,108,101,116,101,100,64>>).
 
--record(state,{ storage, type, cycle }).
+-record(state,{ storage, type, cycle, check_ts }).
 -record(dump,{ version, hash }).
 
 %%=================================================================
@@ -70,7 +70,10 @@
   start_link/1,
   stop/1,
   verify_segment_hash/2,
-  sync_copies/2
+  sync_copies/2,
+
+  pretty_size/1,
+  pretty_count/1
 ]).
 %%=================================================================
 %%	OTP
@@ -165,7 +168,8 @@ init([ Storage ])->
   {ok,#state{
     storage = Storage,
     type = Type,
-    cycle = Cycle
+    cycle = Cycle,
+    check_ts = undefined
   }}.
 
 handle_call(_Params, _From, State) ->
@@ -182,20 +186,20 @@ handle_cast(_Request,State)->
 %%============================================================================
 handle_info(loop,#state{
   storage = Storage,
-  cycle = Cycle,
-  type = Type
+  cycle = Cycle
 }=State)->
 
   % The loop
   {ok,_}=timer:send_after( Cycle, loop ),
 
-  try loop( Storage, Type, node() )
-  catch
-    _:Error:Stack->
-      ?LOGINFO("~p storage supervisor error ~p, stack ~p",[ Storage, Error, Stack ])
-  end,
+  State1 =
+    try loop( State )
+    catch
+      _:Error:Stack->
+        ?LOGINFO("~p storage supervisor error ~p, stack ~p",[ Storage, Error, Stack ])
+    end,
 
-  {noreply,State}.
+  {noreply, State1}.
 
 
 terminate(Reason,#state{storage = Storage})->
@@ -205,7 +209,12 @@ terminate(Reason,#state{storage = Storage})->
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
 
-loop( Storage, Type, Node )->
+loop( #state{ storage =  Storage, type = Type, check_ts = LastCheckTS} = State )->
+
+  Node = node(),
+
+  % Check hash values of storage segments
+  verify_storage_hash( Storage, Node ),
 
   % Synchronize actual copies configuration to the schema settings
   sync_copies( Storage, Node ),
@@ -219,17 +228,40 @@ loop( Storage, Type, Node )->
 
       ?LOGDEBUG("transformation: ~p ~p",[ Operation, Segment ]),
       % Master commits the schema transformation if it is finished
-      hash_confirm( Operation, Segment, Node );
-    _->
+      hash_confirm( Operation, Segment, Node ),
 
-      % Check hash values of storage segments
-      verify_storage_hash( Storage, Node ),
+      State;
+    _->
 
       % Remove stale head
       purge_stale( Storage, Node ),
 
       % No active transformations, check limits
-      check_limits( Storage, Node )
+      TS = erlang:system_time( second ),
+      case check_limits( Storage, Node ) of
+        none ->
+          % No transformations are scheduled, check density of the storage
+          CheckInterval =
+            case ?ENV(density_check_interval, ?DEFAULT_DENSITY_CHECK_INTERVAL) of
+              _CheckInterval when is_number(_CheckInterval) -> _CheckInterval;
+              _ -> ?DEFAULT_DENSITY_CHECK_INTERVAL
+            end,
+
+          if
+            not is_number( LastCheckTS ); TS > LastCheckTS + CheckInterval ->
+              % It's time to run density check
+              check_density( Storage, Node ),
+              State#state{ check_ts = erlang:system_time( second ) };
+            true ->
+              % It's too early to check density
+              State
+          end;
+        _ ->
+          % Another transformation has been already scheduled.
+          % We can skip the next storage density check because the storage is going
+          % to be rebalanced after after the ongoing transformation
+          State#state{ check_ts = TS }
+      end
   end.
 
 %%============================================================================
@@ -347,7 +379,13 @@ wait_for_nodes( Segment )->
   ActualNodes = ordsets:from_list( maps:get(nodes, dlss_segment:get_info(Segment)) ),
   ActiveNodes = ordsets:from_list( dlss_backend:get_active_nodes() ),
 
-  ordsets:intersection( SchemaNodes, ActiveNodes ) -- ActualNodes.
+  case ActualNodes -- ActiveNodes of
+    []->
+      % Mnesia schema is ready, check dlss schema
+      ordsets:intersection( SchemaNodes, ActiveNodes ) -- ActualNodes;
+    MnesiaWait ->
+      MnesiaWait
+  end.
 
 %%============================================================================
 %% The transformations
@@ -766,15 +804,24 @@ check_limits( Storage, Node )->
   case check_level_limits( Levels, Node ) of
     {Level, Segment} ->
       ?LOGINFO("level ~p has reached the limit, queue merge ~p",[Level, Segment]),
-      dlss_storage:merge_segment( Segment );
+      dlss_storage:merge_segment( Segment ),
+      merge;
     undefined ->
       %--------Step 2. Check segments size limits------------------------------
       case check_size_limit( Levels, Node ) of
         {Level, Segment}->
-          ?LOGINFO("~p from level ~p has reached the limit, queue a split",[Segment, Level]),
-          dlss_storage:split_segment( Segment );
+          Size = dlss_segment:get_size( Segment ),
+          Limit = segment_level_limit( Level ),
+          ?LOGINFO("~p from size ~p level ~p has reached the limit ~p, queue a split",[
+            Segment,
+            pretty_size(Size),
+            pretty_size(Limit * ?MB),
+            Level
+          ]),
+          dlss_storage:split_segment( Segment ),
+          split;
         undefined->
-          ok
+          none
       end
   end.
 
@@ -836,6 +883,107 @@ check_segment_size([], _Node)->
   undefined.
 
 
+check_density( Storage, Node )->
+  Root = dlss_storage:root_segment( Storage ),
+  {ok, #{copies := Copies}} = dlss_storage:segment_params( Root ),
+  case master_node( Copies ) of
+    Node ->
+
+      % The Node is the master for the root segment of the storage, run check
+      TS = erlang:system_time( second ),
+
+      ?LOGINFO("start density check for ~p",[ Storage ]),
+
+      Efficiency = eval_segment_efficiency( Root ),
+      Limit = ?ENV(density_limit, ?DEFAULT_DENSITY_LIMIT),
+
+      ?LOGINFO("~p efficiency is ~.2f%, limit is ~.2f%", [
+        Storage,
+        Efficiency * 100.0,
+        Limit * 100.0
+      ]),
+
+      if
+        Efficiency < Limit->
+          ?LOGINFO("~p has low efficiency, queue a rebalancing",[ Root ]),
+          dlss_storage:split_segment( Root );
+        true ->
+          ok
+      end,
+
+      ?LOGINFO("finish density check for ~p, duration ~p sec.",[ Storage, erlang:system_time( second ) - TS ]);
+    _ ->
+      % The node is not the master for the root, ignore
+      ignore
+  end.
+
+
+eval_segment_efficiency( Segment )->
+
+  #{ type:= Type }=dlss_segment:get_info( Segment ),
+
+
+  % Prepare the deleted flag
+  DeletedValue =
+    if
+      Type=:=disc -> ?DELETED;
+      true -> '@deleted@'
+    end,
+
+  #{ deleted := Deleted, total := Total, gaps := Gaps }=
+    dlss_rebalance:fold(fun({_K, V}, #{
+      deleted := D, total := T, gaps := G, prev := P
+    } = Acc)->
+      X = if V =:= DeletedValue-> 0; true -> 1 end,
+      Acc#{
+        deleted => if X =:= 0 -> D + 1; true -> D end,
+        total => T + 1,
+        gaps => if P =:= 1, X =:= 0 ->  G + 1; true -> G end,
+        prev => X
+      };
+      (_Other, Acc) -> Acc
+    end, #{
+      deleted => 0, total => 0, gaps => 0, prev => 1
+    }, Segment),
+
+  if
+    Total =:= 0 ->
+      ?LOGINFO("~p is empty",[ Segment ]),
+      1;
+    true ->
+      Size = dlss_segment:get_size( Segment ),
+      Limit = segment_level_limit( 0 ) * ?MB,
+
+      if
+        Total =:= Deleted ->
+          ?LOGINFO("~p has only deleted records",[ Segment ]),
+          1 - ( Size / Limit );
+        true ->
+          AvgRecord = Size / ( Total - Deleted ),
+          Capacity = Limit / AvgRecord,
+          AvgGap =
+            if
+              Gaps > 0 -> Deleted / Gaps;
+              true -> 0
+            end,
+
+          ?LOGINFO("~p statistics: ~p",[ Segment, #{
+            size => pretty_size(Size),
+            limit => pretty_size(Limit),
+            total => pretty_count(Total),
+            deleted => pretty_count(Deleted),
+            gaps => pretty_count(Gaps),
+            avg_record => pretty_size(AvgRecord),
+            avg_gap_length => pretty_count(AvgGap),
+            capacity => pretty_count(Capacity)
+          }]),
+
+          % Total efficiency
+          (Capacity - AvgGap) / Capacity
+      end
+  end.
+
+
 %%============================================================================
 %%	Internal helpers
 %%============================================================================
@@ -868,11 +1016,64 @@ segment_level_limit( Level )->
   maps:get( Level, Limits ).
 
 level_count_limit( 0 )->
-  % There can be only one root segment
+  % There can be only one root {"B", 0}segment
   1;
 level_count_limit( _Level )->
   % A storage always has only 2 levels.
   % We reject using more levels to minimize @deleted@ records
   % which in case of 2-level storage exist only in the root segment
   unlimited.
+
+pretty_size( Bytes )->
+  pretty_print([
+    {"TB", 2, 40},
+    {"GB", 2, 30},
+    {"MB", 2, 20},
+    {"KB", 2, 10},
+    {"B", 2, 0}
+  ], Bytes).
+
+pretty_count( Count )->
+  pretty_print([
+    {"bn", 10, 9},
+    {"mn", 10, 6},
+    {"ths", 10, 3},
+    {"items", 10, 0}
+  ], Count).
+
+pretty_print( Units, Value )->
+  Units1 = eval_units( Units, round(Value) ),
+  Units2 = head_units( Units1 ),
+  string:join([ integer_to_list(N) ++" " ++ U || {N,U} <- Units2 ],", ").
+
+
+eval_units([{Unit, Base, Pow}| Rest], Value )->
+  UnitSize = round( math:pow(Base, Pow) ),
+  [{ Value div UnitSize, Unit} | eval_units(Rest, Value rem UnitSize)];
+eval_units([],_Value)->
+  [].
+
+head_units([{N1,U1}|Rest]) when N1 > 0 ->
+  case Rest of
+    [{N2,U2}|_] when N2 > 0->
+      [{N1,U1},{N2,U2}];
+    _ ->
+      [{N1,U1}]
+  end;
+head_units([Item])->
+  [Item];
+head_units([_Item|Rest])->
+  head_units(Rest).
+
+
+%%====================================================================
+%%		Test API
+%%====================================================================
+-ifdef(TEST).
+
+loop( Storage, Type, _Node)->
+  loop( #state{storage = Storage, type = Type } ).
+
+-endif.
+
 

@@ -332,10 +332,13 @@ verify_hash( Node )->
 
 sync_data()->
   Node = node(),
+
   [begin
      ?LOGINFO("sync data for ~p",[S]),
      dlss_storage_supervisor:sync_copies(S,Node)
-   end || S <- dlss_node:dlss:get_storages() ].
+   end || S <- dlss:get_storages() ],
+
+  ok.
 
 wait_segments(Timeout)->
   Segments=dlss:get_segments(),
@@ -451,72 +454,31 @@ default_partitioning( Node )->
   % If this node has a smaller name than Node then it reloads all
   % the shared data from Node
   ThisNode = node(),
+
+  %TODO. Evaluate which node is cheaper to reboot:
+  % 1. Which node has less segments that has only 1 active copy
+  % 2. Which node has less segments
+  % 3. Which node has a greater name
+  % Only 3 is implemented at the moment
   NeedsReload=ThisNode > Node,
 
   if
     NeedsReload ->
+      % TODO.
+      % 1. Halt all mnesia operations be mecking all methods in mnesia module with
+      %     method(...Args)-> timer:sleep(1000), method(...Args) end.
+      % 2. restart mnesia with mnesia:stop(), mnesia:start()
+      % 3. unmeck mnesia
+      % 4. verify hash for segments
+      % 5. sync copies of segments
+
+      ?LOGERROR("-------------THE NODE GOES INTO REBOOT BECAUSE OF NETWORK PARTITIONING WITH ~p-----------",[Node]),
       init:reboot();
-%%      % We just drop local copies of all shared with Node segment
-%%      ?LOGWARNING("The node ~p is selected as the master, drop the local copy of data and reload it...",[Node]),
-%%
-%%      % Get local versions of the segments
-%%      Local =
-%%        maps:from_list([ begin
-%%            {ok,P} = dlss_storage:segment_params( S ),
-%%            {S, P}
-%%          end || S <- dlss_storage:get_segments()]),
-%%
-%%      ?LOGINFO("reload dlss schema"),
-%%      ok = drop_segment( dlss_schema, ThisNode ),
-%%      ok = dlss_segment:add_node( dlss_schema, ThisNode ),
-%%
-%%      ?LOGINFO("drop local copies of shared segments"),
-%%      [case dlss_storage:segment_params( S ) of
-%%         {ok, #{local:=false, copies:= #{ ThisNode:=_, Node:=_ }, level := Level } = P } ->
-%%           % This is a shared with Node segment.
-%%           IsUpdated=
-%%             if
-%%               Level=:=0->
-%%                 % The root segment is always reloaded
-%%                 true;
-%%               true ->
-%%                 case maps:get( S, Local, none ) of
-%%                   P->
-%%                    % The segment hasn't changed
-%%                    false;
-%%                   _->
-%%                     true
-%%                 end
-%%             end,
-%%
-%%           % if the segment has changed we drop the local copy of it that will be reloaded
-%%           % by the storage supervisor later
-%%           if
-%%             IsUpdated ->
-%%               ?LOGWARNING("drop the local copy of ~p",[ S ]),
-%%               drop_segment(S, ThisNode);
-%%             true ->
-%%               ignore
-%%           end;
-%%         _->
-%%           ignore
-%%      end || S <- dlss_storage:get_segments()],
-%%     ok;
     true ->
       % This node is the master
       ?LOGINFO("This node is selected as master, node ~p is expected to reload the shared data",[Node]),
       ok
   end.
-
-%%drop_segment(Segment, Node)->
-%%  Active = mnesia:table_info(Segment, all_nodes),
-%%  case Active -- [Node] of
-%%    [_|_]->
-%%      dlss_segment:remove_node( dlss_schema, Node );
-%%    _->
-%%      timer:sleep(1000),
-%%      drop_segment( Segment, Node )
-%%  end.
 
 purge_stale_segments()->
   TimeOut = erlang:system_time(millisecond) - 1000,
@@ -540,27 +502,35 @@ purge_stale_segments( ToDelete ) ->
       { error, not_found } ->
         % The segment does not belong to the schema
         #{ nodes := Nodes } = dlss_segment:get_info(T),
-        case ordsets:intersection( ordsets:from_list(Nodes), ReadyNodes ) of
-          [Node|_] ->
-            % This is the master node for the segment
-            TimeOut = maps:get(T, ToDelete, TS + Delay ),
-            if
-              TS > TimeOut ->
-                ?LOGINFO("removing stale segment ~p",[T]),
-                case dlss_segment:remove( T ) of
-                  ok ->
-                    ?LOGINFO("segment ~p was removed succesfully",[T]),
-                    Acc;
-                  {error, Error}->
-                    ?LOGWARNING("unable to remove stale segment ~p, error ~p",[ T, Error ]),
+        case ordsets:from_list(Nodes) -- ReadyNodes of
+          [] ->
+            % All segment nodes are ready
+            case ordsets:intersection( ordsets:from_list(Nodes), ReadyNodes ) of
+              [Node|_] ->
+                % This is the master node for the segment
+                TimeOut = maps:get(T, ToDelete, TS + Delay ),
+                if
+                  TS > TimeOut ->
+                    ?LOGINFO("removing stale segment ~p",[T]),
+                    case dlss_segment:remove( T ) of
+                      ok ->
+                        ?LOGINFO("segment ~p was removed succesfully",[T]),
+                        Acc;
+                      {error, Error}->
+                        ?LOGDEBUG("unable to remove stale segment ~p, error ~p",[ T, Error ]),
+                        Acc#{ T => TimeOut }
+                    end;
+                  true ->
                     Acc#{ T => TimeOut }
                 end;
-              true ->
-                Acc#{ T => TimeOut }
+              _ ->
+                % This node is not the master for the segment, the master will delete it
+                Acc
             end;
-          _ ->
-            % This node is not the master for the segment, the master will delete it
+          WaitForNodes->
+            ?LOGDEBUG("unable to remove stale segment ~p, ~p nodes are not ready",[ T, WaitForNodes ]),
             Acc
+
         end;
       _ ->
         % The segment does not belong to the storage
