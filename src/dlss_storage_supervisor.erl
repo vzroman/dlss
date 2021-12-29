@@ -128,7 +128,7 @@ verify_segment_hash( Segment, Node )->
       {ok, #{copies:= Copies} } = dlss_storage:segment_params( Segment ),
       case Copies of
         #{ Node := NodeDump } ->
-          case master_node( Copies ) of
+          case master_node( Segment ) of
             Node ->
               % The node is the master, it's hash is the source of the truth
               ok;
@@ -140,11 +140,21 @@ verify_segment_hash( Segment, Node )->
                 #{ Master := NodeDump } ->
                   % The node's hash matches the master's hash
                   ok;
-                #{ Master := MasterDump } ->
-                  % The version of the segment for the Node has a different hash.
-                  % We purge the copy of the segment to let the sync mechanism to reload it
-                  ?LOGWARNING("~p invalid hash ~p, master hash ~p, drop local copy",[ Segment, MasterDump, NodeDump ]),
-                  dlss_segment:remove_node( Segment, Node )
+                #{ Master := MasterDump }->
+                  case { MasterDump, NodeDump } of
+                    { undefined, _ } ->
+                      % The master has not set it's version yet
+                      ok;
+                    { #dump{ version = MasterVersion }, #dump{ version = NodeVersion } }
+                      when NodeVersion > MasterVersion ->
+                      % The master hasn't updated it's version yet
+                      ok;
+                    _ ->
+                      % The version of the segment for the Node has a different hash.
+                      % We purge the copy of the segment to let the sync mechanism to reload it
+                      ?LOGWARNING("~p invalid hash ~p, master hash ~p, drop local copy",[ Segment, NodeDump, MasterDump ]),
+                      dlss_segment:remove_node( Segment, Node )
+                  end
               end
           end;
         _ ->
@@ -196,7 +206,8 @@ handle_info(loop,#state{
     try loop( State )
     catch
       _:Error:Stack->
-        ?LOGINFO("~p storage supervisor error ~p, stack ~p",[ Storage, Error, Stack ])
+        ?LOGINFO("~p storage supervisor error ~p, stack ~p",[ Storage, Error, Stack ]),
+        State
     end,
 
   {noreply, State1}.
@@ -282,7 +293,7 @@ sync_segment_copies( S, Node )->
       case { maps:is_key( Node, Copies ), lists:member(Node,Nodes) } of
         { true, false }->
           % The segment is to be added to the Node
-          Master = master_node( Copies ),
+          Master = master_node( S ),
           Version = maps:get( Master, Copies ),
 
           ?LOGINFO("add ~p copy to ~p",[ S, Node ]),
@@ -290,7 +301,7 @@ sync_segment_copies( S, Node )->
           case dlss_segment:add_node( S, Node ) of
             ok ->
               {ok, #{copies := CopiesAfter} } = dlss_storage:segment_params(S),
-              case maps:get( master_node( Copies ), CopiesAfter ) of
+              case maps:get( Master, CopiesAfter ) of
                 Version ->
                   ?LOGINFO("~p successfully copied to ~p",[ S, Node ]),
                   % The segment has just copied, take the version from the parent.
@@ -341,9 +352,7 @@ set_read_only_mode(Storage, Node)->
         % Local only storage types are not synchronized between nodes
         ok;
       _->
-        {ok, #{copies := Copies} } = dlss_storage:segment_params(S),
-
-        case master_node( Copies ) of
+        case master_node( S ) of
           Node->
             % The node is the master for the segment
             case dlss_segment:get_access_mode(S) of
@@ -411,7 +420,7 @@ pending_transformation( Storage, Type, Node )->
             #{ version:=Version, copies := #{ Node := #dump{version = Version}} }->
               % The version for the node is already updated
               ok;
-            #{ version:=Version, copies := #{ Node := Dump }=Copies}->
+            #{ version:=Version, copies := #{ Node := Dump } }->
               % The segment has local copy
               Parent = dlss_storage:parent_segment( Segment ),
               InitHash=
@@ -422,7 +431,7 @@ pending_transformation( Storage, Type, Node )->
               ?LOGINFO("split: child ~p, parent ~p, init hash ~p, from key ~p",[
                 Segment, Parent, InitHash, dlss_segment:dirty_first( Parent )
               ]),
-              IsMasterFun = fun () -> Node==master_node(Copies) end,
+              IsMasterFun = fun () -> Node==master_node( Segment ) end,
               case split_segment( Parent, Segment, Type, InitHash, IsMasterFun) of
                 {ok, #{ hash:= NewHash} }->
                   ?LOGINFO("split finish: child ~p, parent ~p, new hash ~p, to key ~p",[
@@ -665,11 +674,17 @@ merge_segment( Target, Source, FromKey, ToKey0, Type, Hash )->
 %%============================================================================
 hash_confirm( Operation, Segment, Node )->
   {ok, #{copies:= Copies} = Params } = dlss_storage:segment_params( Segment ),
-  case master_node( Copies ) of
-    Node ->
-      master_commit( Operation, Segment,Node, Params );
-    Master->
-      check_hash( Operation, Segment, Node, Master, Params )
+  case Copies of
+    #{ Node := _Version }->
+      case master_node( Segment ) of
+        Node ->
+          master_commit( Operation, Segment,Node, Params );
+        Master->
+          check_hash( Operation, Segment, Node, Master, Params )
+      end;
+    _ ->
+      % The node doesn't have a copy of the segment
+      ok
   end.
 
 master_commit( split, Segment, Master, #{version := Version,copies:=Copies})->
@@ -696,7 +711,7 @@ master_commit( merge, Segment, _Node, _Params )->
   Children1=
     [ begin
         {ok, #{version:=V, copies:=C} } = dlss_storage:segment_params(S),
-        M = master_node(C),
+        M = master_node( S ),
         W =
           case C of
             #{M := #dump{ version = V, hash = H }}->
@@ -720,8 +735,8 @@ master_commit( merge, Segment, _Node, _Params )->
 check_hash( merge, Segment, Node, _Master, _Params )->
   Children = dlss_storage:get_children( Segment ),
   [ begin
-      { ok, #{ copies:= C} = P} = dlss_storage:segment_params( S ),
-      M = master_node( C ),
+      { ok, P} = dlss_storage:segment_params( S ),
+      M = master_node( S ),
       check_hash( undefined, S, Node, M, P )
     end || S <- Children ],
   ok;
@@ -744,6 +759,9 @@ check_hash( _Other, Segment, Node, Master, #{version:=Version,copies:=Copies} )-
         #{ Node := Dump }->
           ?LOGDEBUG("~p local copy is not updated yet: version ~p, local ~p",[Version,Dump]),
           % The segment has not updated yet
+          ok;
+        _ ->
+          % The node doesn't have a copy of the segment
           ok
       end;
     _->
@@ -834,8 +852,8 @@ group_by_levels( Segments )->
   lists:usort([{L,lists:reverse(S)}||{L,S} <- maps:to_list(Levels)]).
 
 check_level_limits([{Level, Segments } | Rest], Node )->
-  [{ Segment, #{ copies := Copies } } | _ ] = Segments,
-  case master_node( Copies ) of
+  [{ Segment, _Params } | _ ] = Segments,
+  case master_node( Segment ) of
     Node->
       % The node is the master for the first segment, it controls the number
       % segments in the level
@@ -866,8 +884,8 @@ check_size_limit([{Level, Segments} | Rest], Node)->
 check_size_limit([], _Node)->
   undefined.
 
-check_segment_size([{ Segment, #{level:=Level, copies:=Copies}}| Rest], Node)->
-  case master_node( Copies ) of
+check_segment_size([{ Segment, #{ level:=Level }}| Rest], Node)->
+  case master_node( Segment ) of
     Node->
       Size = dlss_segment:get_size( Segment ),
       Limit = segment_level_limit( Level ),
@@ -885,8 +903,7 @@ check_segment_size([], _Node)->
 
 check_density( Storage, Node )->
   Root = dlss_storage:root_segment( Storage ),
-  {ok, #{copies := Copies}} = dlss_storage:segment_params( Root ),
-  case master_node( Copies ) of
+  case master_node( Root ) of
     Node ->
 
       % The Node is the master for the root segment of the storage, run check
@@ -987,9 +1004,17 @@ eval_segment_efficiency( Segment )->
 %%============================================================================
 %%	Internal helpers
 %%============================================================================
-master_node( Copies )->
-  Nodes = lists:usort([ N || { N, _Dump } <- maps:to_list( Copies ) ]),
+master_node( Segment )->
+
+  {ok, #{copies:= Copies} } = dlss_storage:segment_params( Segment ),
+  SetNodes = lists:usort([ N || { N, _Dump } <- maps:to_list( Copies ) ]),
+
+  ActualNodes = lists:usort( dlss_segment:get_active_nodes( Segment ) ),
+
+  Nodes = ordsets:intersection( SetNodes, ActualNodes ),
+
   Ready = dlss:get_ready_nodes( ),
+
   case Nodes -- (Nodes -- Ready) of
     [ Master | _ ]-> Master;
     _-> undefined

@@ -56,6 +56,7 @@
   get_size/1,
   get_access_mode/1,
   set_access_mode/2,
+  get_active_nodes/1,
   in_read_write_mode/2
 ]).
 
@@ -340,9 +341,14 @@ remove_node(Segment, Node, read_only)->
     remove_node(Segment, Node, read_write )
   end);
 remove_node(Segment, Node, _AccessMode)->
-  case mnesia:del_table_copy(Segment,Node) of
-    {atomic,ok}->ok;
-    {aborted,Reason}->{error,Reason}
+  case get_active_nodes( Segment ) of
+    [ Node ]->
+      {error, only_copy};
+    _ ->
+      case mnesia:del_table_copy(Segment,Node) of
+        {atomic,ok}->ok;
+        {aborted,Reason}->{error,Reason}
+      end
   end.
 
 in_read_write_mode(Segment,Fun)->
@@ -376,6 +382,9 @@ set_access_mode( Segment , Mode )->
     {aborted,{already_exists,Segment,Mode}}->ok;
     {aborted,Reason}->{error,Reason}
   end.
+
+get_active_nodes( Segment )->
+  mnesia:table_info(Segment, active_replicas).
 
 %%============================================================================
 %%	Internal helpers
