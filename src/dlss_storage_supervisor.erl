@@ -679,6 +679,9 @@ hash_confirm( Operation, Segment, Node )->
       case master_node( Segment ) of
         Node ->
           master_commit( Operation, Segment,Node, Params );
+        undefined ->
+          ?LOGWARNING("~p undefined master"),
+          ok;
         Master->
           check_hash( Operation, Segment, Node, Master, Params )
       end;
