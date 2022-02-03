@@ -75,6 +75,11 @@
   pretty_size/1,
   pretty_count/1
 ]).
+
+-export([
+  rebalance/1,
+  get_efficiency/1
+]).
 %%=================================================================
 %%	OTP
 %%=================================================================
@@ -162,6 +167,15 @@ verify_segment_hash( Segment, Node )->
           ok
       end
   end.
+
+get_efficiency( Storage )->
+  eval_segment_efficiency( dlss_storage:root_segment( Storage ) ).
+
+rebalance( Storage )->
+  Master = master_node( dlss_storage:root_segment(Storage) ),
+  gen_server:cast({?PROCESS(Storage), Master}, rebalance).
+
+
 %%=================================================================
 %%	OTP
 %%=================================================================
@@ -188,6 +202,13 @@ handle_call(_Params, _From, State) ->
 handle_cast({stop,From},State)->
   From!{stopped,self()},
   {stop, normal, State};
+
+handle_cast(rebalance, #state{storage = Storage} = State)->
+  ?LOGINFO("~p storage trigger rebalance procedure",[Storage]),
+  dlss_storage:split_segment( dlss_storage:root_segment( Storage ) ),
+  ?LOGINFO("~p storage trigger2 rebalance procedure",[Storage]),
+  {noreply, State};
+
 handle_cast(_Request,State)->
   {noreply,State}.
 
@@ -252,19 +273,18 @@ loop( #state{ storage =  Storage, type = Type, check_ts = LastCheckTS} = State )
       case check_limits( Storage, Node ) of
         none ->
           % No transformations are scheduled, check density of the storage
-          CheckInterval =
-            case ?ENV(density_check_interval, ?DEFAULT_DENSITY_CHECK_INTERVAL) of
-              _CheckInterval when is_number(_CheckInterval) -> _CheckInterval;
-              _ -> ?DEFAULT_DENSITY_CHECK_INTERVAL
-            end,
-
-          if
-            not is_number( LastCheckTS ); TS > LastCheckTS + CheckInterval ->
-              % It's time to run density check
-              check_density( Storage, Node ),
-              State#state{ check_ts = erlang:system_time( second ) };
-            true ->
-              % It's too early to check density
+          case ?ENV(density_check_interval, ?DEFAULT_DENSITY_CHECK_INTERVAL) of
+            CheckInterval when is_number(CheckInterval) ->
+              if
+                not is_number( LastCheckTS ); TS > LastCheckTS + CheckInterval ->
+                  % It's time to run density check
+                  check_density( Storage, Node ),
+                  State#state{ check_ts = erlang:system_time( second ) };
+                true ->
+                  % It's too early to check density
+                  State
+              end;
+            _ ->
               State
           end;
         _ ->
@@ -903,7 +923,6 @@ check_segment_size([{ Segment, #{ level:=Level }}| Rest], Node)->
 check_segment_size([], _Node)->
   undefined.
 
-
 check_density( Storage, Node )->
   Root = dlss_storage:root_segment( Storage ),
   case master_node( Root ) of
@@ -999,7 +1018,7 @@ eval_segment_efficiency( Segment )->
           }]),
 
           % Total efficiency
-          (Capacity - AvgGap) / Capacity
+          (Total - Deleted) / Total
       end
   end.
 

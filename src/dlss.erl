@@ -30,6 +30,8 @@
   get_storage_type/1,
   get_storage_root/1,
   is_local_storage/1,
+  get_storage_efficiency/1,
+  rebalance_storage/1,
   get_segments/0,get_segments/1,
   get_node_segments/1,
   get_local_segments/0,
@@ -152,6 +154,28 @@ get_storage_root(Storage) ->
 -spec is_local_storage(Storage :: atom()) -> boolean() | no_return().
 is_local_storage(Storage) ->
   dlss_storage:is_local(Storage).
+
+%-----------------------------------------------------------------
+%% @doc Calculates the storage efficiency for iterate operations like
+%%  first, next, prev, last, dirty_range_select.
+%%  Their efficiency depends on the count of @deleted@ keys in the root
+%%  segment.
+%%  The value is in range 0-1 the bigger the better
+%% @end
+%-----------------------------------------------------------------
+-spec get_storage_efficiency(Storage :: atom()) -> float().
+get_storage_efficiency(Storage) ->
+  dlss_storage_supervisor:get_efficiency(Storage).
+
+%-----------------------------------------------------------------
+%% @doc Triggers the storage rebalancing procedure. A new root
+%%  segment will be created and the previous root segment will be
+%%  merged with low level segments
+%% @end
+%-----------------------------------------------------------------
+-spec rebalance_storage(Storage :: atom()) -> ok | no_return().
+rebalance_storage(Storage) ->
+  dlss_storage_supervisor:rebalance(Storage).
 
 %-----------------------------------------------------------------
 %% @doc Get list of all dlss segments.
