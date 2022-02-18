@@ -259,7 +259,7 @@ create(Name,#{nodes := Nodes0} = Params0)->
   % The segment can be created only on ready nodes. The nodes that are
   % not active now will add it later by storage supervisor
   ReadyNodes = dlss:get_ready_nodes(),
-  Nodes = ordsets:from_list(Nodes0), ordsets:from_list(ReadyNodes),
+  Nodes = ordsets:intersection(ordsets:from_list(Nodes0), ordsets:from_list(ReadyNodes)),
 
   if
     length(Nodes) > 0 ->
