@@ -240,7 +240,7 @@ init_backend(#{
       if
         IsForced ->
           ?LOGWARNING("starting in FORCED mode"),
-          set_forced_mode(),
+          set_forced_mode( true ),
 
           ?LOGWARNING("restarting mnesia"),
           mnesia:stop(),
@@ -256,7 +256,9 @@ init_backend(#{
           ok = sync_data(),
 
           ?LOGINFO("waiting for segemnts availability..."),
-          wait_segments(StartTimeout);
+          wait_segments(StartTimeout),
+
+          set_forced_mode( false );
         true ->
           ?LOGINFO("node is starting in normal mode"),
           ok=mnesia:start(),
@@ -346,8 +348,13 @@ wait_segments(Timeout)->
   ?LOGINFO("~p wait for segments ~p",[Timeout,Segments]),
   ok = mnesia:wait_for_tables(Segments,Timeout).
 
-set_forced_mode()->
-  case mnesia:set_master_nodes([node()]) of
+set_forced_mode( Value )->
+  Nodes =
+    if
+      Value -> [node()];
+      true -> []
+    end,
+  case mnesia:set_master_nodes(Nodes) of
     ok->ok;
     {error,Error}->
       ?LOGERROR("error set master node ~p, error ~p",[node(),Error]),
