@@ -1,6 +1,6 @@
 {application, dlss,
  [{description, "Distributed Log Structured Data Storage"},
-  {vsn, "0.1.5"},
+  {vsn, "0.1.6"},
   {registered, []},
   {mod, {dlss_app, []}},
   {applications,
