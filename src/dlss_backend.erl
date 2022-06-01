@@ -153,13 +153,23 @@ handle_info({mnesia_system_event,Event},State) ->
 handle_info(on_cycle, #state{cycle = Cycle, to_delete = ToDelete} = State)->
   timer:send_after( Cycle, on_cycle ),
 
-  ToDelete1 = purge_stale_segments( ToDelete ),
+  % Do the operations in the safe mode
+  ToDelete1 =
+    try
 
-  Ready = dlss:get_ready_nodes(),
-  Running = mnesia:system_info(running_db_nodes),
+      _ToDelete1 = purge_stale_segments( ToDelete ),
 
-  [ dlss_node:set_status(N,down) ||  N <- Ready -- Running ],
-  [ dlss_node:set_status(N,ready) ||  N <- Running -- Ready ],
+      Ready = dlss:get_ready_nodes(),
+      Running = mnesia:system_info(running_db_nodes),
+
+      [ dlss_node:set_status(N,down) ||  N <- Ready -- Running ],
+      [ dlss_node:set_status(N,ready) ||  N <- Running -- Ready ],
+
+      _ToDelete1
+    catch
+      _:Error:Stack->
+        ?LOGERROR("Internal error: ~p, stack ~p",[Error, Stack])
+    end,
 
   {noreply,State#state{ to_delete = ToDelete1 }};
 
