@@ -27,13 +27,13 @@
 %%=================================================================
 -export([
   init_backend/0,init_backend/1,
+  env/0, env/1,
   add_node/1,
   remove_node/1,
   get_nodes/0,
   get_active_nodes/0,
   transaction/1,sync_transaction/1,
   lock/2,
-  verify_hash/0, verify_hash/1,
   purge_stale_segments/0
 ]).
 
@@ -163,7 +163,6 @@ handle_info(on_cycle, #state{cycle = Cycle, to_delete = ToDelete} = State)->
       Running = mnesia:system_info(running_db_nodes),
 
       [ dlss_node:set_status(N,down) ||  N <- Ready -- Running ],
-      [ dlss_node:set_status(N,ready) ||  N <- Running -- Ready ],
 
       _ToDelete1
     catch
@@ -259,16 +258,16 @@ init_backend(#{
           ?LOGINFO("waiting for schema availability..."),
           ok = mnesia:wait_for_tables([schema,dlss_schema],?ENV(schema_start_timeout, ?WAIT_SCHEMA_TIMEOUT)),
 
-          ?LOGINFO("verify hash values for hosted storages"),
-          ok = verify_hash( node() ),
-
-          ?LOGINFO("run data synchronization"),
-          ok = sync_data(),
+          ?LOGINFO("segments synchronization...."),
+          synchronize_segments(),
 
           ?LOGINFO("waiting for segemnts availability..."),
           wait_segments(StartTimeout),
 
-          set_forced_mode( false );
+          set_forced_mode( false ),
+
+          ?LOGWARNING("trigger hash verification on other nodes"),
+          dlss:verify_hash();
         true ->
           ?LOGINFO("node is starting in normal mode"),
           ok=mnesia:start(),
@@ -279,11 +278,8 @@ init_backend(#{
           ?LOGINFO("add local only segments"),
           add_local_only_segments(),
 
-          ?LOGINFO("verify hash values for hosted storages"),
-          ok = verify_hash( node() ),
-
-          ?LOGINFO("run data synchronization"),
-          ok = sync_data(),
+          ?LOGINFO("segments synchronization...."),
+          synchronize_segments(),
 
           ?LOGINFO("waiting for segemnts availability..."),
           wait_segments(StartTimeout)
@@ -307,6 +303,15 @@ init_backend(Params)->
 
   init_backend(Params1).
 
+env()->
+  maps:from_list([{E,mnesia_monitor:get_env(E)} || E <- mnesia_monitor:env() ]).
+
+env( Settings ) when is_map( Settings )->
+  env( maps:to_list(Settings) );
+env( Settings ) when is_list( Settings )->
+  ?LOGINFO( "set dlss backend env ~p",[ Settings ]),
+  [mnesia_monitor:set_env(E,V) || {E,V} <- Settings],
+  ok.
 
 
 create_schema()->
@@ -326,30 +331,13 @@ stop()->
     mnesia:stop()
   end).
 
-verify_hash()->
-  [begin
-     ?LOGINFO("verify hash values for node ~p",[N]),
-     verify_hash( N )
-   end || N <- dlss_node:get_ready_nodes() ].
-verify_hash( Node )->
 
-  [begin
-     ?LOGINFO("verify hash values for ~p",[Storage]),
-     [begin
-        ?LOGINFO("verify hash for ~p",[Segment]),
-        dlss_storage_supervisor:verify_segment_hash( Segment, Node )
-      end|| Segment <- dlss_storage:get_segments( Storage ) ]
-   end || Storage <- dlss_storage:get_storages() ],
+synchronize_segments()->
+  ?LOGINFO("verify hash values for hosted storages"),
+  dlss_storage_supervisor:verify_hash(_Force = true),
 
-  ok.
-
-sync_data()->
-  Node = node(),
-
-  [begin
-     ?LOGINFO("sync data for ~p",[S]),
-     dlss_storage_supervisor:sync_copies(S,Node)
-   end || S <- dlss:get_storages() ],
+  ?LOGINFO("run data synchronization"),
+  dlss_storage_supervisor:sync_copies(),
 
   ok.
 

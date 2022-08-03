@@ -40,6 +40,9 @@
   verify_hash/0, verify_hash/1,
   get_segment_size/1,
   add_storage/2,add_storage/3,
+  storage_limits/1, storage_limits/2,
+  default_limits/0, default_limits/1,
+  backend_env/0,backend_env/1,
   add_segment_copy/2, remove_segment_copy/2,
   remove_storage/1,
   stop/0
@@ -276,15 +279,19 @@ get_segment_size(Segment) ->
 %-----------------------------------------------------------------
 -spec verify_hash() -> ok | no_return().
 verify_hash() ->
-  dlss_backend:verify_hash().
+  [ dlss:verify_hash( N ) || N <- get_ready_nodes()],
+  ok.
 %-----------------------------------------------------------------
 %% @doc  Verify hash values for the node's segments.
 % As input function gets Name of storage as atom,
 %% @end
 %-----------------------------------------------------------------
--spec verify_hash(Storage :: atom()) -> ok | no_return().
-verify_hash(Storage) ->
-  dlss_backend:verify_hash(Storage).
+-spec verify_hash(Node :: atom()) -> ok | no_return().
+verify_hash(Node) ->
+  case node() of
+    Node -> dlss_storage_supervisor:verify_hash();
+    _ -> spawn(Node, fun()->dlss:verify_hash(Node) end)
+  end.
 %-----------------------------------------------------------------
 %% @doc 	Add storage.
 % It adds a new storage to dlss_schema with creating a new Root Segment (table)
@@ -304,9 +311,10 @@ add_storage(Name,Type)->
 % #{
 %   type:=Type            :: disc | ram | ramdisc
 %   nodes:=Nodes,         :: list of atom() [node(),..]
-%   local:=IsLocal        :: true | false
+%   local:=IsLocal,       :: true | false
+%   limits:=Limits        :: map
 % }
-% Options might be used to change default values of nodes and local.
+% Options might be used to change default values of nodes.
 % Returns: ok, or throws Error
 %% @end
 %-----------------------------------------------------------------
@@ -325,6 +333,77 @@ add_storage(Name,Type,Options)->
 -spec remove_storage(Name :: atom()) -> ok | no_return().
 remove_storage(Name)->
   dlss_storage:remove(Name).
+
+%-----------------------------------------------------------------
+%% @doc  Get default limits for storages.
+% Function returns actual default limits settings
+% Returns limits in format:
+% #{
+%   0 := BufferLimit      :: integer (MB)
+%   1 := SegmentLimit    :: integer (MB)
+% }
+%% @end
+%-----------------------------------------------------------------
+default_limits()->
+  dlss_storage:default_limits().
+
+%-----------------------------------------------------------------
+%% @doc  Set default storage limits.
+% Limits has format:
+% #{
+%   0 := BufferLimit      :: integer (MB)
+%   1 := SegmentLimit    :: integer (MB)
+% }
+% Returns: ok, or throws Error
+%% @end
+%-----------------------------------------------------------------
+default_limits( Limits )->
+  dlss_storage:default_limits( Limits ).
+
+%-----------------------------------------------------------------
+%% @doc  Get storage limits by storage name Storage.
+% Function returns actual limits settings for the Storage
+% As input function gets Name of storage as atom,
+% Returns limits in format:
+% #{
+%   0 := BufferLimit      :: integer (MB)
+%   1 := SegmentLimit    :: integer (MB)
+% }
+%% @end
+%-----------------------------------------------------------------
+storage_limits( Storage )->
+  dlss_storage:storage_limits( Storage ).
+
+%-----------------------------------------------------------------
+%% @doc  Set storage limits by storage name Storage.
+% Limits has format:
+% #{
+%   0 := BufferLimit      :: integer (MB)
+%   1 := SegmentLimit    :: integer (MB)
+% }
+% Returns: ok, or throws Error
+%% @end
+%-----------------------------------------------------------------
+storage_limits( Storage, Limits )->
+  dlss_storage:storage_limits( Storage, Limits ).
+
+%-----------------------------------------------------------------
+%% @doc  Get backend settings.
+% Function returns actual limits settings the backend
+% Returns limits in format of a map
+%% @end
+%-----------------------------------------------------------------
+backend_env()->
+  dlss_backend:env().
+
+%-----------------------------------------------------------------
+%% @doc  Set backend settings.
+% Function sets settings for the backend
+% Returns ok or throws Error
+%% @end
+%-----------------------------------------------------------------
+backend_env( Settings )->
+  dlss_backend:env( Settings ).
 
 %-----------------------------------------------------------------
 %% @doc

@@ -32,7 +32,7 @@
   is_storage/1,
   get_storages/0,
   get_segments/0,get_segments/1,
-  get_node_segments/1,
+  get_node_segments/1,get_node_segments/2,
 
   root_segment/1,
   segment_params/1,
@@ -52,10 +52,17 @@
   add/2,add/3,
   remove/1,
 
+  % get/set storage limits
+  default_limits/0, default_limits/1,
+  storage_limits/1, storage_limits/2,
+
   % add/remove segment copies
   add_segment_copy/2,
   remove_segment_copy/2,
   remove_all_segments_from/1,
+
+  % Perform a transaction over segment in locked mode
+  segment_transaction/3,
 
   % rebalance the storage schema
   split_segment/1,
@@ -143,6 +150,15 @@ get_node_segments(Node)->
   AllSegments = dlss_segment:dirty_select(dlss_schema,MS),
   [ S || [S, #{Node := _}] <- AllSegments].
 
+get_node_segments(Node, Storage)->
+  MS=[{
+    #kv{key = #sgm{str = Storage,key = '_',lvl = '_',ver = '_',copies = '$2'}, value = '$1'},
+    [],
+    [['$1','$2']]
+  }],
+  StorageSegments = dlss_segment:dirty_select(dlss_schema,MS),
+  [ S || [S, #{Node := _}] <- StorageSegments].
+
 root_segment(Storage)->
   case dlss_segment:dirty_next(dlss_schema,#sgm{str=Storage,key = '_',lvl = -1 }) of
     #sgm{ str = Storage } = Sgm->
@@ -186,7 +202,7 @@ add(Name,Type,Options)->
   end,
 
   % Default options
-  Params=maps:merge(#{
+  Params =maps:merge(#{
     type=>Type,
     nodes=>[node()],
     local=>false
@@ -201,7 +217,14 @@ add(Name,Type,Options)->
     Root,
     Params
   ]),
-  case dlss_segment:create(Root,Params) of
+
+  {Limits, SegmentParams} =
+    case maps:take(limits, Params) of
+      error -> { undefined ,Params};
+      {_Limits,_Params} -> {_Limits,_Params}
+    end,
+
+  case dlss_segment:create(Root,SegmentParams) of
     ok -> ok;
     { error , Error }->
       ?LOGERROR("unable to create a root segment ~p of type ~p with params ~p for storage ~p, error ~p",[
@@ -212,6 +235,12 @@ add(Name,Type,Options)->
         Error
       ]),
       ?ERROR(Error)
+  end,
+
+  % Set storage limits
+  if
+    is_map(Limits) -> storage_limits( Name, Limits );
+    true -> ignore
   end,
 
   Copies = maps:from_list([ {N,undefined} ||N<-maps:get(nodes,Params)]),
@@ -247,6 +276,46 @@ remove(Storage,#sgm{str=Storage}=Sgm)->
 remove(_Storage,_Sgm)->
   % '$end_of_table'
   ok.
+
+% Get default limits
+default_limits()->
+  Limits =
+    case ?ENV(segment_level_limit,#{}) of
+      _C when is_map(_C)->_C;
+      _C when is_list(_C)->maps:from_list(_C);
+      _->#{}
+    end,
+  maps:merge( ?DEFAULT_SEGMENT_LIMIT, Limits ).
+
+% set default limits
+default_limits( Limits ) when is_list(Limits)->
+  default_limits( maps:from_list(Limits) );
+default_limits( Limits ) when is_map(Limits)->
+  ?LOGINFO( "set dlss default limits ~p",[ Limits ]),
+  application:set_env(dlss,segment_level_limit, Limits);
+default_limits( _Limits )->
+  ?ERROR(invalid_arguments).
+
+% get storage limits
+storage_limits( Name )->
+  StorageLimits =
+    case ?ENV({Name,limits},#{}) of
+      _S when is_map(_S)->_S;
+      _S when is_list(_S)->maps:from_list(_S);
+      _ -> #{}
+    end,
+  DefaultLimits = default_limits(),
+  maps:merge( DefaultLimits, StorageLimits ).
+
+% set storage limits
+storage_limits( Name, Limits ) when is_list(Limits)->
+  storage_limits( Name, maps:from_list(Limits) );
+storage_limits( Name, Limits ) when is_map(Limits)->
+  ?LOGINFO( "set storage ~p default limits ~p",[Name, Limits]),
+
+  application:set_env(dlss,{Name,limits}, Limits);
+storage_limits( _Name, _Limits )->
+  ?ERROR(invalid_arguments).
 
 %%--------------------------------------------------------------------------------
 %%  Split procedure
@@ -566,7 +635,7 @@ set_segment_version( Segment, Node, Version )->
   % Set a version for a segment in the schema
   case dlss:transaction(fun()->
     % Set a lock on the segment
-    Sgm = #sgm{copies = Copies} = lock_segment(Segment),
+    Sgm = #sgm{copies = Copies} = lock_segment(Segment, write),
 
     % Update the copies
     Copies1 = Copies#{ Node=>Version },
@@ -594,14 +663,7 @@ add_segment_copy( Segment , Node )->
 
   case dlss:transaction(fun()->
     % Set a lock on the segment
-    Sgm = #sgm{copies = Copies, lvl = Lvl} = lock_segment(Segment),
-
-    if
-      Lvl =/= round( Lvl )->
-        exit( under_transformation );
-      true ->
-        ok
-    end,
+    Sgm = #sgm{copies = Copies} = lock_segment(Segment, write),
 
     case Copies of
       #{Node:=_}->
@@ -623,14 +685,7 @@ remove_segment_copy( Segment , Node )->
 
   case dlss:transaction(fun()->
     % Set a lock on the segment
-    Sgm = #sgm{copies = Copies, lvl = Lvl} = lock_segment(Segment),
-
-    if
-      Lvl =/= round( Lvl )->
-        exit( under_transformation );
-      true ->
-        ok
-    end,
+    Sgm = #sgm{copies = Copies} = lock_segment(Segment, write),
 
     case Copies of
       #{Node:=_}->
@@ -1184,20 +1239,45 @@ segment_by_name(Name)->
     _-> { error, not_found }
   end.
 
-lock_segment( Segment )->
+lock_segment( Segment, Lock )->
   case segment_by_name( Segment ) of
     { ok, Sgm }->
-      case dlss_segment:read( dlss_schema, Sgm, write ) of
+      case dlss_segment:read( dlss_schema, Sgm, Lock ) of
         Segment -> Sgm;
         _->
           % We are here probably because master is changing the segment's config
           % Waiting for master to finish
           timer:sleep(10),
-          lock_segment( Segment )
+          lock_segment( Segment, Lock )
       end;
     Error ->
       ?ERROR(Error)
   end.
+
+segment_transaction(Segment, Lock, Fun)->
+  Owner = self(),
+  Holder = spawn_link(fun()->
+    case dlss:sync_transaction(fun()->lock_segment(Segment, Lock) end) of
+      {ok,_}->
+        Owner ! {locked, self()},
+        receive
+          {unlock, Owner}->
+            unlink(Owner),
+            ok
+        end;
+      Error -> Owner ! Error
+    end
+  end),
+
+  receive
+    {locked, Holder}->
+      Result =
+        try Fun() catch _:Error -> {error,Error} end,
+      Holder ! {unlock,self()},
+      Result;
+    Error -> Error
+  end.
+
 
 %----------------------MasterKey API---------------------------
 set_master_key(Segment, Key) ->

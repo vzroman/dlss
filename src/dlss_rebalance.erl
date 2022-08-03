@@ -51,6 +51,7 @@
 -define(DATA(N),mnesia_lib:tab2dcd(N)).
 
 -define(BATCH_SIZE, 1024 ).
+-define(DUMP_RETRY_TIMER, 1000 ). % 1 sec
 
 %%=================================================================
 %%	COPY
@@ -273,10 +274,12 @@ dump_segment( Segment )->
          file:delete( Backup )
       catch
           _:Error->
+            ?LOGERROR("~p dump segment error ~p, retry ...",[Segment, Error]),
             file:delete( Temp ),
             file:delete( Data ),
             ok = file:rename( Backup, Data ),
-            ?ERROR( { dump_segment_error, Error } )
+            timer:sleep(?DUMP_RETRY_TIMER),
+            dump_segment( Segment )
       end;
     _->
       ?ERROR({ no_data_file, Segment })
