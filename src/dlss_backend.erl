@@ -153,6 +153,12 @@ handle_info({mnesia_system_event,Event},State) ->
 handle_info(on_cycle, #state{cycle = Cycle, to_delete = ToDelete} = State)->
   timer:send_after( Cycle, on_cycle ),
 
+  % If some other node reset my status
+  case dlss_node:get_status( node() ) of
+    ready -> ok;
+    _ -> dlss_node:set_status(node(),ready)
+  end,
+
   % Do the operations in the safe mode
   ToDelete1 =
     try
