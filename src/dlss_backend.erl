@@ -267,8 +267,6 @@ init_backend(#{
           ?LOGINFO("load data..."),
           load_data(StartTimeout),
 
-          set_forced_mode( false ),
-
           ?LOGWARNING("trigger hash verification on other nodes"),
           dlss_node:set_status(node(),ready),
           [ dlss:verify_hash( N ) || N <- dlss:get_ready_nodes() -- [node()]],
@@ -309,6 +307,8 @@ load_data(StartTimeout)->
 
   ?LOGINFO("waiting for segemnts availability..."),
   wait_segments(StartTimeout),
+
+  set_forced_mode( false ),
 
   ?LOGINFO("segments synchronization...."),
   synchronize_segments(),
