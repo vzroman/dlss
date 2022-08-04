@@ -157,7 +157,15 @@ verify_segment_hash(Segment, Node, Force, Trace )->
       case master_node( Segment ) of
         Node -> Trace("~p is the master node for ~p, skip hash verification",[Node,Segment]);
         undefined -> ?LOGWARNING("master node for ~p is not ready, skip hash verification",[Segment]);
-        Master -> do_verify_segment_hash(Segment, Master, Node, Force, Trace)
+        Master ->
+          AccessMode = dlss_segment:get_access_mode( Segment ),
+          if
+            Force =:= true , AccessMode =/= read_only ->
+              ?LOGWARNING("~t is not read only yet, it might have more actual data on other nodes",[Segment]),
+              drop_segment_copy(Segment, Node);
+            true ->
+              do_verify_segment_hash(Segment, Master, Node, Force, Trace)
+          end
       end
   end.
 
