@@ -273,7 +273,9 @@ init_backend(#{
           set_forced_mode( false ),
 
           ?LOGWARNING("trigger hash verification on other nodes"),
-          dlss:verify_hash();
+          dlss_node:set_status(node(),ready),
+          [ dlss:verify_hash( N ) || N <- dlss:get_ready_nodes() -- [node()]],
+          ok;
         true ->
           ?LOGINFO("node is starting in normal mode"),
           ok=mnesia:start(),
@@ -396,16 +398,19 @@ set_forced_mode( false )->
 wait_for_tables(Tables, Timeout)->
   case mnesia:wait_for_tables(Tables,Timeout) of
     ok -> ok;
-    {error,timeout}->
-      ?LOGWARNING("timeout on waiting for tables ~p",[Tables]),
+    {timeout,Tables1}->
+      ?LOGWARNING("timeout on waiting for tables ~p",[Tables1]),
       Text = "if some nodes that have copies of tables were alive when the node stopped"
-        ++"\r\n they might have more actual data. If they are not available you now you can"
+        ++"\r\n they might have more actual data. If they are not available now you can"
         ++"\r\n try to load in FORCED then that data will be lost."
         ++"\r\n to start in FORED mode set the environment variable:"
         ++"\r\n\t env FORCE=true <start command>",
       ?LOGINFO(Text),
       ?LOGINFO("retry..."),
-      wait_for_tables(Tables, Timeout)
+      wait_for_tables(Tables1, Timeout);
+    {error, Error}->
+      ?LOGERROR("error on waiting for tables ~p",[Error]),
+      ?ERROR(Error)
   end.
 
 get_regesterd_tables()->
