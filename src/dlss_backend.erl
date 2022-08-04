@@ -118,8 +118,6 @@ init([])->
 
   Logger!finish,
 
-  dlss_node:set_status(node(),ready),
-
   Cycle=?ENV(master_node_cycle,?DEFAULT_MASTER_CYCLE),
 
   % Subscribe to mnesia events
@@ -268,7 +266,6 @@ init_backend(#{
           load_data(StartTimeout),
 
           ?LOGWARNING("trigger hash verification on other nodes"),
-          dlss_node:set_status(node(),ready),
           [ dlss:verify_hash( N ) || N <- dlss:get_ready_nodes() -- [node()]],
           ok;
         true ->
@@ -302,6 +299,8 @@ load_data(StartTimeout)->
   ?LOGINFO("waiting for schema availability..."),
   ok = wait_for_tables([schema,dlss_schema],StartTimeout),
 
+  dlss_node:set_status(node(),down),
+
   ?LOGINFO("add local only segments"),
   add_local_only_segments(),
 
@@ -312,6 +311,8 @@ load_data(StartTimeout)->
 
   ?LOGINFO("segments synchronization...."),
   synchronize_segments(),
+
+  dlss_node:set_status(node(),ready),
 
   ok.
 
