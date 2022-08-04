@@ -213,7 +213,7 @@ init_backend(#{
         ?ERROR(Error)
     end,
 
-  % Recover restore form backups interrupted rebalance transactions
+  % Recover restore from backups interrupted rebalance transactions
   dlss_rebalance:on_init(),
 
   %% Next steps need the mnesia started
@@ -262,7 +262,7 @@ init_backend(#{
           ok=mnesia:start(),
 
           ?LOGINFO("waiting for schema availability..."),
-          ok = mnesia:wait_for_tables([schema,dlss_schema],?ENV(schema_start_timeout, ?WAIT_SCHEMA_TIMEOUT)),
+          ok = wait_for_tables([schema,dlss_schema],?ENV(schema_start_timeout, ?WAIT_SCHEMA_TIMEOUT)),
 
           ?LOGINFO("segments synchronization...."),
           synchronize_segments(),
@@ -279,10 +279,13 @@ init_backend(#{
           ok=mnesia:start(),
 
           ?LOGINFO("waiting for schema availability..."),
-          ok = mnesia:wait_for_tables([schema,dlss_schema],?ENV(schema_start_timeout, ?WAIT_SCHEMA_TIMEOUT)),
+          ok = wait_for_tables([schema,dlss_schema],?ENV(schema_start_timeout, ?WAIT_SCHEMA_TIMEOUT)),
 
           ?LOGINFO("add local only segments"),
           add_local_only_segments(),
+
+          ?LOGINFO("waiting for segemnts availability..."),
+          wait_segments(StartTimeout),
 
           ?LOGINFO("segments synchronization...."),
           synchronize_segments(),
@@ -348,22 +351,114 @@ synchronize_segments()->
   ok.
 
 wait_segments(Timeout)->
-  Segments=dlss:get_segments(),
+  Segments=dlss:get_local_segments(),
   ?LOGINFO("~p wait for segments ~p",[Timeout,Segments]),
-  ok = mnesia:wait_for_tables(Segments,Timeout).
+  ok = wait_for_tables(Segments,Timeout).
 
-set_forced_mode( Value )->
-  Nodes =
-    if
-      Value -> [node()];
-      true -> []
-    end,
-  case mnesia:set_master_nodes(Nodes) of
+set_forced_mode( true )->
+  case get_regesterd_tables() of
+    {error,Error} ->
+      ?LOGERROR("unable to parse schema ~p",[Error]),
+      ?ERROR(Error);
+    Tables->
+      Nodes = get_registered_nodes( Tables ),
+      ?LOGINFO("registered nodes: ~p",[Nodes]),
+
+      ActiveNodes = confirm_active_nodes( Nodes --[node()], [] ),
+      ?LOGINFO("active nodes: ~p, inactive: ~p",[ActiveNodes, (Nodes--[node()]) -- ActiveNodes]),
+
+      if
+        length(ActiveNodes) =:= 0 ->
+          ?LOGINFO("all tables are going to be loaded from disc"),
+          set_master_nodes();
+        true ->
+          [ case ordsets:intersection(ActiveNodes,Copies) of
+              []->
+                ?LOGWARNING("~p doesn't have active nodes and will be loaded from disc"),
+                set_master_nodes(T,[node()]);
+              Masters->
+                ?LOGINFO("~p is going to be loaded from ~p",[T,Masters]),
+                set_master_nodes(T,Masters)
+          end|| {T,Copies} <- Tables]
+      end
+  end,
+
+  ok;
+
+set_forced_mode( false )->
+  case mnesia:set_master_nodes([]) of
     ok->ok;
     {error,Error}->
-      ?LOGERROR("error set master node ~p, error ~p",[node(),Error]),
+      ?LOGERROR("error reset master nodes, error ~p",[Error]),
       ?ERROR(Error)
   end.
+
+wait_for_tables(Tables, Timeout)->
+  case mnesia:wait_for_tables(Tables,Timeout) of
+    ok -> ok;
+    {error,timeout}->
+      ?LOGWARNING("timeout on waiting for tables ~p",[Tables]),
+      Text = "if some nodes that have copies of tables were alive when the node stopped"
+        ++"\r\n they might have more actual data. If they are not available you now you can"
+        ++"\r\n try to load in FORCED then that data will be lost."
+        ++"\r\n to start in FORED mode set the environment variable:"
+        ++"\r\n\t env FORCE=true <start command>",
+      ?LOGINFO(Text),
+      ?LOGINFO("retry..."),
+      wait_for_tables(Tables, Timeout)
+  end.
+
+get_regesterd_tables()->
+  mnesia_lib:lock_table(schema),
+
+  Result =
+    case mnesia_schema:read_cstructs_from_disc() of
+      {ok, Cstructs} ->
+        lists:foldl(fun(Cs,Acc)->
+          Copies = mnesia_lib:copy_holders(Cs),
+          case lists:member(node(),Copies) of
+            true -> [{element(2,Cs), ordsets:from_list(Copies)} | Acc];
+            _ -> Acc
+          end
+        end,[], Cstructs );
+      Error->
+        Error
+    end,
+
+  mnesia_lib:unlock_table(schema),
+
+  Result.
+
+get_registered_nodes(Tables)->
+  lists:foldl(fun({Table,Copies},Acc)->
+    ?LOGINFO("~p has copies ~p",[Table, Copies]),
+    ordsets:union(Acc,Copies)
+  end,ordsets:new(),Tables).
+
+confirm_active_nodes([Node|Rest], Acc)->
+  case net_adm:ping(Node) of
+    pong-> confirm_active_nodes(Rest,[Node|Acc]);
+    _-> confirm_active_nodes(Rest,Acc)
+  end;
+confirm_active_nodes([], Acc)->
+  lists:reverse(Acc).
+
+set_master_nodes()->
+  case mnesia:set_master_nodes([node()]) of
+    ok->ok;
+    {error, Error}->
+      ?LOGERROR("error set master nodes, error ~p",[Error]),
+      ?ERROR(Error)
+  end.
+
+set_master_nodes(Table, Nodes)->
+  case mnesia:set_master_nodes(Table,Nodes) of
+    ok->ok;
+    {error, Error}->
+      ?LOGERROR("~p unable to set master nodes, error ~p",[Table,Error]),
+      ?ERROR(Error)
+  end.
+
 
 wait_for_schema()->
   % Wait master node to attach this node to the schema

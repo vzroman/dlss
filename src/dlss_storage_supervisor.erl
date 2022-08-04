@@ -246,7 +246,7 @@ add_segment_copy(Segment, Node) ->
       Master = master_node( Segment ),
       #{Master := Dump} = Copies,
 
-      ?LOGINFO("~p successfully copied, version",[ Segment, dump_version(Dump) ]),
+      ?LOGINFO("~p successfully copied, version ~p",[ Segment, dump_version(Dump) ]),
       ok = dlss_storage:set_segment_version( Segment, Node, Dump );
     {error, Error}->
       ?LOGERROR("~p unable to add local copy, error ~p",[Segment,Error])
