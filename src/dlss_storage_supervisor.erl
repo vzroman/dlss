@@ -161,7 +161,7 @@ verify_segment_hash(Segment, Node, Force, Trace )->
           AccessMode = dlss_segment:get_access_mode( Segment ),
           if
             Force =:= true , AccessMode =/= read_only ->
-              ?LOGWARNING("~t is not read only yet, it might have more actual data on other nodes",[Segment]),
+              ?LOGWARNING("~p is not read only yet, it might have more actual data on other nodes",[Segment]),
               drop_segment_copy(Segment, Node);
             true ->
               do_verify_segment_hash(Segment, Master, Node, Force, Trace)

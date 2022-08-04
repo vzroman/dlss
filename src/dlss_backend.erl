@@ -252,23 +252,20 @@ init_backend(#{
           create_schema()
       end;
     true ->
+
+      ?LOGINFO("mark read_write segments to skip network loading"),
+      mark_read_write_segments(),
+
       if
         IsForced ->
           ?LOGWARNING("starting in FORCED mode"),
           set_forced_mode( true ),
 
-          ?LOGWARNING("restarting mnesia"),
-          mnesia:stop(),
+          ?LOGWARNING("starting mnesia..."),
           ok=mnesia:start(),
 
-          ?LOGINFO("waiting for schema availability..."),
-          ok = wait_for_tables([schema,dlss_schema],?ENV(schema_start_timeout, ?WAIT_SCHEMA_TIMEOUT)),
-
-          ?LOGINFO("segments synchronization...."),
-          synchronize_segments(),
-
-          ?LOGINFO("waiting for segemnts availability..."),
-          wait_segments(StartTimeout),
+          ?LOGINFO("load data..."),
+          load_data(StartTimeout),
 
           set_forced_mode( false ),
 
@@ -278,22 +275,11 @@ init_backend(#{
           ok;
         true ->
           ?LOGINFO("node is starting in normal mode"),
+
           ok=mnesia:start(),
 
-          ?LOGINFO("waiting for schema availability..."),
-          ok = wait_for_tables([schema,dlss_schema],?ENV(schema_start_timeout, ?WAIT_SCHEMA_TIMEOUT)),
-
-          ?LOGINFO("add local only segments"),
-          add_local_only_segments(),
-
-          ?LOGINFO("waiting for segemnts availability..."),
-          wait_segments(StartTimeout),
-
-          ?LOGINFO("segments synchronization...."),
-          synchronize_segments(),
-
-          ?LOGINFO("waiting for segemnts availability..."),
-          wait_segments(StartTimeout)
+          ?LOGINFO("load data..."),
+          load_data(StartTimeout)
       end
   end,
 
@@ -313,6 +299,21 @@ init_backend(Params)->
     },Params),
 
   init_backend(Params1).
+
+load_data(StartTimeout)->
+  ?LOGINFO("waiting for schema availability..."),
+  ok = wait_for_tables([schema,dlss_schema],StartTimeout),
+
+  ?LOGINFO("add local only segments"),
+  add_local_only_segments(),
+
+  ?LOGINFO("waiting for segemnts availability..."),
+  wait_segments(StartTimeout),
+
+  ?LOGINFO("segments synchronization...."),
+  synchronize_segments(),
+
+  ok.
 
 env()->
   maps:from_list([{E,mnesia_monitor:get_env(E)} || E <- mnesia_monitor:env() ]).
@@ -342,8 +343,24 @@ stop()->
     mnesia:stop()
   end).
 
+mark_read_write_segments()->
+  % We need to mark local read_write segment to load from disc
+  % as they are going to be reloaded during hash verification
+
+  [ case atom_to_binary(T,utf8) of
+      <<"dlss_schema">> ->
+        ignore;
+      <<"dlss_",_/binary>> when Access =/= read_only ->
+        ?LOGWARNING("~p is marked to skip network loading",[T]),
+        set_master_nodes(T,[node()]);
+      _->
+        ignore
+    end ||  {T,Access,_} <- get_regesterd_tables()],
+
+  ok.
 
 synchronize_segments()->
+
   ?LOGINFO("verify hash values for hosted storages"),
   dlss_storage_supervisor:verify_hash(_Force = true),
 
@@ -376,12 +393,12 @@ set_forced_mode( true )->
         true ->
           [ case ordsets:intersection(ActiveNodes,Copies) of
               []->
-                ?LOGWARNING("~p doesn't have active nodes and will be loaded from disc"),
+                ?LOGWARNING("~p doesn't have active nodes and will be loaded from disc",[T]),
                 set_master_nodes(T,[node()]);
               Masters->
                 ?LOGINFO("~p is going to be loaded from ~p",[T,Masters]),
                 set_master_nodes(T,Masters)
-          end|| {T,Copies} <- Tables]
+          end|| {T,_AccessMode,Copies} <- Tables]
       end
   end,
 
@@ -422,7 +439,11 @@ get_regesterd_tables()->
         lists:foldl(fun(Cs,Acc)->
           Copies = mnesia_lib:copy_holders(Cs),
           case lists:member(node(),Copies) of
-            true -> [{element(2,Cs), ordsets:from_list(Copies)} | Acc];
+            true -> [{
+              _Name = element(2,Cs),
+              _AcessMode = element(8,Cs),
+              ordsets:from_list(Copies)
+            } | Acc];
             _ -> Acc
           end
         end,[], Cstructs );
@@ -435,7 +456,7 @@ get_regesterd_tables()->
   Result.
 
 get_registered_nodes(Tables)->
-  lists:foldl(fun({Table,Copies},Acc)->
+  lists:foldl(fun({Table,_AccessMode,Copies},Acc)->
     ?LOGINFO("~p has copies ~p",[Table, Copies]),
     ordsets:union(Acc,Copies)
   end,ordsets:new(),Tables).
