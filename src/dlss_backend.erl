@@ -312,6 +312,9 @@ load_data(StartTimeout)->
   ?LOGINFO("segments synchronization...."),
   synchronize_segments(),
 
+  ?LOGINFO("purge stale segments...."),
+  purge_stale_segments(),
+
   dlss_node:set_status(node(),ready),
 
   ok.
