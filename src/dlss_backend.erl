@@ -241,13 +241,17 @@ init_backend(#{
           add_local_only_segments(),
 
           ?LOGINFO("waiting for segemnts availability..."),
-          wait_segments(StartTimeout);
+          wait_segments(StartTimeout),
+
+          dlss_node:set_status(node(),ready);
         true ->
           ok=mnesia:start(),
           % Register leveldb backend. !!! Many thanks to Google, Basho and Klarna developers
           mnesia_eleveldb:register(),
           ?LOGINFO("node is starting as master"),
-          create_schema()
+          create_schema(),
+
+          dlss_node:set_status(node(),ready)
       end;
     true ->
 
