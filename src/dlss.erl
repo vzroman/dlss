@@ -57,6 +57,7 @@
   write/3, write/4, dirty_write/3,
   delete/2, delete/3, dirty_delete/2,
   dirty_counter/3,
+  get_counter/2,
   scan_counters/3,scan_counters/4,
   drop_counter/2,
   first/1, dirty_first/1, last/1, dirty_last/1,
@@ -576,6 +577,8 @@ dirty_delete(Storage, Key)->
 
 dirty_counter(Storage,Key, Incr)->
   dlss_storage:dirty_counter( Storage, Key, Incr ).
+get_counter( Storage,Key )->
+  dlss_storage:get_counter(Storage,Key ).
 scan_counters( Storage, StartKey, EndKey )->
   dlss_storage:scan_counters( Storage, StartKey, EndKey ).
 scan_counters( Storage, StartKey, EndKey, Limit )->
