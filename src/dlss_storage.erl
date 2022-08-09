@@ -1265,7 +1265,7 @@ segment_transaction(Segment, Lock, Fun)->
             unlink(Owner),
             ok
         end;
-      Error -> Owner ! Error
+      Error -> Owner ! {error,self(),Error}
     end
   end),
 
@@ -1275,7 +1275,7 @@ segment_transaction(Segment, Lock, Fun)->
         try Fun() catch _:Error -> {error,Error} end,
       Holder ! {unlock,self()},
       Result;
-    Error -> Error
+    {error,Holder,Error} -> {error,Error}
   end.
 
 

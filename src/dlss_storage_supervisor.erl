@@ -152,19 +152,22 @@ verify_segment_hash(Segment, Node, Force, Trace )->
     #{ local := true } ->
       Trace("~p is local only segment, skip hash verification",[ Segment ]),
       ok;
-    _ ->
-
-      case master_node( Segment ) of
-        Node -> Trace("~p is the master node for ~p, skip hash verification",[Node,Segment]);
-        undefined -> ?LOGWARNING("master node for ~p is not ready, skip hash verification",[Segment]);
-        Master ->
-          AccessMode = dlss_segment:get_access_mode( Segment ),
-          if
-            Force =:= true , AccessMode =/= read_only ->
-              ?LOGWARNING("~p is not read only yet, it might have more actual data on other nodes",[Segment]),
-              drop_segment_copy(Segment, Node);
-            true ->
-              do_verify_segment_hash(Segment, Master, Node, Force, Trace)
+    #{ nodes := Nodes }->
+      case lists:member( Node, Nodes ) of
+        false -> Trace("~p has no local copy, skip hash verification",[ Segment ]);
+        _->
+          case master_node( Segment ) of
+            Node -> Trace("~p is the master node for ~p, skip hash verification",[Node,Segment]);
+            undefined -> ?LOGWARNING("master node for ~p is not ready, skip hash verification",[Segment]);
+            Master ->
+              AccessMode = dlss_segment:get_access_mode( Segment ),
+              if
+                Force =:= true , AccessMode =/= read_only ->
+                  ?LOGWARNING("~p is not read only yet, it might have more actual data on other nodes",[Segment]),
+                  drop_segment_copy(Segment, Node);
+                true ->
+                  do_verify_segment_hash(Segment, Master, Node, Force, Trace)
+              end
           end
       end
   end.
@@ -246,14 +249,18 @@ add_segment_copy(Segment, Node) ->
   % We do add the copy in the locked mode to be sure that the segment is not transformed
   % during the copying
   case dlss_storage:segment_transaction(Segment, write, fun()->
-    dlss_segment:add_node( Segment, Node )
+    Master = master_node( Segment ),
+    case dlss_segment:add_node( Segment, Node ) of
+      ok->
+        {ok, #{copies := Copies} } = dlss_storage:segment_params(Segment),
+        #{Master := Dump} = Copies,
+        {ok,Dump};
+      Error -> Error
+    end
   end) of
-    ok ->
-      % The segment is copied successfully, set the version the same as the master has
-      {ok, #{copies := Copies} } = dlss_storage:segment_params(Segment),
-      Master = master_node( Segment ),
-      #{Master := Dump} = Copies,
+    {ok,Dump} ->
 
+      % The segment is copied successfully, set the version the same as the master has
       ?LOGINFO("~p successfully copied, version ~p",[ Segment, dump_version(Dump) ]),
       ok = dlss_storage:set_segment_version( Segment, Node, Dump );
     {error, Error}->
