@@ -26,7 +26,8 @@
 -export([
   read/2,read/3,dirty_read/2,
   write/3,write/4,dirty_write/3,
-  delete/2,delete/3,dirty_delete/2
+  delete/2,delete/3,dirty_delete/2,
+  dirty_increment/3
 ]).
 
 %%=================================================================
@@ -251,6 +252,9 @@ delete(Segment,Key,Lock)->
   mnesia:delete(Segment,Key,Lock).
 dirty_delete(Segment,Key)->
   mnesia:dirty_delete(Segment,Key).
+
+dirty_increment( Segment, Key, Incr )->
+  mnesia:dirty_update_counter( Segment, Key, Incr ).
 
 %%=================================================================
 %%	Service API

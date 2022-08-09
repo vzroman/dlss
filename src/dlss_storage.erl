@@ -83,7 +83,9 @@
 -export([
   read/2,read/3,dirty_read/2,
   write/3,write/4,dirty_write/3,
-  delete/2,delete/3,dirty_delete/2
+  delete/2,delete/3,dirty_delete/2,
+  dirty_increment/3,
+  drop_increment/2
 ]).
 
 %%=================================================================
@@ -870,6 +872,11 @@ dirty_delete(Storage, Key)->
       dlss_segment:dirty_write( Root, Key, '@deleted@' )
   end.
 
+
+dirty_increment(Storage, Key, Incr)->
+  dlss_segment:dirty_increment(dlss_schema,{counter,Storage,Key},Incr).
+drop_increment(Storage, Key)->
+  dlss_segment:dirty_delete(dlss_schema, {counter,Storage,Key} ).
 %%=================================================================
 %%	Iterate
 %%=================================================================

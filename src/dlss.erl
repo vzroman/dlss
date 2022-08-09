@@ -56,6 +56,8 @@
   read/2, read/3, dirty_read/2,
   write/3, write/4, dirty_write/3,
   delete/2, delete/3, dirty_delete/2,
+  dirty_increment/3,
+  drop_increment/2,
   first/1, dirty_first/1, last/1, dirty_last/1,
   next/2, dirty_next/2, prev/2, dirty_prev/2,
   dirty_range_select/3, dirty_range_select/4
@@ -571,6 +573,10 @@ delete(Storage, Key, Lock)->
 dirty_delete(Storage, Key)->
   dlss_storage:dirty_delete(Storage, Key).
 
+dirty_increment(Storage,Key, Incr)->
+  dlss_storage:dirty_increment( Storage, Key, Incr ).
+drop_increment( Storage, Key )->
+  dlss_storage:drop_increment( Storage, Key ).
 
 %%=================================================================
 %%	Iterate
