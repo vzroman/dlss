@@ -40,7 +40,8 @@
   prev/2,dirty_prev/2,
   %----OPTIMIZED SCANNING------------------
   select/2,dirty_select/2,
-  dirty_scan/3,dirty_scan/4,dirty_scan/5
+  dirty_scan/3,dirty_scan/4,
+  do_dirty_scan/4
 ]).
 
 %%=================================================================
@@ -92,23 +93,72 @@ dirty_prev(Segment,Key)->
 dirty_scan(Segment,From,To)->
   dirty_scan(Segment,From,To,infinity).
 dirty_scan(Segment,From,To,Limit)->
-  dirty_scan(Segment,From,To,Limit,?DEFAULT_BATCH).
-dirty_scan(Segment,From,To,Limit,BatchSize)->
   Node = mnesia:table_info( Segment, where_to_read ),
   if
     Node =:= nowhere ->[];
     Node =:= node()->
-      do_dirty_scan(Segment,From,To,Limit,BatchSize);
+      do_dirty_scan(Segment,From,To,Limit);
     true->
-      case rpc:call(Node, ?MODULE, do_dirty_scan, [ Segment,From,To,Limit, BatchSize ]) of
+      case rpc:call(Node, ?MODULE, do_dirty_scan, [ Segment,From,To,Limit ]) of
         {badrpc, _Error} ->[];
         Result -> Result
       end
   end.
 
-do_dirty_scan(Segment,From,To,Limit,BatchSize)->
+do_dirty_scan(Segment,From,To,Limit)->
 
-  case init_iterator(Segment, From, To, Limit, BatchSize) of
+  % Find out the type of the storage
+  Type=mnesia_lib:storage_type_at_node(node(),Segment),
+
+  % Choose an algorithm
+  if
+    To =:= '$end_of_table'; Type =:= leveldb_copies->
+      if
+        is_number(Limit) ->
+          ?LOGDEBUG("------------DIRTY SELECT: from ~p, to ~p, limit ~p-------------",[From,To,Limit]),
+          dirty_select(Segment, Type, From, To, Limit );
+        true ->
+          ?LOGDEBUG("------------DIRTY SELECT: from ~p, to ~p, limit ~p-------------",[From,To,Limit]),
+          dirty_select(Segment, Type, From, To, Limit )
+      end;
+    is_number(Limit)->
+      ?LOGDEBUG("------------SAFE SCAN: from ~p, to ~p, limit ~p-------------",[From,To,Limit]),
+      safe_scan(Segment,From,To,Limit);
+    true->
+      ?LOGDEBUG("------------SAFE SCAN NO LIMIT: from ~p, to ~p-------------",[From,To]),
+      safe_scan(Segment,From,To)
+  end.
+
+safe_scan(Segment,'$start_of_table',To,Limit)->
+  do_safe_scan(mnesia:dirty_first(Segment), Segment, To, Limit );
+safe_scan(Segment,From,To, Limit)->
+  do_safe_scan(From, Segment, To, Limit ).
+
+do_safe_scan(Key, Segment, To, Limit) when Limit > 0, Key =/= '$end_of_table', Key =< To->
+  case mnesia:dirty_read(Segment,Key) of
+    [#kv{value = Value}]->[{Key,Value} | do_safe_scan( mnesia:dirty_next(Segment,Key), Segment, To, Limit - 1 )];
+    _->do_safe_scan( mnesia:dirty_next(Segment,Key), Segment, To, Limit )
+  end;
+do_safe_scan(_,_,_,_)->
+  [].
+
+safe_scan(Segment,'$start_of_table',To)->
+  do_safe_scan(mnesia:dirty_first(Segment), Segment, To );
+safe_scan(Segment,From,To)->
+  do_safe_scan(From, Segment, To ).
+
+do_safe_scan(Key, Segment, To) when Key =/= '$end_of_table', Key =< To->
+  case mnesia:dirty_read(Segment,Key) of
+    [#kv{value = Value}]->[{Key,Value} | do_safe_scan( mnesia:dirty_next(Segment,Key), Segment, To)];
+    _->do_safe_scan( mnesia:dirty_next(Segment,Key), Segment, To )
+  end;
+do_safe_scan(_,_,_)->
+  [].
+
+% Optimized algorithm
+dirty_select(Segment, Type, From, To, Limit)->
+
+  case init_iterator(Segment, From, To, Limit) of
     '$end_of_table' -> [];
     Iterator -> iterate(Iterator)
   end.
