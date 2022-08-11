@@ -643,7 +643,7 @@ wait_master(Segment, Key, IsMasterFun, _IsMaster = false) ->
 
 %---------------------MERGE---------------------------------------------------
 merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], Source, Params, Node, Type )->
-  % This is the segment that is currently copies the keys from the source
+  % This is the segment that is currently copying the keys from the source
   case Copies of
     #{ Node := #dump{version = Version} }->
       % The segment is already updated

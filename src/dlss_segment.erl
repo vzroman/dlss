@@ -61,7 +61,8 @@
   in_read_write_mode/2
 ]).
 
--record(iter,{cont,type,ms}).
+-define(MAX_SCAN_INTERVAL_BATCH,1000).
+-record(iter,{cont,type,ms,limit,to}).
 
 %%=================================================================
 %%	STORAGE SEGMENT API
@@ -105,22 +106,22 @@ dirty_scan(Segment,From,To,Limit)->
 
 do_dirty_scan(Segment,From,To,Limit)->
 
-  case init_continuation(Segment, From, To ) of
+  case init_iterator(Segment, From, To, Limit ) of
     '$end_of_table' -> [];
-    {Head,Cont} ->
-      Limit1 =
-        if is_number(Limit)-> Limit - 1; true-> Limit end,
-      [Head|iterate(Cont,To,Limit1)];
-    Cont ->
-      iterate(Cont,To,Limit)
+    {Head,Iterator} ->
+      [Head|iterate(Iterator)];
+    Iterator ->
+      iterate(Iterator)
   end.
 
-init_continuation(Segment, From, To )->
+init_iterator(Segment, From, To, Limit )->
 
   % Find out the type of the storage
   Type=mnesia_lib:storage_type_at_node(node(),Segment),
 
   MS=[{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
+
+  Iterator0 = #iter{ms = MS, type = Type, limit = Limit, to = To},
 
   case mnesia_lib:db_select_init(Type,Segment,MS,1) of
     {[{Key,_}],_Cont} when To =/='$end_of_table', Key > To->
@@ -128,30 +129,19 @@ init_continuation(Segment, From, To )->
       '$end_of_table';
     {[{Key,_} = Head],Cont} when From =:= '$start_of_table'; Key >= From->
       % The first key is greater than or equals the From key, take it
-      {Head,#iter{cont = Cont, ms = MS, type = Type}};
-    {[_FirstEntry],Cont}->
-      %The first key is less than the From key. This the point for the trick.
+      {Head, decrement( Iterator0#iter{ cont = Cont}, 1)};
+    {[_Entry],Cont}->
+      % The first key is less than the From key. This the point for the trick.
       % Replace the key with the From key in the continuation
-      Cont1 =
-        case Cont of
-          {Segment,_KeyToReplace,Par3,Limit,Ref,Par6,Par7,Par8}->
-            % This is the form of ets ordered_set continuation
-            {Segment,From,Par3,Limit,Ref,Par6,Par7,Par8};
-          {_KeyToReplace,Limit,Fun}->
-            % This is the form of mnesia_leveldb continuation
-            {From,Limit,Fun}
-        end,
-
-      Cont2 = #iter{cont = Cont1, ms = MS, type = Type},
-
+      Iterator = Iterator0#iter{ cont = init_continuation(Cont, From) },
       % define the head
       case mnesia:dirty_read(Segment,From) of
         [#kv{value = Value}]->
           % There is a value for the From key
-          {{From,Value},Cont2};
+          {{From,Value}, decrement( Iterator, 1 )};
         _->
           % No value for the From key
-          Cont2
+          Iterator
       end;
     '$end_of_table'->
       '$end_of_table';
@@ -160,29 +150,59 @@ init_continuation(Segment, From, To )->
       '$end_of_table'
   end.
 
-iterate(#iter{cont=Cont, ms=MS, type=Type}=Iter,To,Limit) when Limit > 0->
+init_continuation({Segment,_KeyToReplace,Par3,Limit,Ref,Par6,Par7,Par8}, Key )->
+  % This is the form of ets ordered_set continuation
+  {Segment,Key,Par3,Limit,Ref,Par6,Par7,Par8};
+init_continuation({_KeyToReplace,Limit,Fun}, Key )->
+  % This is the form of ets ordered_set continuation
+  {Key,Limit,Fun}.
+
+decrement(#iter{ limit = Limit } = Iter, Decr ) when is_number(Limit)->
+  Iter#iter{ limit = Limit - Decr };
+decrement(Iter, _Decr)->
+  Iter.
+
+prepare_continuation({Segment,Key,Par3,_Limit,Ref,Par6,Par7,Par8}, Limit)->
+  {Segment,Key,Par3,Limit,Ref,Par6,Par7,Par8};
+prepare_continuation({Key,_Limit,Fun}, Limit)->
+  {Key,Limit,Fun}.
+
+batch_size( Limit ) when is_number( Limit )->
+  Limit;
+batch_size( _Limit )->
+  ?MAX_SCAN_INTERVAL_BATCH.
+
+
+iterate(#iter{cont=Cont,limit = Limit}) when Limit =<0 ; Cont =:= '$end_of_table' ->
+  [];
+iterate(#iter{cont=Cont0, ms=MS, type=Type, limit = Limit, to = To}=Iter)->
+  % Prepare the continuation
+  Size = batch_size( Limit ),
+  Cont = prepare_continuation( Cont0, Size ),
+
   case mnesia_lib:db_select_cont(Type,Cont,MS) of
-    {[{Key,_} = Entry], Cont1} ->
-      if
-        Key < To; To =:= '$end_of_table'->
-          % The to key is not reached yet
-          Limit1 =
-            if is_number(Limit)-> Limit - 1; true-> Limit end,
-          [Entry | iterate(Iter#iter{ cont = Cont1 }, To, Limit1)];
-        Key > To->
-          % There are no more keys less than To
-          [];
-        Key =:= To->
-          % The To key is reached
-          [Entry]
+    {Entries0, NextCont} ->
+      ?LOGDEBUG("Entries0 ~p",[Entries0]),
+      case filter_entries( Entries0, To ) of
+        Entries when length( Entries ) =:= Size->
+          ?LOGDEBUG("Entries ~p",[Entries]),
+          % The batch is full, continue
+          Entries ++ iterate( decrement(Iter#iter{cont = NextCont}, Size) );
+        Entries->
+          % There are no more keys
+          Entries
       end;
     '$end_of_table'->
-      [];
-    {[],'$end_of_table'}->
       []
-  end;
-iterate(_Iter,_To, _Limit)->
-  % The Limit is reached
+  end.
+
+filter_entries( Entries, To ) when To =:= '$end_of_table'->
+  Entries;
+filter_entries( Entries, To )->
+  do_filter_entries( Entries, To ).
+do_filter_entries([{Key,_}=E|Rest], To) when Key =< To->
+  [E | filter_entries(Rest, To)];
+do_filter_entries(_Rest, _To)->
   [].
 
 %-------------SELECT----------------------------------------------

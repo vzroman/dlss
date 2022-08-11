@@ -234,20 +234,21 @@ test_ram_scan(_Config)->
   Start0 = erlang:system_time(millisecond),
   R2345 = dlss_segment:dirty_scan( Ram, {key,123}, {key,2345} ),
   Time0 = erlang:system_time(millisecond) - Start0,
-  ?LOGDEBUG("time0 ~p",[Time0]),
+  ?LOGDEBUG("scan 1 ~p",[Time0]),
 
+  T0 = erlang:system_time(millisecond),
   Count1 = 20000000,
   [ dlss_segment:dirty_write( Ram, {key,I+Count0}, {value,I+Count0} ) ||I<-lists:seq(1,Count1) ],
+  T1 = erlang:system_time(millisecond),
+  ?LOGDEBUG("write ~p",[T1-T0]),
 
-  Start1 = erlang:system_time(millisecond),
   R2345 = dlss_segment:dirty_scan( Ram, {key,123}, {key,2345} ),
-  Time1 = erlang:system_time(millisecond) - Start1,
-  ?LOGDEBUG("time1 ~p",[Time1]),
+  T2 = erlang:system_time(millisecond),
+  ?LOGDEBUG("scan 2 ~p",[T2 - T1]),
 
-  Start2 = erlang:system_time(millisecond),
   dlss_segment:dirty_scan( Ram, {key,19990123}, {key,19992345} ),
-  Time2 = erlang:system_time(millisecond) - Start2,
-  ?LOGDEBUG("time2 ~p",[Time2]),
+  T3 = erlang:system_time(millisecond),
+  ?LOGDEBUG("scan 3 ~p",[T3-T2]),
 
   % If the time1 is significantly bigger than the time2 then the issue with ets based
   % storage types is still not resolved
