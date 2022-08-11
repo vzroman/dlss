@@ -62,7 +62,7 @@
 ]).
 
 -define(MAX_SCAN_INTERVAL_BATCH,1000).
--record(iter,{cont,type,ms,limit,to}).
+-record(iter,{cont,type,ms,limit,to,acc}).
 
 %%=================================================================
 %%	STORAGE SEGMENT API
@@ -108,10 +108,7 @@ do_dirty_scan(Segment,From,To,Limit)->
 
   case init_iterator(Segment, From, To, Limit ) of
     '$end_of_table' -> [];
-    {Head,Iterator} ->
-      [Head|iterate(Iterator)];
-    Iterator ->
-      iterate(Iterator)
+    Iterator -> iterate(Iterator)
   end.
 
 init_iterator(Segment, From, To, Limit )->
@@ -121,7 +118,7 @@ init_iterator(Segment, From, To, Limit )->
 
   MS=[{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
 
-  Iterator0 = #iter{ms = MS, type = Type, limit = Limit, to = To},
+  Iterator = #iter{ms = MS, type = Type, limit = Limit, to = To, acc = []},
 
   case mnesia_lib:db_select_init(Type,Segment,MS,1) of
     {[{Key,_}],_Cont} when To =/='$end_of_table', Key > To->
@@ -129,19 +126,20 @@ init_iterator(Segment, From, To, Limit )->
       '$end_of_table';
     {[{Key,_} = Head],Cont} when From =:= '$start_of_table'; Key >= From->
       % The first key is greater than or equals the From key, take it
-      {Head, decrement( Iterator0#iter{ cont = Cont}, 1)};
-    {[_Entry],Cont}->
+      decrement( Iterator#iter{ cont = Cont,acc = [Head]}, 1);
+    {[_Entry],Cont0}->
       % The first key is less than the From key. This the point for the trick.
       % Replace the key with the From key in the continuation
-      Iterator = Iterator0#iter{ cont = init_continuation(Cont, From) },
+      Cont = init_continuation( Cont0, From ),
+
       % define the head
       case mnesia:dirty_read(Segment,From) of
         [#kv{value = Value}]->
           % There is a value for the From key
-          {{From,Value}, decrement( Iterator, 1 )};
+          decrement( Iterator#iter{cont = Cont, acc = [{From,Value}]}, 1 );
         _->
           % No value for the From key
-          Iterator
+          Iterator#iter{ cont = Cont }
       end;
     '$end_of_table'->
       '$end_of_table';
@@ -173,27 +171,27 @@ batch_size( _Limit )->
   ?MAX_SCAN_INTERVAL_BATCH.
 
 
-iterate(#iter{cont=Cont,limit = Limit}) when Limit =<0 ; Cont =:= '$end_of_table' ->
-  [];
-iterate(#iter{cont=Cont0, ms=MS, type=Type, limit = Limit, to = To}=Iter)->
+iterate(#iter{cont=Cont,limit = Limit, acc = Acc}) when Limit =<0 ; Cont =:= '$end_of_table' ->
+  Acc;
+iterate(#iter{cont=Cont0, ms=MS, type=Type, limit = Limit, to = To, acc = Acc0}=Iter)->
   % Prepare the continuation
   Size = batch_size( Limit ),
   Cont = prepare_continuation( Cont0, Size ),
 
   case mnesia_lib:db_select_cont(Type,Cont,MS) of
     {Entries0, NextCont} ->
-      ?LOGDEBUG("Entries0 ~p",[Entries0]),
-      case filter_entries( Entries0, To ) of
-        Entries when length( Entries ) =:= Size->
-          ?LOGDEBUG("Entries ~p",[Entries]),
+      Entries = filter_entries( Entries0, To ),
+      Acc = if length( Acc0 ) > 0 -> Acc0 ++ Entries; true -> Entries end,
+      if
+        length( Entries ) =:= Size->
           % The batch is full, continue
-          Entries ++ iterate( decrement(Iter#iter{cont = NextCont}, Size) );
-        Entries->
+          iterate( decrement(Iter#iter{cont = NextCont, acc = Acc}, Size) );
+        true ->
           % There are no more keys
-          Entries
+          Acc
       end;
     '$end_of_table'->
-      []
+      Acc0
   end.
 
 filter_entries( Entries, To ) when To =:= '$end_of_table'->
