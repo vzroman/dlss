@@ -62,10 +62,7 @@
   in_read_write_mode/2
 ]).
 
--record(iter,{cont,limit}).
--record(cont,{cont,type,ms}).
-
--define(DEFAULT_BATCH,1000).
+-define(MAX_SIZE,1 bsl 128).
 
 %%=================================================================
 %%	STORAGE SEGMENT API
@@ -160,62 +157,131 @@ dirty_select(Segment, _Type, '$start_of_table', '$end_of_table', Limit)
   MS=
     [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
   mnesia:dirty_select(Segment, MS);
+%---------------------------DIRTY SELECT ALL TABLE, WITH LIMIT---------------------------
+dirty_select(Segment, Type, '$start_of_table', '$end_of_table', Limit) ->
 
-%---------------------------DIRTY SELECT FROM START, NO LIMIT---------------------------
+  ?LOGDEBUG("------------DIRTY SELECT ALL TABLE, LIMIT ~p-------------",[Limit]),
+  MS=
+    [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
+  case mnesia_lib:db_select_init(Type,Segment,MS,Limit) of
+    {Result, _Cont}->
+      Result;
+    '$end_of_table'->
+      []
+  end;
+
+%---------------------------DIRTY SELECT FROM START TO KEY, NO LIMIT---------------------------
 dirty_select(Segment, _Type, '$start_of_table', To, Limit)
   when not is_number(Limit)->
 
-  ?LOGDEBUG("------------SAFE SCAN ALL TABLE, NO LIMIT-------------"),
+  ?LOGDEBUG("------------DIRTY SELECT FROM START TO KEY, NO LIMIT-------------"),
   MS=
-    [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
+    [{#kv{key='$1',value='$2'},[{'=<','$1',{const,To}}],[{{'$1','$2'}}]}],
   mnesia:dirty_select(Segment, MS);
 
+%---------------------------DIRTY SELECT FROM START TO KEY WITH LIMIT---------------------------
+dirty_select(Segment, Type, '$start_of_table', To, Limit) ->
 
+  ?LOGDEBUG("------------DIRTY SELECT FROM START TO KEY ~p WITH LIMIT ~p-------------",[To,Limit]),
+  MS=
+    [{#kv{key='$1',value='$2'},[{'=<','$1',{const,To}}],[{{'$1','$2'}}]}],
 
-  case init_iterator(Segment, Type, From, To, Limit) of
-    '$end_of_table' -> [];
-    Iterator -> iterate(Iterator)
-  end.
+  case mnesia_lib:db_select_init(Type,Segment,MS,Limit) of
+    {Result, _Cont}->
+      Result;
+    '$end_of_table'->
+      []
+  end;
 
-init_iterator(Segment, Type, '$start_of_table', To, Limit ) when is_number(Limit)->
+%---------------------------DIRTY SELECT FROM KEY TO END, NO LIMIT---------------------------
+dirty_select(Segment, Type, From, '$end_of_table', Limit)
+  when not is_number(Limit)->
 
+  ?LOGDEBUG("------------DIRTY SELECT FROM KEY ~p to END, NO LIMIT-------------",[From]),
 
-  case init_continuation( Segment, Type, From ) of
-    {Head, Cont}->
-      [Head| iterate()]
-  end,
   MS=
     [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
 
-  Iterator = #iter{
-    ms = MS,
-    type = Type,
-    limit = Limit,
-    batch = BatchSize,
-    to = To,
-    acc = []
-  },
+  case init_continuation( Segment, Type, From, MS, ?MAX_SIZE ) of
+    {Head, '$end_of_table'}->
+      [Head];
+    {Head, Cont}->
+      [Head | mnesia_lib:db_select_cont(Type,Cont,MS)];
+    '$end_of_table' ->
+      [];
+    Cont->
+      mnesia_lib:db_select_cont(Type,Cont,MS)
+  end;
+%---------------------------DIRTY SELECT FROM KEY TO END WITH LIMIT---------------------------
+dirty_select(Segment, Type, From, '$end_of_table', Limit) ->
 
+  ?LOGDEBUG("------------DIRTY SELECT FROM KEY ~p TO END WITH LIMIT ~p-------------",[From,Limit]),
+
+  MS=
+    [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
+
+  case init_continuation( Segment, Type, From, MS, Limit) of
+    {Head, '$end_of_table'}->
+      [Head];
+    {Head, Cont}->
+      [Head | mnesia_lib:db_select_cont(Type,Cont,MS)];
+    '$end_of_table' ->
+      [];
+    Cont->
+      mnesia_lib:db_select_cont(Type,Cont,MS)
+  end;
+%---------------------------DIRTY SELECT FROM KEY TO KEY, NO LIMIT---------------------------
+dirty_select(Segment, Type, From, To, Limit)
+  when not is_number(Limit)->
+
+  MS=
+    [{#kv{key='$1',value='$2'},[{'=<','$1',{const,To}}],[{{'$1','$2'}}]}],
+
+  ?LOGDEBUG("------------DIRTY SELECT FROM KEY ~p to KEY ~p, NO LIMIT-------------",[From,To]),
+  case init_continuation( Segment, Type, From, MS, ?MAX_SIZE) of
+    {Head, '$end_of_table'}->
+      [Head];
+    {Head, Cont}->
+      [Head | mnesia_lib:db_select_cont(Type,Cont,MS)];
+    '$end_of_table' ->
+      [];
+    Cont->
+      mnesia_lib:db_select_cont(Type,Cont,MS)
+  end;
+%---------------------------DIRTY SELECT FROM KEY TO KEY, WITH LIMIT---------------------------
+dirty_select(Segment, Type, From, To, Limit) ->
+
+  MS=
+    [{#kv{key='$1',value='$2'},[{'=<','$1',{const,To}}],[{{'$1','$2'}}]}],
+
+  ?LOGDEBUG("------------DIRTY SELECT FROM KEY ~p to KEY ~p, LIMIT ~p-------------",[From,To,Limit]),
+  case init_continuation( Segment, Type, From, MS, Limit) of
+    {Head, '$end_of_table'}->
+      [Head];
+    {Head, Cont}->
+      [Head | mnesia_lib:db_select_cont(Type,Cont,MS)];
+    '$end_of_table' ->
+      [];
+    Cont->
+      mnesia_lib:db_select_cont(Type,Cont,MS)
+  end.
+
+init_continuation( Segment, Type, From, MS, Limit )->
   case mnesia_lib:db_select_init(Type,Segment,MS,1) of
-    {[{Key,_}],_Cont} when To =/='$end_of_table', Key > To->
-      % there are no keys less than To
-      '$end_of_table';
-    {[{Key,_} = Head],Cont} when From =:= '$start_of_table'; Key >= From->
+    {[{Key,_} = Head], Cont} when Key >= Key->
       % The first key is greater than or equals the From key, take it
-      decrement( Iterator#iter{ cont = Cont,acc = [Head]}, 1);
-    {[_Entry],Cont0}->
+      {Head, Cont};
+    {[_First],Cont0}->
       % The first key is less than the From key. This the point for the trick.
       % Replace the key with the From key in the continuation
-      Cont = init_continuation( Cont0, From ),
 
-      % define the head
+      % Check if the from key exists
       case mnesia:dirty_read(Segment,From) of
         [#kv{value = Value}]->
-          % There is a value for the From key
-          decrement( Iterator#iter{cont = Cont, acc = [{From,Value}]}, 1 );
+          {{From,Value}, trick_continuation( Cont0, From, Limit - 1) };
         _->
           % No value for the From key
-          Iterator#iter{ cont = Cont }
+          trick_continuation( Cont0, From, Limit)
       end;
     '$end_of_table'->
       '$end_of_table';
@@ -224,67 +290,12 @@ init_iterator(Segment, Type, '$start_of_table', To, Limit ) when is_number(Limit
       '$end_of_table'
   end.
 
-init_continuation({Segment,_KeyToReplace,Par3,Limit,Ref,Par6,Par7,Par8}, Key )->
+trick_continuation({Segment,_KeyToReplace,Par3,_Limit,Ref,Par6,Par7,Par8}, Key, Limit )->
   % This is the form of ets ordered_set continuation
   {Segment,Key,Par3,Limit,Ref,Par6,Par7,Par8};
-init_continuation({_KeyToReplace,Limit,Fun}, Key )->
-  % This is the form of ets ordered_set continuation
+trick_continuation({_KeyToReplace,_Limit,Fun}, Key, Limit )->
+  % This is the form of mnesia_eleveldb continuation
   {Key,Limit,Fun}.
-
-decrement(#iter{ limit = Limit } = Iter, Decr ) when is_number(Limit)->
-  Iter#iter{ limit = Limit - Decr };
-decrement(Iter, _Decr)->
-  Iter.
-
-prepare_continuation({Segment,Key,Par3,_Limit,Ref,Par6,Par7,Par8}, Limit)->
-  {Segment,Key,Par3,Limit,Ref,Par6,Par7,Par8};
-prepare_continuation({Key,_Limit,Fun}, Limit)->
-  {Key,Limit,Fun}.
-
-iterate(#iter{cont=Cont,limit = Limit, acc = Acc}) when Limit =<0 ; Cont =:= '$end_of_table' ->
-  Acc;
-iterate(#iter{
-  cont=Cont0,
-  ms=MS,
-  type=Type,
-  limit = Limit,
-  batch = Batch,
-  to = To,
-  acc = Acc0
-}=Iter)->
-
-  % Prepare the continuation
-  Size =
-    if
-      Limit > Batch -> Batch;
-      true -> Limit
-    end,
-  Cont = prepare_continuation( Cont0, Size ),
-
-  case mnesia_lib:db_select_cont(Type,Cont,MS) of
-    {Entries0, NextCont} ->
-      Entries = filter_entries( Entries0, To ),
-      Acc = if length( Acc0 ) > 0 -> Acc0 ++ Entries; true -> Entries end,
-      if
-        length( Entries ) =:= Size->
-          % The batch is full, continue
-          iterate( decrement(Iter#iter{cont = NextCont, acc = Acc}, Size) );
-        true ->
-          % There are no more keys
-          Acc
-      end;
-    '$end_of_table'->
-      Acc0
-  end.
-
-filter_entries( Entries, To ) when To =:= '$end_of_table'->
-  Entries;
-filter_entries( Entries, To )->
-  do_filter_entries( Entries, To ).
-do_filter_entries([{Key,_}=E|Rest], To) when Key =< To->
-  [E | filter_entries(Rest, To)];
-do_filter_entries(_Rest, _To)->
-  [].
 
 %-------------SELECT----------------------------------------------
 select(Segment,MS)->
