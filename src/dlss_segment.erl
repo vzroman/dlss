@@ -61,6 +61,8 @@
   in_read_write_mode/2
 ]).
 
+-record(iter,{cont,type,ms}).
+
 %%=================================================================
 %%	STORAGE SEGMENT API
 %%=================================================================
@@ -103,130 +105,85 @@ dirty_scan(Segment,From,To,Limit)->
 
 do_dirty_scan(Segment,From,To,Limit)->
 
+  case init_continuation(Segment, From, To ) of
+    '$end_of_table' -> [];
+    {Head,Cont} ->
+      Limit1 =
+        if is_number(Limit)-> Limit - 1; true-> Limit end,
+      [Head|iterate(Cont,To,Limit1)];
+    Cont ->
+      iterate(Cont,To,Limit)
+  end.
+
+init_continuation(Segment, From, To )->
+
   % Find out the type of the storage
-  StorageType=mnesia_lib:storage_type_at_node(node(),Segment),
+  Type=mnesia_lib:storage_type_at_node(node(),Segment),
 
-  % Define where to stop
-  StopGuard=
-    if
-      To=:='$end_of_table' ->[];  % Nowhere
-      true -> [{'=<','$1',{const,To}}]    % Stop at the To key
-    end,
+  MS=[{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
 
-  MS=[{#kv{key='$1',value='$2'},StopGuard,[{{'$1','$2'}}]}],
-
-
-
-  % TODO. There is a significant issue with ets based storage type
-  % As the ets:select doesn't stop when the Key is
-  % bigger than the To it leads to scanning the whole table until it meets the
-  % Limit demand. It might lead ta scanning the table to its end
-  % even if there are no more keys within the range. It
-  % can dramatically decrease the performance. But the 'select' in a major
-  % set of cases is still more efficient than the 'dirty_next' iterator
-  % especially if the table is located on the other node.
-
-  % Initialize the continuation
-  case mnesia_lib:db_select_init(StorageType,Segment,MS,1) of
-    {[],'$end_of_table'}->[]; % The segment is empty
-    {[],_Cont}->[];           % there are no keys less than To
-    '$end_of_table'->[]; % this format is returned by the ets backend
-
-    {[{FirstKey,FirstValue}],Cont}->
-
-      % Define the from which to start
-      {StartKey,Head}=
-        if
-          From=:='$start_of_table';From=:=FirstKey ->{FirstKey,[{FirstKey,FirstValue}]} ;
-          true ->
-            case mnesia:dirty_read(Segment,From) of
-              [#kv{value = FromValue}]->
-                { From, [{From,FromValue}] };
-              _->
-                {From,[]}
-            end
+  case mnesia_lib:db_select_init(Type,Segment,MS,1) of
+    {[{Key,_}],_Cont} when To =/='$end_of_table', Key > To->
+      % there are no keys less than To
+      '$end_of_table';
+    {[{Key,_} = Head],Cont} when From =:= '$start_of_table'; Key >= From->
+      % The first key is greater than or equals the From key, take it
+      {Head,#iter{cont = Cont, ms = MS, type = Type}};
+    {[_FirstEntry],Cont}->
+      %The first key is less than the From key. This the point for the trick.
+      % Replace the key with the From key in the continuation
+      Cont1 =
+        case Cont of
+          {Segment,_KeyToReplace,Par3,Limit,Ref,Par6,Par7,Par8}->
+            % This is the form of ets ordered_set continuation
+            {Segment,From,Par3,Limit,Ref,Par6,Par7,Par8};
+          {_KeyToReplace,Limit,Fun}->
+            % This is the form of mnesia_leveldb continuation
+            {From,Limit,Fun}
         end,
+
+      Cont2 = #iter{cont = Cont1, ms = MS, type = Type},
+
+      % define the head
+      case mnesia:dirty_read(Segment,From) of
+        [#kv{value = Value}]->
+          % There is a value for the From key
+          {{From,Value},Cont2};
+        _->
+          % No value for the From key
+          Cont2
+      end;
+    '$end_of_table'->
+      '$end_of_table';
+    {[],'$end_of_table'}->
+      % The segment is empty
+      '$end_of_table'
+  end.
+
+iterate(#iter{cont=Cont, ms=MS, type=Type}=Iter,To,Limit) when Limit > 0->
+  case mnesia_lib:db_select_cont(Type,Cont,MS) of
+    {[{Key,_} = Entry], Cont1} ->
       if
-        Limit =:=1,length(Head)=:=1 -> Head ;
-        true ->
-          Limit1=
-            if
-              is_integer(Limit) -> Limit - length(Head) ;
-              true -> Limit
-            end,
-
-          % Initialize the continuation with the key to start from
-          Cont1=init_continuation(Cont,StartKey,Limit1),
-
-          BatchSize =
-            if
-              is_integer(Limit1) -> Limit1 ;
-              true -> ?MAX_SCAN_INTERVAL_BATCH
-            end,
-          % Run the search
-          Head++run_continuation(Cont1,StorageType,MS,Limit1,BatchSize,[])
-      end
-  end.
-
-init_continuation('$end_of_table',_StartKey,_Limit)->
-  '$end_of_table';
-init_continuation({Segment,_LastKey,Par3,_Limit,Ref,Par6,Par7,Par8},StartKey,Limit)->
-  % This is the form of ets ordered_set continuation
-  Limit1 =
-    if
-      Limit=:=infinity -> ?MAX_SCAN_INTERVAL_BATCH;
-      true -> Limit
-    end,
-  {Segment,StartKey,Par3,Limit1,Ref,Par6,Par7,Par8};
-init_continuation({_LastKey,_Limit,Fun},StartKey,Limit)->
-  Limit1 =
-    if
-      Limit=:=infinity -> ?MAX_SCAN_INTERVAL_BATCH;
-      true -> Limit
-    end,
-  % This is the form of mnesia_leveldb continuation
-  {StartKey,Limit1,Fun}.
-
-run_continuation('$end_of_table',_StorageType,_MS,_Limit,_BatchSize,Acc)->
-  % The end of table is reached
-  lists:append(lists:reverse(Acc));
-run_continuation(_Cont,_StorageType,_MS,Limit,_BatchSize,Acc) when Limit=:=0->
-  % The limit is reached
-  lists:append(lists:reverse(Acc));
-run_continuation(_Cont,_StorageType,_MS,Limit,_BatchSize,Acc) when Limit<0->
-  % The limit is passed over, we need to cut off the excessive records
-  Result = lists:append(lists:reverse(Acc)),
-  { Head, _} = lists:split( length(Result) + Limit , Result ),
-  Head;
-run_continuation(Cont,StorageType,MS,Limit,BatchSize,Acc)->
-  % Run the search
-  {Result,Cont1}=
-    case mnesia_lib:db_select_cont(StorageType,Cont,MS) of
-      {R,C} -> {R,C};
-      '$end_of_table'->{[],'$end_of_table'}
-    end,
-  % Update the acc
-  Acc1=
-    case Result of
-      []->Acc;
-      _->[Result|Acc]
-    end,
-  % If the result is less than the limit the its the last batch
-  if
-    length(Result)<BatchSize->
-      % The last scanned records are out of range already. There is no sense
-      % to keep scanning
-      lists:append(lists:reverse(Acc1));
-    true->
-      % The result is full, there might be more records
-      % Update the limit
-      Limit1=
-        if
-          is_integer(Limit)-> Limit-length(Result);
-          true -> Limit
-        end,
-      run_continuation(Cont1,StorageType,MS,Limit1,BatchSize,Acc1)
-  end.
+        Key < To; To =:= '$end_of_table'->
+          % The to key is not reached yet
+          Limit1 =
+            if is_number(Limit)-> Limit - 1; true-> Limit end,
+          [Entry | iterate(Iter#iter{ cont = Cont1 }, To, Limit1)];
+        Key > To->
+          % There are no more keys less than To
+          [];
+        Key =:= To->
+          % The To key is reached
+          [Entry]
+      end;
+    '$end_of_table'->
+      [];
+    {[],'$end_of_table'}->
+      []
+  end;
+iterate(_Iter,_To, _Limit)->
+  % The Limit is reached
+  [].
 
 %-------------SELECT----------------------------------------------
 select(Segment,MS)->
