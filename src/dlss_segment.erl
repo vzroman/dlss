@@ -26,8 +26,7 @@
 -export([
   read/2,read/3,dirty_read/2,
   write/3,write/4,dirty_write/3,
-  delete/2,delete/3,dirty_delete/2,
-  dirty_counter/3
+  delete/2,delete/3,dirty_delete/2
 ]).
 
 %%=================================================================
@@ -62,7 +61,7 @@
   in_read_write_mode/2
 ]).
 
--define(MAX_SIZE,1 bsl 128).
+-define(MAX_SIZE,1 bsl 32).
 
 %%=================================================================
 %%	STORAGE SEGMENT API
@@ -117,7 +116,7 @@ do_dirty_scan(Segment,From,To,Limit)->
       ?LOGDEBUG("------------SAFE SCAN: from ~p, to ~p, limit ~p-------------",[From,To,Limit]),
       safe_scan(Segment,From,To,Limit);
     true->
-      ?LOGDEBUG("------------SAFE SCAN NO LIMIT: from ~p, to ~p-------------",[From,To]),
+      ?LOGDEBUG("------------SAFE SCAN NO LIMIT: ~p, from ~p, to ~p-------------",[Segment,From,To]),
       safe_scan(Segment,From,To)
   end.
 
@@ -206,11 +205,11 @@ dirty_select(Segment, Type, From, '$end_of_table', Limit)
     {Head, '$end_of_table'}->
       [Head];
     {Head, Cont}->
-      [Head | mnesia_lib:db_select_cont(Type,Cont,MS)];
+      [Head | eval_continuation(Type,Cont,MS)];
     '$end_of_table' ->
       [];
     Cont->
-      mnesia_lib:db_select_cont(Type,Cont,MS)
+      eval_continuation(Type,Cont,MS)
   end;
 %---------------------------DIRTY SELECT FROM KEY TO END WITH LIMIT---------------------------
 dirty_select(Segment, Type, From, '$end_of_table', Limit) ->
@@ -224,11 +223,11 @@ dirty_select(Segment, Type, From, '$end_of_table', Limit) ->
     {Head, '$end_of_table'}->
       [Head];
     {Head, Cont}->
-      [Head | mnesia_lib:db_select_cont(Type,Cont,MS)];
+      [Head | eval_continuation(Type,Cont,MS)];
     '$end_of_table' ->
       [];
     Cont->
-      mnesia_lib:db_select_cont(Type,Cont,MS)
+      eval_continuation(Type,Cont,MS)
   end;
 %---------------------------DIRTY SELECT FROM KEY TO KEY, NO LIMIT---------------------------
 dirty_select(Segment, Type, From, To, Limit)
@@ -242,11 +241,11 @@ dirty_select(Segment, Type, From, To, Limit)
     {Head, '$end_of_table'}->
       [Head];
     {Head, Cont}->
-      [Head | mnesia_lib:db_select_cont(Type,Cont,MS)];
+      [Head | eval_continuation(Type,Cont,MS)];
     '$end_of_table' ->
       [];
     Cont->
-      mnesia_lib:db_select_cont(Type,Cont,MS)
+      eval_continuation(Type,Cont,MS)
   end;
 %---------------------------DIRTY SELECT FROM KEY TO KEY, WITH LIMIT---------------------------
 dirty_select(Segment, Type, From, To, Limit) ->
@@ -259,18 +258,18 @@ dirty_select(Segment, Type, From, To, Limit) ->
     {Head, '$end_of_table'}->
       [Head];
     {Head, Cont}->
-      [Head | mnesia_lib:db_select_cont(Type,Cont,MS)];
+      [Head | eval_continuation(Type,Cont,MS)];
     '$end_of_table' ->
       [];
     Cont->
-      mnesia_lib:db_select_cont(Type,Cont,MS)
+      eval_continuation(Type,Cont,MS)
   end.
 
 init_continuation( Segment, Type, From, MS, Limit )->
   case mnesia_lib:db_select_init(Type,Segment,MS,1) of
-    {[{Key,_} = Head], Cont} when Key >= Key->
+    {[{Key,_} = Head], Cont} when Key >= From->
       % The first key is greater than or equals the From key, take it
-      {Head, Cont};
+      {Head, decrement(Cont, -Limit)};
     {[_First],Cont0}->
       % The first key is less than the From key. This the point for the trick.
       % Replace the key with the From key in the continuation
@@ -296,6 +295,34 @@ trick_continuation({Segment,_KeyToReplace,Par3,_Limit,Ref,Par6,Par7,Par8}, Key, 
 trick_continuation({_KeyToReplace,_Limit,Fun}, Key, Limit )->
   % This is the form of mnesia_eleveldb continuation
   {Key,Limit,Fun}.
+
+decrement({Segment,Key,Par3,Limit,Ref,Par6,Par7,Par8}, Decr )->
+  Rest = Limit - Decr,
+  if
+    Rest > 0 -> {Segment,Key,Par3,Rest,Ref,Par6,Par7,Par8};
+    true -> '$end_of_table'
+  end;
+decrement({Key,Limit,Fun}, Decr )->
+  Rest = Limit - Decr,
+  if
+    Rest > 0 -> {Key,Rest,Fun};
+    true -> '$end_of_table'
+  end.
+
+eval_continuation(Type,Cont,MS)->
+  case mnesia_lib:db_select_cont(Type,Cont,MS) of
+    {Result,'$end_of_table'} ->
+      Result;
+    {Result,NextCont0}->
+      case decrement(NextCont0,length(Result)) of
+        '$end_of_table'-> Result;
+        NextCont-> Result ++ eval_continuation( Type, NextCont, MS )
+      end;
+    '$end_of_table' ->
+      [];
+    Result->
+      Result
+  end.
 
 %-------------SELECT----------------------------------------------
 select(Segment,MS)->
@@ -333,9 +360,6 @@ delete(Segment,Key,Lock)->
   mnesia:delete(Segment,Key,Lock).
 dirty_delete(Segment,Key)->
   mnesia:dirty_delete(Segment,Key).
-
-dirty_counter( Segment, Key, Incr )->
-  mnesia:dirty_update_counter( Segment, Key, Incr ).
 
 %%=================================================================
 %%	Service API

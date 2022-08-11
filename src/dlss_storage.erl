@@ -21,7 +21,6 @@
 -include("dlss.hrl").
 
 -record(sgm,{str,key,lvl,ver,copies}).
--define(DEFAULT_BATCH,1000).
 
 %%=================================================================
 %%	STORAGE SERVICE API
@@ -94,7 +93,7 @@
   next/2,dirty_next/2,
   prev/2,dirty_prev/2,
 
-  dirty_range_select/3, dirty_range_select/4, dirty_range_select/5
+  dirty_range_select/3, dirty_range_select/4
 ]).
 %%====================================================================
 %%		Test API
@@ -1080,9 +1079,7 @@ prev_sibling(_Other, _Str, _Lvl)->
 %-------------Range of keys----------------------------------------------
 dirty_range_select(Storage, StartKey, EndKey ) ->
   dirty_range_select(Storage, StartKey, EndKey, infinity).
-dirty_range_select(Storage, StartKey, EndKey, Limit)->
-  dirty_range_select(Storage, StartKey, EndKey, Limit, ?DEFAULT_BATCH).
-dirty_range_select(Storage, StartKey, EndKey, Limit, BatchSize) ->
+dirty_range_select(Storage, StartKey, EndKey, Limit) ->
 
 
   % Filter the segment that contain keys bigger
@@ -1103,7 +1100,7 @@ dirty_range_select(Storage, StartKey, EndKey, Limit, BatchSize) ->
 
   % scan each segment
   Results =
-    [ { L, scan_segment( S, StartKey, EndKey, Limit, BatchSize) } || [L,_Key, S] <- OrderedSegments ],
+    [ { L, scan_segment( S, StartKey, EndKey, Limit) } || [L,_Key, S] <- OrderedSegments ],
 
   % Merge by segments results
   Merged = merge_results( Results ),
@@ -1132,14 +1129,14 @@ dirty_range_select(Storage, StartKey, EndKey, Limit, BatchSize) ->
     length( Filtered ) =:= 0->
       % There are only deleted entries found, keep searching from the next valid key
       {NextKey, _} = lists:last( Merged ),
-      lists:sublist( dirty_range_select( Storage, NextKey, EndKey, Limit, BatchSize ), Limit );
+      lists:sublist( dirty_range_select( Storage, NextKey, EndKey, Limit ), Limit );
     true ->
       % If we are here then there were deleted records in the result that prevented us
       % from getting the full result, we need to keep searching.
       % Continue from the last key in the full result
 
       { Head, [ { LastKey,_} ]} = lists:split( length( Filtered )-1, Filtered ),
-      Head ++ lists:sublist( dirty_range_select( Storage, LastKey, EndKey, Limit, BatchSize ), Limit - length(Head) )
+      Head ++ lists:sublist( dirty_range_select( Storage, LastKey, EndKey, Limit ), Limit - length(Head) )
   end.
 
 find_head_segments( Storage, Key )->
@@ -1166,12 +1163,12 @@ drop_head( [S | Rest], FromKey )->
 drop_head( [], _FromKey )->
   [].
 
-scan_segment( Segment, StartKey, EndKey, Limit, BatchSize )->
+scan_segment( Segment, StartKey, EndKey, Limit )->
   % As scanning is performed in dirty mode
   % there are might be schema transformation after selecting
   % the segments so the segment may not exist any more
   try
-    dlss_segment:dirty_scan(Segment, StartKey, EndKey, Limit, BatchSize)
+    dlss_segment:dirty_scan(Segment, StartKey, EndKey, Limit)
   catch
       _:{no_exists, _}->[];
     _:Error->?ERROR({Segment,Limit,Error})

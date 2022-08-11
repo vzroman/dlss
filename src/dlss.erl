@@ -56,13 +56,9 @@
   read/2, read/3, dirty_read/2,
   write/3, write/4, dirty_write/3,
   delete/2, delete/3, dirty_delete/2,
-  dirty_counter/3,
-  get_counter/2,
-  scan_counters/3,scan_counters/4,
-  drop_counter/2,
   first/1, dirty_first/1, last/1, dirty_last/1,
   next/2, dirty_next/2, prev/2, dirty_prev/2,
-  dirty_range_select/3, dirty_range_select/4, dirty_range_select/5
+  dirty_range_select/3, dirty_range_select/4
 ]).
 
 -type storage_type() :: ram | ramdisc | disc.
@@ -575,17 +571,6 @@ delete(Storage, Key, Lock)->
 dirty_delete(Storage, Key)->
   dlss_storage:dirty_delete(Storage, Key).
 
-dirty_counter(Storage,Key, Incr)->
-  dlss_storage:dirty_counter( Storage, Key, Incr ).
-get_counter( Storage,Key )->
-  dlss_storage:get_counter(Storage,Key ).
-scan_counters( Storage, StartKey, EndKey )->
-  dlss_storage:scan_counters( Storage, StartKey, EndKey ).
-scan_counters( Storage, StartKey, EndKey, Limit )->
-  dlss_storage:scan_counters( Storage, StartKey, EndKey, Limit ).
-drop_counter( Storage, Key )->
-  dlss_storage:drop_counter( Storage, Key ).
-
 %%=================================================================
 %%	Iterate
 %%=================================================================
@@ -710,20 +695,6 @@ dirty_range_select(Storage, StartKey, EndKey) ->
 -spec dirty_range_select(Storage :: atom(), StartKey :: any(), EndKey ::any(), Limit :: integer() ) -> Items :: list() | no_return().
 dirty_range_select(Storage, StartKey, EndKey, Limit) ->
   dlss_storage:dirty_range_select(Storage,StartKey,EndKey,Limit).
-
-%-----------------------------------------------------------------
-%% @doc	Dirty Range Select.
-% Function searches the storage for keys relating to the defined range of keys.
-% StartKey and EndKey define the interval to run trough.
-% Limit defines the maximum number of item to return
-% BatchSize defines the iterator step
-% '$start_of_table' and '$end_of_table' are supported.
-% Returns a list of found items [{ Key, Value}|...]
-%% @end
-%-----------------------------------------------------------------
--spec dirty_range_select(Storage :: atom(), StartKey :: any(), EndKey ::any(), Limit :: integer(), BatchSize :: integer()) -> Items :: list() | no_return().
-dirty_range_select(Storage, StartKey, EndKey, Limit, BatchSize) ->
-  dlss_storage:dirty_range_select(Storage,StartKey,EndKey,Limit,BatchSize).
 
 % Update API docs
 % edoc:files(["src/dlss.erl"],[{dir, "doc"}]).
