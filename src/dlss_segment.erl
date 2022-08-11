@@ -61,7 +61,11 @@
   in_read_write_mode/2
 ]).
 
--define(MAX_SIZE,1 bsl 32).
+-define(MAX_SIZE(Type),
+  if
+    Type=:=leveldb_copies -> 1 bsl 128;
+    true-> (1 bsl 59) - 1 % Experimentally set that it's the max continuation limit for ets
+  end).
 
 %%=================================================================
 %%	STORAGE SEGMENT API
@@ -201,7 +205,7 @@ dirty_select(Segment, Type, From, '$end_of_table', Limit)
   MS=
     [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
 
-  case init_continuation( Segment, Type, From, MS, ?MAX_SIZE ) of
+  case init_continuation( Segment, Type, From, MS, ?MAX_SIZE(Type) ) of
     {Head, '$end_of_table'}->
       [Head];
     {Head, Cont}->
@@ -237,7 +241,7 @@ dirty_select(Segment, Type, From, To, Limit)
     [{#kv{key='$1',value='$2'},[{'=<','$1',{const,To}}],[{{'$1','$2'}}]}],
 
   ?LOGDEBUG("------------DIRTY SELECT FROM KEY ~p to KEY ~p, NO LIMIT-------------",[From,To]),
-  case init_continuation( Segment, Type, From, MS, ?MAX_SIZE) of
+  case init_continuation( Segment, Type, From, MS, ?MAX_SIZE(Type)) of
     {Head, '$end_of_table'}->
       [Head];
     {Head, Cont}->
