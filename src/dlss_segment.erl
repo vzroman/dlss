@@ -62,7 +62,9 @@
   in_read_write_mode/2
 ]).
 
--record(iter,{cont,type,ms,limit,batch,to,acc}).
+-record(iter,{cont,limit}).
+-record(cont,{cont,type,ms}).
+
 -define(DEFAULT_BATCH,1000).
 
 %%=================================================================
@@ -113,14 +115,7 @@ do_dirty_scan(Segment,From,To,Limit)->
   % Choose an algorithm
   if
     To =:= '$end_of_table'; Type =:= leveldb_copies->
-      if
-        is_number(Limit) ->
-          ?LOGDEBUG("------------DIRTY SELECT: from ~p, to ~p, limit ~p-------------",[From,To,Limit]),
-          dirty_select(Segment, Type, From, To, Limit );
-        true ->
-          ?LOGDEBUG("------------DIRTY SELECT: from ~p, to ~p, limit ~p-------------",[From,To,Limit]),
-          dirty_select(Segment, Type, From, To, Limit )
-      end;
+      dirty_select(Segment, Type, From, To, Limit );
     is_number(Limit)->
       ?LOGDEBUG("------------SAFE SCAN: from ~p, to ~p, limit ~p-------------",[From,To,Limit]),
       safe_scan(Segment,From,To,Limit);
@@ -129,19 +124,7 @@ do_dirty_scan(Segment,From,To,Limit)->
       safe_scan(Segment,From,To)
   end.
 
-safe_scan(Segment,'$start_of_table',To,Limit)->
-  do_safe_scan(mnesia:dirty_first(Segment), Segment, To, Limit );
-safe_scan(Segment,From,To, Limit)->
-  do_safe_scan(From, Segment, To, Limit ).
-
-do_safe_scan(Key, Segment, To, Limit) when Limit > 0, Key =/= '$end_of_table', Key =< To->
-  case mnesia:dirty_read(Segment,Key) of
-    [#kv{value = Value}]->[{Key,Value} | do_safe_scan( mnesia:dirty_next(Segment,Key), Segment, To, Limit - 1 )];
-    _->do_safe_scan( mnesia:dirty_next(Segment,Key), Segment, To, Limit )
-  end;
-do_safe_scan(_,_,_,_)->
-  [].
-
+%----------------------SAFE SCAN NO LIMIT-----------------------------------------
 safe_scan(Segment,'$start_of_table',To)->
   do_safe_scan(mnesia:dirty_first(Segment), Segment, To );
 safe_scan(Segment,From,To)->
@@ -155,20 +138,54 @@ do_safe_scan(Key, Segment, To) when Key =/= '$end_of_table', Key =< To->
 do_safe_scan(_,_,_)->
   [].
 
-% Optimized algorithm
-dirty_select(Segment, Type, From, To, Limit)->
+%----------------------SAFE SCAN WITH LIMIT-----------------------------------------
+safe_scan(Segment,'$start_of_table',To,Limit)->
+  do_safe_scan(mnesia:dirty_first(Segment), Segment, To, Limit );
+safe_scan(Segment,From,To, Limit)->
+  do_safe_scan(From, Segment, To, Limit ).
 
-  case init_iterator(Segment, From, To, Limit) of
+do_safe_scan(Key, Segment, To, Limit) when Limit > 0, Key =/= '$end_of_table', Key =< To->
+  case mnesia:dirty_read(Segment,Key) of
+    [#kv{value = Value}]->[{Key,Value} | do_safe_scan( mnesia:dirty_next(Segment,Key), Segment, To, Limit - 1 )];
+    _->do_safe_scan( mnesia:dirty_next(Segment,Key), Segment, To, Limit )
+  end;
+do_safe_scan(_,_,_,_)->
+  [].
+
+%---------------------------DIRTY SELECT ALL TABLE, NO LIMIT---------------------------
+dirty_select(Segment, _Type, '$start_of_table', '$end_of_table', Limit)
+  when not is_number(Limit)->
+
+  ?LOGDEBUG("------------DIRTY SELECT ALL TABLE, NO LIMIT-------------"),
+  MS=
+    [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
+  mnesia:dirty_select(Segment, MS);
+
+%---------------------------DIRTY SELECT FROM START, NO LIMIT---------------------------
+dirty_select(Segment, _Type, '$start_of_table', To, Limit)
+  when not is_number(Limit)->
+
+  ?LOGDEBUG("------------SAFE SCAN ALL TABLE, NO LIMIT-------------"),
+  MS=
+    [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
+  mnesia:dirty_select(Segment, MS);
+
+
+
+  case init_iterator(Segment, Type, From, To, Limit) of
     '$end_of_table' -> [];
     Iterator -> iterate(Iterator)
   end.
 
-init_iterator(Segment, From, To, Limit, BatchSize )->
+init_iterator(Segment, Type, '$start_of_table', To, Limit ) when is_number(Limit)->
 
-  % Find out the type of the storage
-  Type=mnesia_lib:storage_type_at_node(node(),Segment),
 
-  MS=[{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
+  case init_continuation( Segment, Type, From ) of
+    {Head, Cont}->
+      [Head| iterate()]
+  end,
+  MS=
+    [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
 
   Iterator = #iter{
     ms = MS,
