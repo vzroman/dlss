@@ -83,11 +83,7 @@
 -export([
   read/2,read/3,dirty_read/2,
   write/3,write/4,dirty_write/3,
-  delete/2,delete/3,dirty_delete/2,
-  dirty_counter/3,
-  get_counter/2,
-  scan_counters/3,scan_counters/4,
-  drop_counter/2
+  delete/2,delete/3,dirty_delete/2
 ]).
 
 %%=================================================================
@@ -874,23 +870,6 @@ dirty_delete(Storage, Key)->
       dlss_segment:dirty_write( Root, Key, '@deleted@' )
   end.
 
-
-dirty_counter(Storage, Key, Incr)->
-  dlss_segment:dirty_counter(dlss_schema,{counter,Storage,Key},Incr).
-get_counter(Storage, Key)->
-  dlss_segment:dirty_counter(dlss_schema,{counter,Storage,Key},0).
-scan_counters(Storage,StartKey, EndKey)->
-  Counters =
-    dlss_segment:dirty_scan( dlss_schema, {counter,Storage,StartKey}, {counter,Storage,EndKey}),
-  [{K,V} || { {counter,_,K}, V } <- Counters].
-
-scan_counters(Storage,StartKey, EndKey, Limit)->
-  Counters =
-    dlss_segment:dirty_scan( dlss_schema, {counter,Storage,StartKey}, {counter,Storage,EndKey}, Limit),
-  [{K,V} || { {counter,_,K}, V } <- Counters].
-drop_counter( Storage, Key )->
-  dlss_segment:dirty_delete( dlss_schema, {counter,Storage,Key} ).
-
 %%=================================================================
 %%	Iterate
 %%=================================================================
@@ -1103,6 +1082,7 @@ prev_sibling(_Other, _Str, _Lvl)->
 dirty_range_select(Storage, StartKey, EndKey ) ->
   dirty_range_select(Storage, StartKey, EndKey, infinity).
 dirty_range_select(Storage, StartKey, EndKey, Limit) ->
+
 
   % Filter the segment that contain keys bigger
   % than the EndKey

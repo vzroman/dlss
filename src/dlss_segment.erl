@@ -61,9 +61,6 @@
   in_read_write_mode/2
 ]).
 
--define(MAX_SCAN_INTERVAL_BATCH,1000).
-
-
 %%=================================================================
 %%	STORAGE SEGMENT API
 %%=================================================================
@@ -92,6 +89,19 @@ dirty_prev(Segment,Key)->
 dirty_scan(Segment,From,To)->
   dirty_scan(Segment,From,To,infinity).
 dirty_scan(Segment,From,To,Limit)->
+  Node = mnesia:table_info( Segment, where_to_read ),
+  if
+    Node =:= nowhere ->[];
+    Node =:= node()->
+      do_dirty_scan(Segment,From,To,Limit);
+    true->
+      case rpc:call(Node, ?MODULE, do_dirty_scan, [ Segment,From,To,Limit ]) of
+        {badrpc, _Error} ->[];
+        Result -> Result
+      end
+  end.
+
+do_dirty_scan(Segment,From,To,Limit)->
 
   % Find out the type of the storage
   StorageType=mnesia_lib:storage_type_at_node(node(),Segment),
@@ -104,6 +114,8 @@ dirty_scan(Segment,From,To,Limit)->
     end,
 
   MS=[{#kv{key='$1',value='$2'},StopGuard,[{{'$1','$2'}}]}],
+
+
 
   % TODO. There is a significant issue with ets based storage type
   % As the ets:select doesn't stop when the Key is
