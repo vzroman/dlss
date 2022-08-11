@@ -40,7 +40,7 @@
   prev/2,dirty_prev/2,
   %----OPTIMIZED SCANNING------------------
   select/2,dirty_select/2,
-  dirty_scan/3, dirty_scan/4
+  dirty_scan/3,dirty_scan/4,dirty_scan/5
 ]).
 
 %%=================================================================
@@ -61,8 +61,8 @@
   in_read_write_mode/2
 ]).
 
--define(MAX_SCAN_INTERVAL_BATCH,1000).
--record(iter,{cont,type,ms,limit,to,acc}).
+-record(iter,{cont,type,ms,limit,batch,to,acc}).
+-define(DEFAULT_BATCH,1000).
 
 %%=================================================================
 %%	STORAGE SEGMENT API
@@ -92,33 +92,42 @@ dirty_prev(Segment,Key)->
 dirty_scan(Segment,From,To)->
   dirty_scan(Segment,From,To,infinity).
 dirty_scan(Segment,From,To,Limit)->
+  dirty_scan(Segment,From,To,Limit,?DEFAULT_BATCH).
+dirty_scan(Segment,From,To,Limit,BatchSize)->
   Node = mnesia:table_info( Segment, where_to_read ),
   if
     Node =:= nowhere ->[];
     Node =:= node()->
-      do_dirty_scan(Segment,From,To,Limit);
+      do_dirty_scan(Segment,From,To,Limit,BatchSize);
     true->
-      case rpc:call(Node, ?MODULE, do_dirty_scan, [ Segment,From,To,Limit ]) of
+      case rpc:call(Node, ?MODULE, do_dirty_scan, [ Segment,From,To,Limit, BatchSize ]) of
         {badrpc, _Error} ->[];
         Result -> Result
       end
   end.
 
-do_dirty_scan(Segment,From,To,Limit)->
+do_dirty_scan(Segment,From,To,Limit,BatchSize)->
 
-  case init_iterator(Segment, From, To, Limit ) of
+  case init_iterator(Segment, From, To, Limit, BatchSize) of
     '$end_of_table' -> [];
     Iterator -> iterate(Iterator)
   end.
 
-init_iterator(Segment, From, To, Limit )->
+init_iterator(Segment, From, To, Limit, BatchSize )->
 
   % Find out the type of the storage
   Type=mnesia_lib:storage_type_at_node(node(),Segment),
 
   MS=[{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
 
-  Iterator = #iter{ms = MS, type = Type, limit = Limit, to = To, acc = []},
+  Iterator = #iter{
+    ms = MS,
+    type = Type,
+    limit = Limit,
+    batch = BatchSize,
+    to = To,
+    acc = []
+  },
 
   case mnesia_lib:db_select_init(Type,Segment,MS,1) of
     {[{Key,_}],_Cont} when To =/='$end_of_table', Key > To->
@@ -165,17 +174,24 @@ prepare_continuation({Segment,Key,Par3,_Limit,Ref,Par6,Par7,Par8}, Limit)->
 prepare_continuation({Key,_Limit,Fun}, Limit)->
   {Key,Limit,Fun}.
 
-batch_size( Limit ) when is_number( Limit )->
-  Limit;
-batch_size( _Limit )->
-  ?MAX_SCAN_INTERVAL_BATCH.
-
-
 iterate(#iter{cont=Cont,limit = Limit, acc = Acc}) when Limit =<0 ; Cont =:= '$end_of_table' ->
   Acc;
-iterate(#iter{cont=Cont0, ms=MS, type=Type, limit = Limit, to = To, acc = Acc0}=Iter)->
+iterate(#iter{
+  cont=Cont0,
+  ms=MS,
+  type=Type,
+  limit = Limit,
+  batch = Batch,
+  to = To,
+  acc = Acc0
+}=Iter)->
+
   % Prepare the continuation
-  Size = batch_size( Limit ),
+  Size =
+    if
+      Limit > Batch -> Batch;
+      true -> Limit
+    end,
   Cont = prepare_continuation( Cont0, Size ),
 
   case mnesia_lib:db_select_cont(Type,Cont,MS) of
