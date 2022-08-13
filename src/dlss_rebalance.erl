@@ -90,10 +90,7 @@ copy( Source, Target, Copy, FromKey0, OnBatch, Acc0 )->
 
   Acc = Acc1#{ hash => crypto:hash_final( maps:get(hash,Acc1) ) },
 
-  if
-    Type =/=disc -> dump_segment( Target );
-    true -> ok
-  end,
+  ok = dump_segment( Target ),
 
   { ok, Acc }.
 
@@ -260,6 +257,13 @@ ets_bulk_write( Segment, Records )->
 %%	Helpers
 %%=================================================================
 dump_segment( Segment )->
+
+  case dlss_segment:get_info( Segment ) of
+    #{ type:= ramdisc } -> do_dump_segment( Segment );
+    _ -> ok
+  end.
+
+do_dump_segment( Segment)->
 
   ?LOGDEBUG("~p dump",[Segment]),
   Temp = ?TEMP( Segment ),

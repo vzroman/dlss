@@ -392,6 +392,9 @@ loop( #state{ storage =  Storage, type = Type} = State )->
         {error, Error} ->
           ?LOGERROR("~p ~p error ~p",[Segment, Operation, Error])
       end;
+    {wait, Segment, Operation}->
+      % Master commits the schema transformation if it is finished
+      hash_confirm( Operation, Segment, Node );
     _ ->
 
       % Remove stale head
@@ -460,7 +463,7 @@ pending_transformation( Storage, Node )->
           case Params of
             #{ version:=Version, copies := #{ Node := #dump{version = Version}} }->
               % The version for the node is already updated
-              undefined;
+              {wait, Segment, split};
             #{ copies := #{ Node := _ } }->
               {split, Segment}
           end;
@@ -972,7 +975,7 @@ check_segment_size([{ Segment, #{storage:=Storage, level:=Level }}| Rest], Node)
       Size = dlss_segment:get_size( Segment ),
       Limit = segment_level_limit(Storage, Level ),
       if
-        Size > Limit-> Segment;
+        is_number(Limit), Size > Limit-> Segment;
         true ->
           check_segment_size( Rest, Node )
       end;
@@ -1082,7 +1085,10 @@ which_operation(Level)->
 
 segment_level_limit(Storage, Level )->
   StorageLimits = dlss_storage:storage_limits( Storage ),
-  maps:get( Level, StorageLimits ) *?MB.
+  case StorageLimits of
+    #{Level:=Limit}->Limit *?MB;
+    _-> undefined
+  end.
 
 level_count_limit( 0 )->
   % There can be only one root {"B", 0}segment
