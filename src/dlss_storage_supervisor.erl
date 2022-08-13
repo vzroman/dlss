@@ -348,7 +348,7 @@ handle_info(loop,#state{
     try loop( State )
     catch
       _:Error:Stack->
-        ?LOGINFO("~p storage supervisor error ~p, stack ~p",[ Storage, Error, Stack ]),
+        ?LOGERROR("~p storage supervisor error ~p, stack ~p",[ Storage, Error, Stack ]),
         State
     end,
 
