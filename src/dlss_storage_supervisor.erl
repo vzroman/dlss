@@ -32,6 +32,7 @@
 -record(state,{ storage, type, cycle }).
 -record(dump,{ version, hash }).
 
+
 %%=================================================================
 %%	The rebalancing algorithm follows the rules:
 %%   * There is a supervisor process for each storage on each node
@@ -348,7 +349,7 @@ handle_info(loop,#state{
     try loop( State )
     catch
       _:Error:Stack->
-        ?LOGINFO("~p storage supervisor error ~p, stack ~p",[ Storage, Error, Stack ]),
+        ?LOGERROR("~p storage supervisor error ~p, stack ~p",[ Storage, Error, Stack ]),
         State
     end,
 
@@ -438,10 +439,14 @@ set_segment_read_only(Segment)->
   % If we set read_only while other nodes copy it
   % mnesia will crash down. So we do it in locked mode
   case dlss_storage:segment_transaction(Segment, write, fun()->
+    % WARNING! We need the pause to allow mnesia to settle down it's schema
+    timer:sleep(5000),
     dlss_segment:set_access_mode(Segment, read_only)
-  end) of
+  end, 1000) of
     ok->
       ok;
+    {error, lock_timeout}->
+      ?LOGINFO("~p lock timeout, skip set read_only mode");
     {error,Error}->
       ?LOGERROR("~p unable to set read_only mode, error ~p",[ Segment, Error ])
   end.
