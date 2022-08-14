@@ -62,7 +62,7 @@
   remove_all_segments_from/1,
 
   % Perform a transaction over segment in locked mode
-  segment_transaction/3,
+  segment_transaction/3,segment_transaction/4,
 
   % rebalance the storage schema
   split_segment/1,
@@ -894,6 +894,17 @@ drop_counter( Storage, Key )->
 %%=================================================================
 %%	Iterate
 %%=================================================================
+dirty_iterator( Iterator, Segment, Key )->
+  case dlss_segment:Iterator(Segment,Key) of
+    '$end_of_table' -> '$end_of_table';
+    Next -> Next
+  end.
+dirty_iterator( Iterator, Segment )->
+  case dlss_segment:Iterator(Segment) of
+    '$end_of_table' -> '$end_of_table';
+    Next -> Next
+  end.
+
 safe_iterator( Iterator, Segment, Storage, Key )->
   case dlss_segment:Iterator(Segment,Key) of
     '$end_of_table' -> '$end_of_table';
@@ -964,7 +975,7 @@ last(Storage)->
 
 dirty_last(Storage)->
   % Dirty iterator
-  Iter = fun(Segment)->safe_iterator(dirty_last, Segment,Storage) end,
+  Iter = fun(Segment)->dirty_iterator(dirty_last, Segment) end,
   % The scanning starts at the lowest level
   Highest = #sgm{ str = Storage, key = [], lvl = '_' },
   Segments = key_segments( parent_segment(Highest),[]),
@@ -988,7 +999,7 @@ next( Storage, Key )->
 
 dirty_next(Storage,Key)->
   % The iterator
-  Iter = fun(Segment)->safe_iterator(dirty_next,Segment,Storage,Key) end,
+  Iter = fun(Segment)->dirty_iterator(dirty_next,Segment,Key) end,
   % Starting point
   Lowest = #sgm{ str = Storage, key = { Key }, lvl = '_' },
   next( parent_segment(Lowest), Iter, '$end_of_table' ).
@@ -1049,7 +1060,7 @@ prev( Storage, Key )->
 
 dirty_prev(Storage,Key)->
   % The iterator
-  Iter = fun(Segment)->safe_iterator(dirty_prev, Segment,Storage,Key) end,
+  Iter = fun(Segment)->dirty_iterator(dirty_prev, Segment,Key) end,
   % Starting point
   Lowest = #sgm{ str = Storage, key = { Key }, lvl = '_' },
   prev( parent_segment(Lowest), Iter, '$end_of_table' ).
@@ -1276,6 +1287,8 @@ lock_segment( Segment, Lock )->
   end.
 
 segment_transaction(Segment, Lock, Fun)->
+  segment_transaction(Segment, Lock, Fun, infinity).
+segment_transaction(Segment, Lock, Fun, Timeout)->
   Owner = self(),
   Holder = spawn_link(fun()->
     case dlss:sync_transaction(fun()->lock_segment(Segment, Lock) end) of
@@ -1286,7 +1299,7 @@ segment_transaction(Segment, Lock, Fun)->
             unlink(Owner),
             ok
         end;
-      Error -> Owner ! {error,self(),Error}
+      {error,Error} -> Owner ! {error,self(),Error}
     end
   end),
 
@@ -1297,6 +1310,8 @@ segment_transaction(Segment, Lock, Fun)->
       Holder ! {unlock,self()},
       Result;
     {error,Holder,Error} -> {error,Error}
+  after
+    Timeout->{error, lock_timeout}
   end.
 
 
