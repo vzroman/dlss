@@ -500,7 +500,20 @@ is_empty(Segment)->
   end.
 
 add_node(Segment,Node)->
-  add_node(Segment, Node, mnesia:table_info(Segment, access_mode)).
+  % ATTENTION! Mnesia trick, we do copy ourselves and tell mnesia to add it
+  if
+    Node =:= node()->
+      case catch dlss_copy:copy(Segment,Segment) of
+        Hash when is_binary( Hash )->
+          add_node(Segment, Node, mnesia:table_info(Segment, access_mode));
+        Error -> Error
+      end;
+    true->
+      case rpc:call(Node, dlss_copy, copy, [ Segment,Segment ]) of
+        {badrpc, Error} -> {error,Error};
+        _ -> add_node(Segment, Node, mnesia:table_info(Segment, access_mode))
+      end
+  end.
 add_node(Segment, Node, read_only)->
   in_read_write_mode(Segment, fun()->
     add_node(Segment, Node, read_write )
