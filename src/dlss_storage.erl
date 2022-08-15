@@ -405,16 +405,14 @@ new_root_segment( Storage ) ->
     %% Locking the schema
     dlss_backend:lock({table,dlss_schema},write),
 
-    %% Locking an old Root table
-    dlss_backend:lock({table,Root},read),
-
     {ok, #sgm{ copies = Copies0} } = segment_by_name( Root ),
     Copies = maps:map(fun(_K,_V)->undefined end, Copies0 ),
 
-    merge_segment( Root ),
-
     % Put the new root segment on the level 0
+    % From this point all write operations are switched to the New root
     ok = dlss_segment:write(dlss_schema, #sgm{str=Storage,key='_',lvl=0,ver = 0,copies = Copies}, NewRoot , write),
+
+    merge_segment( Root ),
 
     ok
 

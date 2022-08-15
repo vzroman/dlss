@@ -19,6 +19,7 @@
 -module(dlss_segment).
 
 -include("dlss.hrl").
+-include("dlss_eleveldb.hrl").
 
 %%=================================================================
 %%	STORAGE READ/WRITE API
@@ -66,15 +67,6 @@
     Type=:=leveldb_copies -> 1 bsl 128;
     true-> (1 bsl 59) - 1 % Experimentally set that it's the max continuation limit for ets
   end).
-
--define(REF(T),mnesia_eleveldb:get_ref(T)).
--define(DECODE_KEY(K),mnesia_eleveldb:decode_key(K)).
--define(ENCODE_KEY(K),mnesia_eleveldb:encode_key(K)).
--define(DECODE_VALUE(V),element(3,mnesia_eleveldb:decode_val(V))).
--define(DATA_START, <<2>>).
-
--define(MOVE(I,K),eleveldb:iterator_move(I,K)).
--define(NEXT(I),eleveldb:iterator_move(I,next)).
 
 %%=================================================================
 %%	STORAGE SEGMENT API
