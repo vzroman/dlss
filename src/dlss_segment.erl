@@ -67,6 +67,15 @@
     true-> (1 bsl 59) - 1 % Experimentally set that it's the max continuation limit for ets
   end).
 
+-define(REF(T),mnesia_eleveldb:get_ref(T)).
+-define(DECODE_KEY(K),mnesia_eleveldb:decode_key(K)).
+-define(ENCODE_KEY(K),mnesia_eleveldb:encode_key(K)).
+-define(DECODE_VALUE(V),element(3,mnesia_eleveldb:decode_val(V))).
+-define(DATA_START, <<2>>).
+
+-define(MOVE(I,K),eleveldb:iterator_move(I,K)).
+-define(NEXT(I),eleveldb:iterator_move(I,next)).
+
 %%=================================================================
 %%	STORAGE SEGMENT API
 %%=================================================================
@@ -111,10 +120,13 @@ do_dirty_scan(Segment,From,To,Limit)->
 
   % Find out the type of the storage
   Type=mnesia_lib:storage_type_at_node(node(),Segment),
+  ?LOGDEBUG("type ~p",[Type]),
 
   % Choose an algorithm
   if
-    To =:= '$end_of_table'; Type =:= leveldb_copies->
+    Type =:= {ext,leveldb_copies,mnesia_eleveldb}->
+      disc_scan(Segment,From,To,Limit);
+    To =:= '$end_of_table'->
       dirty_select(Segment, Type, From, To, Limit );
     is_number(Limit)->
       ?LOGDEBUG("------------SAFE SCAN: from ~p, to ~p, limit ~p-------------",[From,To,Limit]),
@@ -123,6 +135,82 @@ do_dirty_scan(Segment,From,To,Limit)->
       ?LOGDEBUG("------------SAFE SCAN NO LIMIT: ~p, from ~p, to ~p-------------",[Segment,From,To]),
       safe_scan(Segment,From,To)
   end.
+
+%----------------------DISC SCAN ALL TABLE, NO LIMIT-----------------------------------------
+disc_scan(Segment,'$start_of_table','$end_of_table',Limit)
+  when not is_number(Limit)->
+  ?LOGDEBUG("------------DISC SCAN ALL TABLE, NO LIMIT-------------"),
+  fold(Segment,fun(I)-> do_fold(?MOVE(I,?DATA_START),I) end);
+
+%----------------------DISC SCAN ALL TABLE, WITH LIMIT-----------------------------------------
+disc_scan(Segment,'$start_of_table','$end_of_table',Limit)->
+  ?LOGDEBUG("------------DISC SCAN ALL TABLE, LIMIT ~p-------------",[Limit]),
+  fold(Segment,fun(I)-> do_fold(?MOVE(I,?DATA_START),I,Limit) end);
+
+%----------------------DISC SCAN FROM START TO KEY, NO LIMIT-----------------------------------------
+disc_scan(Segment,'$start_of_table',To,Limit)
+  when not is_number(Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM START TO KEY ~p, NO LIMIT-------------",[To]),
+  fold(Segment,fun(I)-> do_fold_to(?MOVE(I,?DATA_START),I,?ENCODE_KEY(To)) end);
+
+%----------------------DISC SCAN FROM START TO KEY, WITH LIMIT-----------------------------------------
+disc_scan(Segment,'$start_of_table',To,Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM START TO KEY ~p, WITH LIMIT ~p-------------",[To,Limit]),
+  fold(Segment,fun(I)-> do_fold_to(?MOVE(I,?DATA_START),I,?ENCODE_KEY(To),Limit) end);
+
+%----------------------DISC SCAN FROM KEY TO END, NO LIMIT-----------------------------------------
+disc_scan(Segment,From,'$end_of_table',Limit)
+  when not is_number(Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM ~p TO END, NO LIMIT-------------",[From]),
+  fold(Segment,fun(I)-> do_fold(?MOVE(I,?ENCODE_KEY(From)),I) end);
+
+%----------------------DISC SCAN FROM KEY TO END, WITH LIMIT-----------------------------------------
+disc_scan(Segment,From,'$end_of_table',Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM ~p TO END, WITH LIMIT ~p-------------",[From,Limit]),
+  fold(Segment,fun(I)-> do_fold(?MOVE(I,?ENCODE_KEY(From)),I,Limit) end);
+
+%----------------------DISC SCAN FROM KEY TO KEY, NO LIMIT-----------------------------------------
+disc_scan(Segment,From,To,Limit)
+  when not is_number(Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM ~p TO ~p, NO LIMIT-------------",[From,To]),
+  fold(Segment,fun(I)-> do_fold_to(?MOVE(I,?ENCODE_KEY(From)),I,?ENCODE_KEY(To)) end);
+
+%----------------------DISC SCAN FROM KEY TO KEY, WITH LIMIT-----------------------------------------
+disc_scan(Segment,From,To,Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM ~p TO ~p, WITH LIMIT ~p-------------",[From,To,Limit]),
+  fold(Segment,fun(I)-> do_fold_to(?MOVE(I,?ENCODE_KEY(From)),I,?ENCODE_KEY(To),Limit) end).
+
+fold(Segment,Fold) ->
+  Ref = ?REF(Segment),
+  {ok, Itr} = eleveldb:iterator(Ref, []),
+  try Fold(Itr)
+  after
+    catch eleveldb:iterator_close(Itr)
+  end.
+
+%-------------NO LIMIT, NO STOP KEY----------------------------
+do_fold({ok,K,V},I)->
+  [{?DECODE_KEY(K),?DECODE_VALUE(V)}|do_fold(?NEXT(I),I)];
+do_fold(_,_I)->
+  [].
+
+%-------------WITH LIMIT, NO STOP KEY----------------------------
+do_fold({ok,K,V},I,Limit) when Limit>0 ->
+  [{?DECODE_KEY(K),?DECODE_VALUE(V)}|do_fold(?NEXT(I),I,Limit-1)];
+do_fold(_,_I,_Limit)->
+  [].
+
+%-------------NO LIMIT, WITH STOP KEY----------------------------
+do_fold_to({ok,K,V},I,Stop) when K=<Stop->
+  [{?DECODE_KEY(K),?DECODE_VALUE(V)}|do_fold_to(?NEXT(I),I,Stop)];
+do_fold_to(_,_I,_S)->
+  [].
+
+%-------------WITH LIMIT, WITH STOP KEY----------------------------
+do_fold_to({ok,K,V},I,Stop,Limit) when K=<Stop, Limit>0->
+  [{?DECODE_KEY(K),?DECODE_VALUE(V)}|do_fold_to(?NEXT(I),I,Stop,Limit-1)];
+do_fold_to(_,_I,_S,_L)->
+  [].
 
 %----------------------SAFE SCAN NO LIMIT-----------------------------------------
 safe_scan(Segment,'$start_of_table',To)->
@@ -177,7 +265,7 @@ dirty_select(Segment, Type, '$start_of_table', '$end_of_table', Limit) ->
 dirty_select(Segment, _Type, '$start_of_table', To, Limit)
   when not is_number(Limit)->
 
-  ?LOGDEBUG("------------DIRTY SELECT FROM START TO KEY, NO LIMIT-------------"),
+  ?LOGDEBUG("------------DIRTY SELECT FROM START TO KEY ~p, NO LIMIT-------------",[To]),
   MS=
     [{#kv{key='$1',value='$2'},[{'=<','$1',{const,To}}],[{{'$1','$2'}}]}],
   mnesia:dirty_select(Segment, MS);
@@ -295,21 +383,12 @@ init_continuation( Segment, Type, From, MS, Limit )->
 
 trick_continuation({Segment,_KeyToReplace,Par3,_Limit,Ref,Par6,Par7,Par8}, Key, Limit )->
   % This is the form of ets ordered_set continuation
-  {Segment,Key,Par3,Limit,Ref,Par6,Par7,Par8};
-trick_continuation({_KeyToReplace,_Limit,Fun}, Key, Limit )->
-  % This is the form of mnesia_eleveldb continuation
-  {Key,Limit,Fun}.
+  {Segment,Key,Par3,Limit,Ref,Par6,Par7,Par8}.
 
 decrement({Segment,Key,Par3,Limit,Ref,Par6,Par7,Par8}, Decr )->
   Rest = Limit - Decr,
   if
     Rest > 0 -> {Segment,Key,Par3,Rest,Ref,Par6,Par7,Par8};
-    true -> '$end_of_table'
-  end;
-decrement({Key,Limit,Fun}, Decr )->
-  Rest = Limit - Decr,
-  if
-    Rest > 0 -> {Key,Rest,Fun};
     true -> '$end_of_table'
   end.
 
