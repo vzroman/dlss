@@ -143,7 +143,9 @@ local_copy( Source, Target, Module, #{
 
   InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
 
-  FinalHash = do_copy(SourceRef, Module, OnBatch, InitHash ),
+  FinalHash0 = do_copy(SourceRef, Module, OnBatch, InitHash ),
+  FinalHash = crypto:hash_final( FinalHash0 ),
+
   Module:dump_target( TargetRef ),
 
   ?LOGINFO("finish local copying: source ~p, target ~p, hash ~ts",[Source, Target, base64:encode( FinalHash )]),
@@ -237,9 +239,10 @@ remote_copy_request(Owner, Source, Module, OnBatch,#{
   SourceRef = Module:init_source( Source, Options ),
 
   InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
-  FinalHash = do_copy( SourceRef, Module, OnBatch, InitHash ),
+  FinalHash0 = do_copy( SourceRef, Module, OnBatch, InitHash ),
+  FinalHash = crypto:hash_final( FinalHash0 ),
 
-  ?LOGINFO("finish remote copy request on ~p",[Source]),
+  ?LOGINFO("finish remote copy request on ~p, final hash ~ts",[Source,base64:encode(FinalHash)]),
 
   unlink( Owner ),
   Owner ! {finish,self(),FinalHash}.
@@ -299,18 +302,18 @@ do_copy(SourceRef, Module, OnBatch, InAcc)->
     stop = SourceRef#source.stop
   },
 
-  FinalHash =
-    case try Module:fold(SourceRef, fun iterator/2, Acc0)
-         catch
-           _:{stop,InTailAcc}-> InTailAcc
-         end of
-      #acc{batch = [], acc = InFinalAcc} ->
-        InFinalAcc;
-      #acc{batch = Tail, size = Size, acc = InFinalAcc, on_batch = OnBatch}->
-        OnBatch(Tail, Size, InFinalAcc)
+  TailAcc =
+    try Module:fold(SourceRef, fun iterator/2, Acc0)
+    catch
+      _:{stop,InTailAcc}-> InTailAcc
     end,
 
-   crypto:hash_final( FinalHash ).
+  case TailAcc of
+    #acc{batch = [], acc = InFinalAcc} ->
+      InFinalAcc;
+    #acc{batch = Tail, size = Size, acc = InFinalAcc, on_batch = OnBatch}->
+      OnBatch(Tail, Size, InFinalAcc)
+  end.
 
 %----------------------WITH STOP KEY-----------------------------
 iterator({K,V},#acc{module = Module, batch = Batch, size = Size0, stop = Stop} = Acc)
@@ -320,11 +323,18 @@ iterator({K,V},#acc{module = Module, batch = Batch, size = Size0, stop = Stop} =
  Acc#acc{batch = [Action|Batch], size = Size0 + Size};
 
 % Batch is ready
-iterator({K,V},#acc{module = Module, batch = Batch, on_batch = OnBatch, acc = InAcc, size = Size0, stop = Stop} = Acc)
- when Stop =/= undefined, Stop < K->
+iterator({K,V},#acc{module = Module, batch = Batch, on_batch = OnBatch, acc = InAcc0, size = Size0, stop = Stop} = Acc)
+  when Stop =/= undefined, Stop < K->
 
- {Action,Size} = Module:action({K,V}),
- Acc#acc{batch = [Action], acc = OnBatch(Batch, Size0, InAcc), size = Size};
+  InAcc =
+    try OnBatch(Batch, Size0, InAcc0)
+    catch
+      _:{stop,StopInAcc} ->
+        throw({stop,Acc#acc{acc = StopInAcc}})
+    end,
+  {Action,Size} = Module:action({K,V}),
+
+  Acc#acc{batch = [Action], acc = InAcc, size = Size};
 
 % stop key reached
 iterator(_Rec,#acc{stop = Stop} = Acc)
@@ -339,10 +349,17 @@ iterator({K,V},#acc{module = Module, batch = Batch, size = Size0} = Acc)
  Acc#acc{batch = [Action|Batch], size = Size0 + Size};
 
 % Batch is ready
-iterator({K,V},#acc{module = Module, batch = Batch, on_batch = OnBatch, size = Size0, acc = InAcc} = Acc) ->
+iterator({K,V},#acc{module = Module, batch = Batch, on_batch = OnBatch, size = Size0, acc = InAcc0} = Acc) ->
 
- {Action,Size} = Module:action({K,V}),
- Acc#acc{batch = [Action], acc = OnBatch(Batch, Size0, InAcc), size = Size}.
+  InAcc =
+    try OnBatch(Batch, Size0, InAcc0)
+    catch
+      _:{stop,StopInAcc} ->
+        throw({stop,Acc#acc{acc = StopInAcc}})
+    end,
+
+  {Action,Size} = Module:action({K,V}),
+  Acc#acc{batch = [Action], acc =InAcc, size = Size}.
 
 %------------------SPLIT---------------------------------------
 % Splits are always local
@@ -374,10 +391,14 @@ split( Source, Target, Options0 )->
               HKey = Module:get_key(hd(Batch)),
               NextAcc = reverse_loop(Acc#reverse{head = H + Size, h_key = HKey }),
 
-              ?LOGDEBUG("~p write batch, size ~s, length ~s",[
+              ?LOGINFO("DEBUG: ~p write batch, size ~s, length ~s, head ~s, hkey ~p, tail ~s, tkey ~p",[
                 Target,
                 ?PRETTY_SIZE(Size),
-                ?PRETTY_COUNT(length(Batch))
+                ?PRETTY_COUNT(length(Batch)),
+                ?PRETTY_SIZE(H+Size),
+                Module:decode_key(HKey),
+                ?PRETTY_SIZE(NextAcc#reverse.tail),
+                Module:decode_key(NextAcc#reverse.t_key)
               ]),
 
               Module:write_batch(Batch, TargetRef),
@@ -436,12 +457,14 @@ get_size( Table )->
  end.
 
 debug(Storage, Count)->
-  spawn(fun()->fill(Storage,Count) end).
-fill(S,C) when C >0 ->
+  spawn(fun()->
+    spawn_link(fun()->fill(Storage, Count, Count div 2) end),
+    fill(Storage,Count div 2, 0) end).
+fill(S,C,Stop) when C > Stop ->
   if C rem 100000 =:= 0-> ?LOGINFO("DEBUG: write ~p",[C]); true->ignore end,
-  dlss:dirty_write(S, {x, erlang:phash2(C, os:system_time(second))}, {y, binary:copy(integer_to_binary(C), 100)}),
-  fill(S,C-1);
-fill(_S,_C)->
+  dlss:dirty_write(S, {x, erlang:phash2(C, C)}, {y, binary:copy(integer_to_binary(C), 100)}),
+  fill(S,C-1,Stop);
+fill(_S,_C,_)->
   ok.
 
 
