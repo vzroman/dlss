@@ -43,7 +43,7 @@
 ]).
 
 -record(acc,{acc, module, batch, size, on_batch, stop }).
--record(reverse,{i, module, head, tail, h_key, t_key, hash}).
+-record(r_acc,{i, module, head, tail, h_key, t_key, hash}).
 
  -define(OPTIONS(O),maps:merge(#{
    start_key =>undefined,
@@ -302,39 +302,30 @@ do_copy(SourceRef, Module, OnBatch, InAcc)->
     stop = SourceRef#source.stop
   },
 
-  TailAcc =
-    try Module:fold(SourceRef, fun iterator/2, Acc0)
-    catch
-      _:{stop,InTailAcc}-> InTailAcc
-    end,
-
-  case TailAcc of
-    #acc{batch = [], acc = InFinalAcc} ->
-      InFinalAcc;
-    #acc{batch = Tail, size = Size, acc = InFinalAcc, on_batch = OnBatch}->
-      OnBatch(Tail, Size, InFinalAcc)
+  case try Module:fold(SourceRef, fun iterator/2, Acc0)
+  catch
+    _:{stop,Stop}-> Stop;
+    _:{final,Final}->{final,Final}
+  end of
+    #acc{batch = [], acc = FinalAcc}-> FinalAcc;
+    #acc{batch = Tail, size = Size, acc = TailAcc, on_batch = OnBatch}->
+      OnBatch(Tail, Size, TailAcc);
+    {final,FinalAcc}-> FinalAcc
   end.
-
 %----------------------WITH STOP KEY-----------------------------
 iterator({K,V},#acc{module = Module, batch = Batch, size = Size0, stop = Stop} = Acc)
- when Size0 < ?BATCH_SIZE, Stop =/= undefined, Stop < K->
+ when Size0 < ?BATCH_SIZE, Stop =/= undefined, K < Stop->
 
  {Action,Size} = Module:action({K,V}),
  Acc#acc{batch = [Action|Batch], size = Size0 + Size};
 
 % Batch is ready
 iterator({K,V},#acc{module = Module, batch = Batch, on_batch = OnBatch, acc = InAcc0, size = Size0, stop = Stop} = Acc)
-  when Stop =/= undefined, Stop < K->
+  when Stop =/= undefined, K < Stop->
 
-  InAcc =
-    try OnBatch(Batch, Size0, InAcc0)
-    catch
-      _:{stop,StopInAcc} ->
-        throw({stop,Acc#acc{acc = StopInAcc}})
-    end,
   {Action,Size} = Module:action({K,V}),
 
-  Acc#acc{batch = [Action], acc = InAcc, size = Size};
+  Acc#acc{batch = [Action], acc = OnBatch(Batch, Size0, InAcc0), size = Size};
 
 % stop key reached
 iterator(_Rec,#acc{stop = Stop} = Acc)
@@ -351,15 +342,8 @@ iterator({K,V},#acc{module = Module, batch = Batch, size = Size0} = Acc)
 % Batch is ready
 iterator({K,V},#acc{module = Module, batch = Batch, on_batch = OnBatch, size = Size0, acc = InAcc0} = Acc) ->
 
-  InAcc =
-    try OnBatch(Batch, Size0, InAcc0)
-    catch
-      _:{stop,StopInAcc} ->
-        throw({stop,Acc#acc{acc = StopInAcc}})
-    end,
-
   {Action,Size} = Module:action({K,V}),
-  Acc#acc{batch = [Action], acc =InAcc, size = Size}.
+  Acc#acc{batch = [Action], acc =OnBatch(Batch, Size0, InAcc0), size = Size}.
 
 %------------------SPLIT---------------------------------------
 % Splits are always local
@@ -371,64 +355,74 @@ split( Source, Target, Options0 )->
   Options = ?OPTIONS( Options0 ),
   Module = get_module( Source ),
 
-  #reverse{ h_key = SplitKey, hash = FinalHash0 } =
+  SourceRef = Module:init_source( Source, Options ),
+  TargetRef = Module:init_target(Target, Options),
+
+  % Target considered to be empty
+  InitHash = crypto:hash_update(crypto:hash_init(sha256),<<>>),
+  InitAcc = #r_acc{
+    module = Module,
+    head = 0,
+    hash = InitHash
+  },
+
+  #r_acc{ hash = FinalHash0 } =
     Module:init_reverse(Source,
       fun
-        (empty)->
-          ?LOGWARNING("~p is empty, nothing to split"),
-          <<>>;
+        ('$end_of_table')->
+          InitAcc#r_acc{ hash = <<>> };
         ({I,TSize,TKey})->
-
-          TargetRef = Module:init_target(Target, Options),
-
-          % Target considered to be empty
-          InitHash = crypto:hash_update(crypto:hash_init(sha256),<<>>),
-
-          Acc0 = #reverse{i=I, module = Module, head = 0, t_key = TKey ,tail = TSize, hash = InitHash},
-
-          OnBatch =
-            fun(Batch, Size, #reverse{hash = Hash,head = H} = Acc)->
-              HKey = Module:get_key(hd(Batch)),
-              NextAcc = reverse_loop(Acc#reverse{head = H + Size, h_key = HKey }),
-
-              ?LOGINFO("DEBUG: ~p write batch, size ~s, length ~s, head ~s, hkey ~p, tail ~s, tkey ~p",[
-                Target,
-                ?PRETTY_SIZE(Size),
-                ?PRETTY_COUNT(length(Batch)),
-                ?PRETTY_SIZE(H+Size),
-                Module:decode_key(HKey),
-                ?PRETTY_SIZE(NextAcc#reverse.tail),
-                Module:decode_key(NextAcc#reverse.t_key)
-              ]),
-
-              Module:write_batch(Batch, TargetRef),
-              NextAcc#reverse{ hash = crypto:hash_update(Hash, term_to_binary( Batch ))}
-            end,
-
-          SourceRef = Module:init_source( Source, Options ),
-          % Run split
-          do_copy(SourceRef, Module, OnBatch, Acc0)
+          Acc0 = InitAcc#r_acc{i=I, t_key = TKey ,tail = TSize},
+          do_split(Module, Source, Target, SourceRef, TargetRef, Acc0 )
       end),
+
   FinalHash = crypto:hash_final( FinalHash0 ),
-  ?LOGINFO("split finish: source ~p, target ~p, split key ~p, hash ~ts",[
+
+  ?LOGINFO("split finish: source ~p, target ~p, hash ~ts",[
     Source,
     Target,
-    Module:decode_key(SplitKey),
     base64:encode( FinalHash )
   ]),
 
   FinalHash.
 
-%% THIS IS THE MEDIAN!
-reverse_loop(#reverse{h_key = HKey, t_key = TKey}=Acc) when HKey >= TKey->
-  throw({stop,Acc});
+do_split(Module, Source, Target, SourceRef, TargetRef, Acc0)->
 
-reverse_loop(#reverse{i=I, module = Module, head = H,tail = T,t_key = TKey} = Acc) when T < H->
+  OnBatch =
+    fun(Batch, Size, #r_acc{hash = Hash,head = H} = Acc)->
+
+      % Enter the reverse loop
+      HKey = Module:get_key(hd(Batch)),
+      NextAcc = reverse_loop(Acc#r_acc{head = H + Size, h_key = HKey }),
+
+      ?LOGINFO("DEBUG: split ~p, target ~p, write batch size ~s, length ~s, head ~s, tail ~s, hkey ~p, tkey ~p",[
+        Source,
+        Target,
+        ?PRETTY_SIZE(Size),
+        ?PRETTY_COUNT(length(Batch)),
+        ?PRETTY_SIZE(H+Size),
+        ?PRETTY_SIZE(NextAcc#r_acc.tail),
+        Module:decode_key(HKey),
+        Module:decode_key(NextAcc#r_acc.t_key)
+      ]),
+
+      Module:write_batch(Batch, TargetRef),
+      NextAcc#r_acc{ hash = crypto:hash_update(Hash, term_to_binary( Batch ))}
+    end,
+
+  % Run split
+  do_copy(SourceRef, Module, OnBatch, Acc0).
+
+%% THIS IS THE MEDIAN!
+reverse_loop(#r_acc{h_key = HKey, t_key = TKey}=Acc) when HKey >= TKey->
+  throw({final,Acc});
+
+reverse_loop(#r_acc{i=I, module = Module, head = H,tail = T,t_key = TKey} = Acc) when T < H->
  case Module:prev(I,TKey) of
    {K,Size} ->
-     reverse_loop(Acc#reverse{tail = T + Size, t_key = K});
+     reverse_loop(Acc#r_acc{tail = T + Size, t_key = K});
    '$end_of_table' ->
-     throw({stop,Acc})
+     throw({final,Acc})
  end;
 % We reached the head size
 reverse_loop(Acc)->
@@ -457,14 +451,13 @@ get_size( Table )->
  end.
 
 debug(Storage, Count)->
-  spawn(fun()->
-    spawn_link(fun()->fill(Storage, Count, Count div 2) end),
-    fill(Storage,Count div 2, 0) end).
-fill(S,C,Stop) when C > Stop ->
+  spawn(fun()->fill(Storage, Count) end).
+
+fill(S,C) when C>0 ->
   if C rem 100000 =:= 0-> ?LOGINFO("DEBUG: write ~p",[C]); true->ignore end,
   dlss:dirty_write(S, {x, erlang:phash2(C, C)}, {y, binary:copy(integer_to_binary(C), 100)}),
-  fill(S,C-1,Stop);
-fill(_S,_C,_)->
+  fill(S,C-1);
+fill(_S,_C)->
   ok.
 
 

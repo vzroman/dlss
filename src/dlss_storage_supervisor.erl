@@ -426,7 +426,6 @@ set_read_only_mode(Storage, Node)->
   ok.
 
 set_segment_read_only(Segment)->
-  ?LOGINFO("~p set read_only mode",[ Segment ]),
 
   % If we set read_only while other nodes copy it
   % mnesia will crash down. So we do it in locked mode
@@ -436,7 +435,7 @@ set_segment_read_only(Segment)->
     dlss_segment:set_access_mode(Segment, read_only)
   end, 1000) of
     ok->
-      ok;
+      ?LOGINFO("~p set read_only mode",[ Segment ]);
     {error, lock_timeout}->
       ?LOGINFO("~p lock timeout, skip set read_only mode");
     {error,Error}->
@@ -541,11 +540,9 @@ merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], So
         end,
       EndKey =
         case Tail of
-          [{_, #{ key := _NextKey }}| _]->
-            case dlss_segment:dirty_prev( Source, _NextKey ) of
-              '$end_of_table'->_NextKey;
-              _ToKey->_ToKey
-            end;
+          [{_, #{ key := NextKey }}| _]->
+            % Copying is not inclusive to end
+            NextKey;
           _->
             undefined
         end,
@@ -700,10 +697,11 @@ purge_stale( Storage, Node )->
       {ok, #{ copies:= #{Node:=_}, key := FirstKey } }->
         case dlss_segment:dirty_prev( S, FirstKey ) of
           '$end_of_table'->ok;
-          ToKey->
-            ?LOGINFO("~p purge stale head to ~p",[ S,ToKey ]),
+          _->
+            ?LOGINFO("~p purge stale head to ~p",[ S,FirstKey ]),
             case dlss_storage:segment_transaction(S, read, fun()->
-              dlss_copy:purge_to( S, ToKey )
+              % Not inclusive
+              dlss_copy:purge_to( S, FirstKey )
             end) of
               {error, Error}->
                 ?LOGERROR("~p unable to purge stale head, error ~p",[S,Error]);

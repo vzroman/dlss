@@ -428,9 +428,6 @@ split_commit( Segment )->
   Parent = parent_segment( Segment ),
   {ok, Sgm } = segment_by_name( Segment ),
   {ok, Prn } = segment_by_name( Parent ),
-  ?LOGINFO("commit split from ~p to ~p",[
-    Parent,Segment
-  ]),
   split_commit( Sgm, Prn ).
 
 split_commit( Sgm, #sgm{lvl = Level }=Prn )->
@@ -476,7 +473,7 @@ split_commit( Sgm, #sgm{lvl = Level }=Prn )->
             % The Next is the key on which the parent is split
             ?LOGINFO("split commit: parent ~p, key ~p, child ~p, key ~p",[
               Parent, Next,
-              Segment, Sgm#sgm.key
+              Segment, element(1,Sgm#sgm.key)
             ]),
 
             % Remove old versions

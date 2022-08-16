@@ -113,7 +113,7 @@ init_reverse( Source, Fun )->
   {ok, I} = eleveldb:iterator(Ref, []),
   try
     case ?MOVE(I,last) of
-      {ok,?INFO_TAG,_}->Fun(empty);
+      {ok,?INFO_TAG,_}->Fun('$end_of_table');
       {ok,K,V}-> Fun({I,size(K)+size(V),K})
     end
   after
@@ -138,11 +138,11 @@ prev(I,_K)->
   end.
 
 purge_head(#source{ref = Ref, start = Start, stop = Stop})->
-  try eleveldb:fold_keys(Ref,fun(K,{Batch,L})->
+  case try eleveldb:fold_keys(Ref,fun(K,{Batch,L})->
     if
       K >= Stop->
         eleveldb:write(Ref,Batch,[{sync, false}]),
-        throw({stop,L});
+        throw({stop,{Batch,L}});
       true ->
         L1 = L + 1,
         Batch1 = [{delete,K}|Batch],
@@ -156,7 +156,12 @@ purge_head(#source{ref = Ref, start = Start, stop = Stop})->
     end
   end,{[],0},[{first_key, Start}])
   catch
-    _:{stop,Length}->Length
+    _:{stop,TailAcc}->TailAcc
+  end of
+    {[], Length}->Length;
+    {Tail,L}->
+      eleveldb:write(Ref,Tail,[{sync, false}]),
+      L + length( Tail )
   end.
 
 get_size( Table )->
@@ -164,7 +169,6 @@ get_size( Table )->
   S = list_to_binary(os:cmd("du -s --block-size=1 "++MP)),
   case binary:split(S,<<"\t">>) of
     [Size|_]->
-      ?LOGINFO("DEBUG: ~p size ~s",[Table,?PRETTY_SIZE(binary_to_integer( Size ))]),
       binary_to_integer( Size );
     _ -> -1
   end.
