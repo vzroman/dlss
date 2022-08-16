@@ -67,12 +67,8 @@
   set_segment_version/3,
   split_commit/1,
   merge_segment/1,
-  merge_commit/1,
+  merge_commit/1
 
-  % MasterKey API
-  get_master_key/1,
-  set_master_key/2,
-  remove_master_key/1
 ]).
 
 %%=================================================================
@@ -182,7 +178,7 @@ segment_params(Name)->
       StartKey =
         case Key of
           { K } -> K;
-          _-> Key
+          _-> '$start_of_table'
         end,
       { ok, #{ storage => Str, level => Lvl, key => StartKey, version=>Version, copies => Copies } };
     Error -> Error
@@ -405,14 +401,16 @@ new_root_segment( Storage ) ->
     %% Locking the schema
     dlss_backend:lock({table,dlss_schema},write),
 
+    %% Locking an old Root table
+    dlss_backend:lock({table,Root},read),
+
     {ok, #sgm{ copies = Copies0} } = segment_by_name( Root ),
     Copies = maps:map(fun(_K,_V)->undefined end, Copies0 ),
 
-    % Put the new root segment on the level 0
-    % From this point all write operations are switched to the New root
-    ok = dlss_segment:write(dlss_schema, #sgm{str=Storage,key='_',lvl=0,ver = 0,copies = Copies}, NewRoot , write),
-
     merge_segment( Root ),
+
+    % Put the new root segment on the level 0
+    ok = dlss_segment:write(dlss_schema, #sgm{str=Storage,key='_',lvl=0,ver = 0,copies = Copies}, NewRoot , write),
 
     ok
 
@@ -422,6 +420,7 @@ new_root_segment( Storage ) ->
       % dlss_segment:set_access_mode( Root, read_only );
       ok;
     SchemaError ->
+      dlss_segment:remove(NewRoot),
       ?ERROR( SchemaError )
   end.
 
@@ -1279,17 +1278,3 @@ segment_transaction(Segment, Lock, Fun, Timeout)->
   after
     Timeout->{error, lock_timeout}
   end.
-
-
-%----------------------MasterKey API---------------------------
-set_master_key(Segment, Key) ->
-  dlss_segment:dirty_write(dlss_schema, {rebalance,Segment}, Key),
-  ok.
-
-get_master_key(Segment) ->
-  dlss_segment:dirty_read(dlss_schema, {rebalance, Segment}).
-
-remove_master_key(Segment) ->
-  dlss_segment:dirty_delete(dlss_schema, {rebalance, Segment}),
-  ok.
-

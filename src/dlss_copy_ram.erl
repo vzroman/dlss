@@ -16,7 +16,7 @@
 %% under the License.
 %%----------------------------------------------------------------
 
--module(dlss_copy_disc).
+-module(dlss_copy_ram).
 
 -include("dlss.hrl").
 -include("dlss_copy.hrl").
@@ -160,16 +160,9 @@ purge_head(#source{ref = Ref, start = Start, stop = Stop})->
   end.
 
 get_size( Table )->
-  MP = mnesia_eleveldb:data_mountpoint( Table ),
-  S = list_to_binary(os:cmd("du -s --block-size=1 "++MP)),
-  case binary:split(S,<<"\t">>) of
-    [Size|_]->
-      ?LOGINFO("DEBUG: ~p size ~s",[Table,?PRETTY_SIZE(binary_to_integer( Size ))]),
-      binary_to_integer( Size );
-    _ -> -1
-  end.
-
-
-
+  % du -s ./dlss_s1_1-_tab.extldb
+  Memory = mnesia:table_info(Table,memory),
+  % for ram and ramdisc tables the mnesia returns a number of allocated words
+  erlang:system_info(wordsize) * Memory.
 
 

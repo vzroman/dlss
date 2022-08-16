@@ -26,7 +26,9 @@
 %%=================================================================
 -export([
   copy/2,copy/3,
-  split/2, split/3
+  split/2, split/3,
+  purge_to/2,
+  get_size/1
 ]).
 
 %%=================================================================
@@ -36,12 +38,31 @@
   remote_copy_request/5
 ]).
 
+-export([
+  debug/2
+]).
+
 -record(acc,{acc, module, batch, size, on_batch, stop }).
 -record(reverse,{i, module, head, tail, h_key, t_key, hash}).
+
+ -define(OPTIONS(O),maps:merge(#{
+   start_key =>undefined,
+   end_key => undefined,
+   hash => <<>>,
+   sync => false,
+   attempts => 3
+ }, O)).
 
 %%-----------------------------------------------------------------
 %%  Utilities
 %%-----------------------------------------------------------------
+get_module( Table )->
+  #{ type := Type } = dlss_segment:get_info(Table),
+  if
+    Type =:= disc -> dlss_copy_disc;
+    true -> dlss_copy_ram
+  end.
+
 init_props( Source )->
   All =
     maps:from_list(mnesia:table_info( Source, all )),
@@ -80,22 +101,11 @@ rollback_target(_T, _M)->
 copy( Source, Target )->
   copy( Source, Target, #{}).
 copy( Source, Target, Options0 )->
-  Options = maps:merge(#{
-    start_key =>undefined,
-    end_key => undefined,
-    hash => <<>>,
-    sync => false,
-    attempts => 3
-  }, Options0),
+  Options = ?OPTIONS(Options0),
 
-  #{ type := Type } = dlss_segment:get_info(Source),
-  Module =
-    if
-      Type =:= disc -> dlss_copy_disc;
-      true -> dlss_copy_ram
-    end,
-
+  Module = get_module( Source ),
   ReadNode = get_read_node( Source),
+
   if
     ReadNode =:= node() ->
       ?LOGINFO("~p copy to ~p, module ~p, options ~p",[Source, Target, Module, Options]),
@@ -120,7 +130,7 @@ local_copy( Source, Target, Module, #{
 
   OnBatch =
     fun(Batch, Size, Hash)->
-      ?LOGDEBUG("~p write batch, size ~s, length ~s",[
+      ?LOGINFO("DEBUG: ~p write batch, size ~s, length ~s",[
         Target,
         ?PRETTY_SIZE(Size),
         ?PRETTY_COUNT(length(Batch))
@@ -340,17 +350,9 @@ iterator({K,V},#acc{module = Module, batch = Batch, on_batch = OnBatch, size = S
 split( Source, Target )->
   split( Source, Target, #{}).
 split( Source, Target, Options0 )->
-  Options = maps:merge(#{
-   sync => false
-  }, Options0),
 
-  #{ type := Type } = dlss_segment:get_info(Source),
-
-  Module =
-   if
-     Type =:= disc -> dlss_copy_disc;
-     true -> dlss_copy_ram
-   end,
+  Options = ?OPTIONS( Options0 ),
+  Module = get_module( Source ),
 
   #reverse{ h_key = SplitKey, hash = FinalHash0 } =
     Module:init_reverse(Source,
@@ -411,6 +413,35 @@ reverse_loop(#reverse{i=I, module = Module, head = H,tail = T,t_key = TKey} = Ac
 reverse_loop(Acc)->
   Acc.
 
+purge_to( Source, Key )->
 
+  Module = get_module( Source ),
+  Options = ?OPTIONS(#{start_key => undefined, end_key => Key}),
+
+  SourceRef = Module:init_source(Source, Options),
+  Module:purge_head( SourceRef ).
+
+get_size( Table )->
+
+ Module = get_module( Table ),
+ ReadNode = get_read_node( Table ),
+ if
+   ReadNode =:= node()->
+     Module:get_size( Table );
+   true->
+     case rpc:call(ReadNode, Module, get_size, [ Table ]) of
+       {badrpc, _Error} -> -1;
+       Result -> Result
+     end
+ end.
+
+debug(Storage, Count)->
+  spawn(fun()->fill(Storage,Count) end).
+fill(S,C) when C >0 ->
+  if C rem 100000 =:= 0-> ?LOGINFO("DEBUG: write ~p",[C]); true->ignore end,
+  dlss:dirty_write(S, {x, erlang:phash2(C, os:system_time(second))}, {y, binary:copy(integer_to_binary(C), 100)}),
+  fill(S,C-1);
+fill(_S,_C)->
+  ok.
 
 

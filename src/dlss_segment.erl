@@ -562,13 +562,7 @@ in_read_write_mode(Segment,Fun)->
   end.
 %----------Calculate the size (bytes) occupied by the segment-------
 get_size(Segment)->
-  Memory = mnesia:table_info(Segment,memory),
-  case get_info(Segment) of
-    #{type := disc} -> Memory;
-    _ ->
-      % for ram and ramdisc tables the mnesia returns a number of allocated words
-      erlang:system_info(wordsize) * Memory
-  end.
+  dlss_copy:get_size( Segment ).
 
 get_access_mode( Segment )->
   mnesia:table_info( Segment, access_mode ).

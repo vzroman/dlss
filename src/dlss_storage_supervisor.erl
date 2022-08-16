@@ -375,16 +375,11 @@ loop( #state{ storage =  Storage, type = Type} = State )->
   % Check for pending transformation
   case pending_transformation(Storage, Node) of
     {Operation, Segment} ->
-
-      ?LOGINFO("~p ~p ...",[ Segment, Operation ]),
       % Master commits the schema transformation if it is finished
       case do_transformation(Operation, Type, Segment) of
         ok ->
-          ?LOGINFO("~p ~p successfully finished",[Segment, Operation]),
-
           % Master commits the schema transformation if it is finished
           hash_confirm( Operation, Segment, Node );
-
         {error, Error} ->
           ?LOGERROR("~p ~p error ~p",[Segment, Operation, Error])
       end;
@@ -478,7 +473,7 @@ pending_transformation( Storage, Node )->
   end.
 
 
-do_transformation(split, Type, Segment )->
+do_transformation(split, _Type, Segment )->
 
   Node = node(),
 
@@ -493,20 +488,18 @@ do_transformation(split, Type, Segment )->
       #dump{hash = _H}->_H;
       _-><<>>
     end,
-  ?LOGINFO("split: child ~p, parent ~p, init hash ~p, from key ~p",[
-    Segment, Parent, InitHash, dlss_segment:dirty_first( Parent )
+  ?LOGINFO("splitting: child ~p, parent ~p, init hash ~ts, from key ~p",[
+    Segment, Parent, base64:encode(InitHash), dlss_segment:dirty_first( Parent )
   ]),
-  IsMasterFun = fun () -> Node==master_node( Segment ) end,
-  case split_segment( Parent, Segment, Type, InitHash, IsMasterFun) of
-    {ok, #{ hash:= NewHash} }->
-      ?LOGINFO("split finish: child ~p, parent ~p, new hash ~p, to key ~p",[
-        Segment, Parent, NewHash, dlss_segment:dirty_last( Segment )
-      ]),
-      % Update the version of the segment in the schema
-      dlss_storage:set_segment_version( Segment, Node, #dump{hash = NewHash, version = Version }  );
-    Error->
-      Error
-  end;
+
+  dlss_storage:segment_transaction(Segment, read, fun()->
+    FinalHash = dlss_copy:split(Parent, Segment,#{ hash => InitHash }),
+    ?LOGINFO("split finish: child ~p, parent ~p, new hash ~ts, split key ~p",[
+      Segment, Parent, base64:encode(FinalHash), dlss_segment:dirty_last( Segment )
+    ]),
+    % Update the version of the segment in the schema
+    dlss_storage:set_segment_version( Segment, Node, #dump{hash = FinalHash, version = Version })
+  end);
 
 do_transformation(merge, Type, Segment )->
 
@@ -532,120 +525,6 @@ do_transformation(merge, Type, Segment )->
   % smaller than its first key
   merge_level( [ {S0, P0#{key => FromKey }} | MergeTo], Segment, Params, node(), Type ).
 
-%---------------------SPLIT---------------------------------------------------
-split_segment( Parent, Segment, Type, Hash, IsMasterFun)->
-
-  % Prepare the deleted flag
-  Deleted =
-    if
-      Type=:=disc -> ?DELETED;
-      true ->'@deleted@'
-    end,
-
-  Copy =
-    fun
-       ({K,V})->
-         case V of
-           Deleted ->
-             ignore;
-           _->{ put, K, V }
-         end
-     end,
-
-  {ok, #{ level:= Level, storage := Storage}} = dlss_storage:segment_params( Segment ),
-  ToSize = segment_level_limit(Storage, round(Level) ) * ?ENV( segment_split_median, ?DEFAULT_SPLIT_MEDIAN ),
-
-  OnBatch=
-    fun(K,#{ count:=Count, is_master := IsMaster ,batch:=BatchNum}=Acc)->
-      Size = dlss_segment:get_size( Segment ),
-      ?LOGDEBUG("~p splitting from ~p: key ~p, count ~p, size ~p, batch_num ~p, is_master ~p",[
-        Segment,
-        Parent,
-        if Type =:=disc-> mnesia_eleveldb:decode_key(K); true ->K end,
-        Count,
-        Size / ?MB,
-        BatchNum,
-        IsMaster
-      ]),
-
-      if
-        IsMaster == true ->
-          if
-            Size >= ToSize->
-              dlss_storage:set_master_key(Segment, {K, stop, node()}),
-              stop;
-            true ->
-              dlss_storage:set_master_key(Segment, {K, next, node()}),
-              Acc
-          end;
-        true ->
-          case wait_master(Segment,K, IsMasterFun) of
-            next ->
-              Acc;
-            stop ->
-              stop;
-            new_master ->
-              Acc#{is_master => true}
-          end
-      end
-    end,
-
-  {ok, #{ key:= From0}} = dlss_storage:segment_params( Parent ),
-  From=
-    if
-      From0 =:='_'-> '$start_of_table' ;
-      true -> From0
-    end,
-
-  IsMaster =
-    case dlss_storage:get_master_key(Segment) of
-      not_found ->
-        IsMasterFun();
-      {_, _ , Node} ->
-        node() == Node
-    end,
-  Acc0 = #{
-    count => 0,
-    hash => Hash,
-    batch => 0,
-    is_master => IsMaster
-  },
-
-  dlss_storage:segment_transaction(Segment, read, fun()->
-    dlss_rebalance:copy( Parent, Segment, Copy, From, OnBatch, Acc0 )
-  end).
-
-wait_master(Segment, Key, IsMasterFun) ->
-  wait_master(Segment, Key, IsMasterFun, _IsMaster = false).
-wait_master(Segment, Key, _IsMasterFun, _IsMaster = true) ->
-  % The node became a new master, continue the split operation as a new master.
-  % Currently we use mnesia engine to synchronize node while starting.
-  % Mnesia makes a full copy of the database if founds its copy to be not the latest.
-  % Therefore if the node takes the role of the master it can keep it without recalculating
-  % even if the former master recovers because the former master is assumed to copy the segment
-  % from other nodes before declaring itself as ready.
-  ?LOGWARNING("splitting ~p, continue as a new master",[Segment]),
-  dlss_storage:set_master_key(Segment, {Key, next, node()}),
-  new_master;
-wait_master(Segment, Key, IsMasterFun, _IsMaster = false) ->
-  case dlss_storage:get_master_key(Segment) of
-    not_found ->
-      ?LOGINFO("splitting ~p, waiting for master to start...",[Segment]),
-      timer:sleep(?SPLIT_SYNC_DELAY),
-      wait_master(Segment, Key, IsMasterFun, IsMasterFun() );
-    {MasterKey, Action, _Node} ->
-      if
-        Key < MasterKey ->
-          next;
-        Key =:= MasterKey ->
-          Action;
-        true ->
-          ?LOGINFO("splitting ~p, waiting for master to declare a new milestone key",[Segment]),
-          timer:sleep(?SPLIT_SYNC_DELAY),
-          wait_master(Segment, Key, IsMasterFun, IsMasterFun())
-      end
-  end.
-
 %---------------------MERGE---------------------------------------------------
 merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], Source, Params, Node, Type )->
   % This is the segment that is currently copying the keys from the source
@@ -655,7 +534,12 @@ merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], So
       merge_level( Tail, Source, Params, Node, Type );
     #{ Node := Dump } when Dump=:=undefined; Dump#dump.version < Version->
       % This node hosts the target segment, it must to play its role
-      ToKey =
+      StartKey =
+        if
+          FromKey =:= '$start_of_table'->undefined;
+          true -> FromKey
+        end,
+      EndKey =
         case Tail of
           [{_, #{ key := _NextKey }}| _]->
             case dlss_segment:dirty_prev( Source, _NextKey ) of
@@ -663,90 +547,35 @@ merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], So
               _ToKey->_ToKey
             end;
           _->
-            '$end_of_table'
+            undefined
         end,
       InitHash=
         case Dump of
           #dump{hash = _H}->_H;
           _-><<>>
         end,
-      ?LOGINFO("merge: source ~p, target ~p, from ~p, to ~p, init hash ~p",[
-        Source, S, FromKey, ToKey, InitHash
+      ?LOGINFO("merge: source ~p, target ~p, from ~p, to ~p, init hash ~ts",[
+        Source, S, FromKey, EndKey, base64:encode(InitHash)
       ]),
-      case merge_segment( S, Source, FromKey, ToKey, Type, InitHash ) of
-        {ok, #{hash := NewHash} }->
-          ?LOGINFO("merged sucessully: source ~p, target ~p, from ~p, to ~p, new hash ~p",[
-            Source, S, FromKey, ToKey, NewHash
-          ]),
-          % Update the version of the segment in the schema
-          ok = dlss_storage:set_segment_version( S, Node, #dump{hash = NewHash, version = Version }  );
-        {error, Error}->
-          ?LOGERROR("~p error on merging to ~p, error ~p",[ Source, S, Error ]),
-          {error, Error}
+
+      case dlss_storage:segment_transaction(S,read,fun()->
+        FinalHash = dlss_copy:copy(Source,S,#{ hash => InitHash, start_key =>StartKey, end_key => EndKey}),
+        ?LOGINFO("merged sucessully: source ~p, target ~p, from ~p, to ~p, new hash ~ts",[
+          Source, S, FromKey, EndKey, base64:encode(FinalHash)
+        ]),
+        % Update the version of the segment in the schema
+        dlss_storage:set_segment_version( S, Node, #dump{hash = FinalHash, version = Version })
+      end) of
+        {error,Error}->{error, Error};
+        ok-> merge_level(Tail, Source, Params, Node, Type)
       end;
     _->
       % The Node doesn't hosts the target segment, check the rest of the level
       merge_level( Tail, Source, Params, Node, Type )
   end;
-merge_level( [], _Source, _Params, _Node, _Type )->
+merge_level([], _Source, _Params, _Node, _Type )->
   % There is no locally hosted segments to merge to
   ok.
-
-merge_segment( Target, Source, FromKey, ToKey0, Type, Hash )->
-
-  % Prepare the deleted flag
-  { Deleted, ToKey } =
-    if
-      Type=:=disc ->
-        {
-          ?DELETED,
-          if
-            ToKey0 =:= '$end_of_table'->
-              '$end_of_table';
-            true ->
-              mnesia_eleveldb:encode_key(ToKey0)
-          end
-        };
-      true ->{
-        '@deleted@',
-        ToKey0
-      }
-    end,
-
-  Copy=
-    fun({K,V})->
-      if
-        ToKey =/= '$end_of_table', K > ToKey ->
-          stop;
-        V =:= Deleted ->
-          {delete, K};
-        true->
-          { put, K, V }
-      end
-    end,
-
-  OnBatch=
-    fun(K,#{count := Count}=Acc)->
-      ?LOGDEBUG("~p merging from ~p: key ~p, count ~p",[
-        Target,
-        Source,
-        if Type =:=disc-> mnesia_eleveldb:decode_key(K); true ->K end,
-        Count
-      ]),
-
-      % Stop only on ToKey
-      % Because OnBatch function in split_segment returns NewAcc, we must
-      % return Acc here for consistency
-      Acc
-    end,
-  Acc0 = #{
-    count => 0,
-    hash => Hash
-  },
-
-  dlss_storage:segment_transaction(Target, read, fun()->
-    dlss_rebalance:copy( Source, Target, Copy, FromKey, OnBatch, Acc0 )
-  end).
 
 %%============================================================================
 %% Confirm schema transformation
@@ -776,7 +605,6 @@ master_commit( split, Segment, Master, #{version := Version,copies:=Copies})->
       case not_confirmed( Version, Hash, Copies ) of
         [] ->
           ?LOGINFO("split commit: ~p, copies ~p",[ Segment, Copies ]),
-          dlss_storage:remove_master_key(Segment),
           dlss_storage:split_commit( Segment );
         Nodes->
           % There are still nodes that are not confirmed the hash yet
@@ -875,14 +703,14 @@ purge_stale( Storage, Node )->
           ToKey->
             ?LOGINFO("~p purge stale head to ~p",[ S,ToKey ]),
             case dlss_storage:segment_transaction(S, read, fun()->
-              dlss_rebalance:delete_until( S, ToKey )
+              dlss_copy:purge_to( S, ToKey )
             end) of
-              ok ->
-                ?LOGINFO("~p has purged stale head, schema first key ~p, actual first key ~p, size ~p",[
-                  S, FirstKey, dlss_segment:dirty_first( S ), dlss_segment:get_size(S) / ?MB
-                ]);
               {error, Error}->
-                ?LOGERROR("~p unable to purge stale head, error ~p",[S,Error])
+                ?LOGERROR("~p unable to purge stale head, error ~p",[S,Error]);
+              Length ->
+                ?LOGINFO("~p purged stale head finish, length ~s, schema first key ~p, actual first key ~p, size ~s",[
+                  S, ?PRETTY_COUNT(Length), FirstKey, dlss_segment:dirty_first( S ), ?PRETTY_SIZE(dlss_segment:get_size(S))
+                ])
             end
         end;
       _->
