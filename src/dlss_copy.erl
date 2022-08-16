@@ -19,12 +19,14 @@
 -module(dlss_copy).
 
 -include("dlss.hrl").
+-include("dlss_copy.hrl").
 
 %%=================================================================
 %%	API
 %%=================================================================
 -export([
-  copy/2,copy/3
+  copy/2,copy/3,
+  split/2, split/3
 ]).
 
 %%=================================================================
@@ -34,26 +36,47 @@
   remote_copy_request/5
 ]).
 
--define(PROPS,[
-  type,
-  user_properties,
-  storage_properties,
-  record_name,
-  load_order,
-  access_mode,
-  majority,
-  index,
-  local_content,
-  attributes,
-  version
-]).
+-record(acc,{acc, module, batch, size, on_batch, stop }).
+-record(reverse,{i, module, head, tail, h_key, t_key, hash}).
 
+%%-----------------------------------------------------------------
+%%  Utilities
+%%-----------------------------------------------------------------
 init_props( Source )->
   All =
     maps:from_list(mnesia:table_info( Source, all )),
   maps:to_list( maps:with(?PROPS,All)).
 
+get_read_node( Table )->
+ Node = mnesia:table_info( Table, where_to_read ),
+ if
+   Node =:= nowhere ->throw({unavailable,Table});
+   true-> Node
+ end.
 
+init_target(Target, Source, Module, Options)->
+ case lists:member( Target, dlss:get_local_segments()) of
+   true ->
+     % It's not add_copy, simple copy
+     T = Module:init_target(Target,Options),
+     T#target{ name = Target, trick = false };
+   _->
+     % TRICK mnesia, Add a copy to this node before ask mnesia to add it
+     Props = init_props(Source),
+     Module:init_copy( Target, Props ),
+
+     T = Module:init_target(Target,Options),
+     T#target{ name = Target, trick = true }
+ end.
+
+rollback_target(#target{trick = true, name = Target}, Module )->
+  Module:drop_target( Target );
+rollback_target(_T, _M)->
+  ok.
+
+%%=================================================================
+%%	API
+%%=================================================================
 copy( Source, Target )->
   copy( Source, Target, #{}).
 copy( Source, Target, Options0 )->
@@ -89,29 +112,28 @@ copy( Source, Target, Options0 )->
       end
   end.
 
-get_read_node( Table )->
-  Node = mnesia:table_info( Table, where_to_read ),
-  if
-    Node =:= nowhere ->throw({unavailable,Table});
-    true-> Node
-  end.
+local_copy( Source, Target, Module, #{
+  hash := InitHash0
+} = Options)->
 
-local_copy( Source, Target, Module, Options)->
-
-  TargetRef = Module:init_target( Target, Options ),
+  TargetRef = init_target( Target, Source, Module, Options),
 
   OnBatch =
-    fun(Batch, Hash)->
-      ?LOGDEBUG("~p write batch",[Target]),
+    fun(Batch, Size, Hash)->
+      ?LOGDEBUG("~p write batch, size ~s, length ~s",[
+        Target,
+        ?PRETTY_SIZE(Size),
+        ?PRETTY_COUNT(length(Batch))
+      ]),
       Module:write_batch(Batch, TargetRef),
       crypto:hash_update(Hash, term_to_binary( Batch ))
     end,
 
-  SourceRef = Module:init_source( Source, OnBatch, Options ),
+  SourceRef = Module:init_source( Source, Options ),
 
+  InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
 
-
-  FinalHash = do_copy(SourceRef, Module, Options ),
+  FinalHash = do_copy(SourceRef, Module, OnBatch, InitHash ),
   Module:dump_target( TargetRef ),
 
   ?LOGINFO("finish local copying: source ~p, target ~p, hash ~ts",[Source, Target, base64:encode( FinalHash )]),
@@ -138,15 +160,25 @@ do_remote_copy( Source, Target, Module, #{
 } = Options )->
 
   ReadNode = get_read_node( Source ),
-  TargetRef = Module:init_target( Target, init_props( Source ) ),
+  TargetRef = init_target( Target, Source, Module, Options ),
 
   Self = self(),
   OnBatch =
-   fun(Batch0, Hash0)->
+   fun(Batch0, Size, Hash0)->
+
      Batch = term_to_binary( Batch0 ),
      Hash = crypto:hash_update(Hash0, Batch),
      Zip = zlib:zip( Batch ),
-     Self ! {write_batch, self(), Zip, crypto:hash_final( Hash)},
+
+     ?LOGDEBUG("send batch: source ~p, target ~p, size ~s, zip ~s, length ~s",[
+       Source,
+       Target,
+       ?PRETTY_SIZE(Size),
+       ?PRETTY_SIZE(size(Zip)),
+       ?PRETTY_COUNT(length(Batch0))
+     ]),
+
+     Self ! {write_batch, self(), Zip, Size, crypto:hash_final( Hash)},
      receive
        {confirmed, Self}-> Hash
      end
@@ -162,14 +194,14 @@ do_remote_copy( Source, Target, Module, #{
     try remote_copy_loop(Worker, Module, TargetRef, InitHash)
     catch
       _:Error->
-        Module:rollback_target( TargetRef ),
+        rollback_target( TargetRef, Module ),
         case Error of
           invalid_hash->
             ?LOGERROR("~p invalid remote hash from ~p, left attempts ~p",[Source,ReadNode,Attempts-1]);
           {interrupted,Reason}->
             ?LOGERROR("~p copying from ~p interrupted, reason ~p, left attempts ~p",[Source,ReadNode,Reason,Attempts-1]);
           Other->
-            ?LOGERROR("unexpected error on copying ~p from ~p, error ~p, no attempts left",[Source,ReadNode,Other]),
+            ?LOGERROR("unexpected error on copying ~p from ~p, error ~p",[Source,ReadNode,Other]),
             throw(Other)
         end,
         if
@@ -186,33 +218,51 @@ do_remote_copy( Source, Target, Module, #{
 
   FinalHash.
 
-remote_copy_request(Owner, Source, Module, OnBatch, Options)->
+remote_copy_request(Owner, Source, Module, OnBatch,#{
+  hash := InitHash0
+} = Options)->
 
   ?LOGINFO("remote copy request on ~p, options ~p", [Source, Options]),
 
-  SourceRef = Module:init_source( Source, OnBatch, Options ),
+  SourceRef = Module:init_source( Source, Options ),
 
-  FinalHash = do_copy( SourceRef, Module, Options ),
+  InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
+  FinalHash = do_copy( SourceRef, Module, OnBatch, InitHash ),
 
   ?LOGINFO("finish remote copy request on ~p",[Source]),
 
   unlink( Owner ),
   Owner ! {finish,self(),FinalHash}.
 
-remote_copy_loop(Worker, Module, TargetRef, Hash0)->
+remote_copy_loop(Worker, Module, #target{name = Target} =TargetRef, Hash0)->
   receive
-     {write_batch, Worker, Zip, WorkerHash }->
-       Batch = zlib:unzip( Zip ),
-       Hash = crypto:hash_update(Hash0, Batch),
+     {write_batch, Worker, Zip, Size, WorkerHash }->
+
+       ?LOGDEBUG("~p batch received",[Target]),
+
+       BatchBin = zlib:unzip( Zip ),
+       Hash = crypto:hash_update(Hash0, BatchBin),
+
        case crypto:hash_final(Hash) of
          WorkerHash ->
+
            Worker ! {confirmed, self()},
-           Module:write_batch(binary_to_term(Batch), TargetRef);
+           Batch = binary_to_term(BatchBin),
+
+           ?LOGDEBUG("~p write batch size ~s, length ~p",[
+             Target,
+             ?PRETTY_SIZE(Size),
+             ?PRETTY_COUNT(length(Batch))
+           ]),
+
+           Module:write_batch(Batch, TargetRef);
          _->
            throw(invalid_hash)
        end,
        remote_copy_loop(Worker, Module, TargetRef, Hash);
      {finish,Worker,WorkerFinalHash}->
+       % Finish
+       ?LOGDEBUG("~p remote worker finished",[Target]),
        case crypto:hash_final(Hash0) of
          WorkerFinalHash -> WorkerFinalHash;
          _-> throw(invalid_hash)
@@ -228,15 +278,139 @@ active_copy(Source, Target, Module, Options )->
   % TODO
   remote_copy(Source, Target, Module, Options).
 
-do_copy(SourceRef, Module, #{
-  hash := InitHash0
-})->
+do_copy(SourceRef, Module, OnBatch, InAcc)->
 
-   InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
+  Acc0 = #acc{
+    module = Module,
+    batch = [],
+    acc = InAcc,
+    size = 0,
+    on_batch = OnBatch,
+    stop = SourceRef#source.stop
+  },
 
-   FinalHash = Module:fold(SourceRef, {[], InitHash, 0}),
+  FinalHash =
+    case try Module:fold(SourceRef, fun iterator/2, Acc0)
+         catch
+           _:{stop,InTailAcc}-> InTailAcc
+         end of
+      #acc{batch = [], acc = InFinalAcc} ->
+        InFinalAcc;
+      #acc{batch = Tail, size = Size, acc = InFinalAcc, on_batch = OnBatch}->
+        OnBatch(Tail, Size, InFinalAcc)
+    end,
 
    crypto:hash_final( FinalHash ).
+
+%----------------------WITH STOP KEY-----------------------------
+iterator({K,V},#acc{module = Module, batch = Batch, size = Size0, stop = Stop} = Acc)
+ when Size0 < ?BATCH_SIZE, Stop =/= undefined, Stop < K->
+
+ {Action,Size} = Module:action({K,V}),
+ Acc#acc{batch = [Action|Batch], size = Size0 + Size};
+
+% Batch is ready
+iterator({K,V},#acc{module = Module, batch = Batch, on_batch = OnBatch, acc = InAcc, size = Size0, stop = Stop} = Acc)
+ when Stop =/= undefined, Stop < K->
+
+ {Action,Size} = Module:action({K,V}),
+ Acc#acc{batch = [Action], acc = OnBatch(Batch, Size0, InAcc), size = Size};
+
+% stop key reached
+iterator(_Rec,#acc{stop = Stop} = Acc)
+ when Stop =/= undefined->
+ throw({stop, Acc});
+
+%----------------------NO STOP KEY-----------------------------
+iterator({K,V},#acc{module = Module, batch = Batch, size = Size0} = Acc)
+ when Size0 < ?BATCH_SIZE->
+
+ {Action,Size} = Module:action({K,V}),
+ Acc#acc{batch = [Action|Batch], size = Size0 + Size};
+
+% Batch is ready
+iterator({K,V},#acc{module = Module, batch = Batch, on_batch = OnBatch, size = Size0, acc = InAcc} = Acc) ->
+
+ {Action,Size} = Module:action({K,V}),
+ Acc#acc{batch = [Action], acc = OnBatch(Batch, Size0, InAcc), size = Size}.
+
+%------------------SPLIT---------------------------------------
+% Splits are always local
+%--------------------------------------------------------------
+split( Source, Target )->
+  split( Source, Target, #{}).
+split( Source, Target, Options0 )->
+  Options = maps:merge(#{
+   sync => false
+  }, Options0),
+
+  #{ type := Type } = dlss_segment:get_info(Source),
+
+  Module =
+   if
+     Type =:= disc -> dlss_copy_disc;
+     true -> dlss_copy_ram
+   end,
+
+  #reverse{ h_key = SplitKey, hash = FinalHash0 } =
+    Module:init_reverse(Source,
+      fun
+        (empty)->
+          ?LOGWARNING("~p is empty, nothing to split"),
+          <<>>;
+        ({I,TSize,TKey})->
+
+          TargetRef = Module:init_target(Target, Options),
+
+          % Target considered to be empty
+          InitHash = crypto:hash_update(crypto:hash_init(sha256),<<>>),
+
+          Acc0 = #reverse{i=I, module = Module, head = 0, t_key = TKey ,tail = TSize, hash = InitHash},
+
+          OnBatch =
+            fun(Batch, Size, #reverse{hash = Hash,head = H} = Acc)->
+              HKey = Module:get_key(hd(Batch)),
+              NextAcc = reverse_loop(Acc#reverse{head = H + Size, h_key = HKey }),
+
+              ?LOGDEBUG("~p write batch, size ~s, length ~s",[
+                Target,
+                ?PRETTY_SIZE(Size),
+                ?PRETTY_COUNT(length(Batch))
+              ]),
+
+              Module:write_batch(Batch, TargetRef),
+              NextAcc#reverse{ hash = crypto:hash_update(Hash, term_to_binary( Batch ))}
+            end,
+
+          SourceRef = Module:init_source( Source, Options ),
+          % Run split
+          do_copy(SourceRef, Module, OnBatch, Acc0)
+      end),
+  FinalHash = crypto:hash_final( FinalHash0 ),
+  ?LOGINFO("split finish: source ~p, target ~p, split key ~p, hash ~ts",[
+    Source,
+    Target,
+    Module:decode_key(SplitKey),
+    base64:encode( FinalHash )
+  ]),
+
+  FinalHash.
+
+%% THIS IS THE MEDIAN!
+reverse_loop(#reverse{h_key = HKey, t_key = TKey}=Acc) when HKey >= TKey->
+  throw({stop,Acc});
+
+reverse_loop(#reverse{i=I, module = Module, head = H,tail = T,t_key = TKey} = Acc) when T < H->
+ case Module:prev(I,TKey) of
+   {K,Size} ->
+     reverse_loop(Acc#reverse{tail = T + Size, t_key = K});
+   '$end_of_table' ->
+     throw({stop,Acc})
+ end;
+% We reached the head size
+reverse_loop(Acc)->
+  Acc.
+
 
 
 

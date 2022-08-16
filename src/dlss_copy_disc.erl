@@ -19,12 +19,9 @@
 -module(dlss_copy_disc).
 
 -include("dlss.hrl").
+-include("dlss_copy.hrl").
 -include("dlss_eleveldb.hrl").
 
--record(source,{ref,iterator,start,on_batch}).
--record(target,{name,ref,sync,trick}).
-
--define(BATCH_SIZE, 8192).
 
 % The encoded @deleted@ value. Actually this is {[],[],'@deleted@'}
 % because mnesia_eleveldb uses this format
@@ -34,59 +31,50 @@
 %%	API
 %%=================================================================
 -export([
-  init_source/3,
-  init_target/3,
+  init_source/2,
+  init_target/2,
+  init_copy/2,
   dump_target/1,
-  rollback_target/1,
-  fold/2,
-  write_batch/2
+  drop_target/1,
+  fold/3,
+  action/1,
+  write_batch/2,
+  init_reverse/2,
+  prev/2,
+  get_key/1,
+  decode_key/1
 ]).
 
-init_source( Source, OnBatch, #{
+init_source( Source, #{
   start_key := StartKey,
   end_key := EndKey
 })->
 
   Ref = ?REF( Source ),
 
-  Iterator =
-    if
-      EndKey =:= undefined->
-        fun(Rec,Acc)-> iterator(Rec,Acc,OnBatch) end;
-      true->
-        Stop = ?ENCODE_KEY( EndKey ),
-        fun(Rec,Acc)-> iterator(Rec,Acc,OnBatch,Stop) end
-    end,
-
   Start =
     if
       StartKey =:= undefined -> ?DATA_START;
       true -> ?ENCODE_KEY( StartKey )
     end,
+  Stop =
+    if
+      EndKey =:= undefined->
+        undefined;
+      true->
+        ?ENCODE_KEY( EndKey )
+    end,
 
   #source{
     ref = Ref,
-    iterator = Iterator,
     start = Start,
-    on_batch = OnBatch
+    stop = Stop
   }.
 
-init_target(Target, Props, #{
+init_target(Target, #{
   sync := Sync
 })->
-  TargetRef =
-    case lists:member( Target, dlss:get_local_segments()) of
-      true ->
-        % It's not add_copy, just merge
-        #target{ref = ?REF(Target), trick = false};
-      _->
-        % TRICK mnesia, Add copy to this node
-        #target{ref = init_copy( Target, Props ), trick = true}
-    end,
-  TargetRef#target{
-    name = Target,
-    sync = Sync
-  }.
+  #target{ ref = ?REF(Target), sync = Sync }.
 
 init_copy(Target, Props)->
   Alias = mnesia_eleveldb:default_alias(),
@@ -104,58 +92,49 @@ init_copy(Target, Props)->
 dump_target( _TargetRef )->
   ok.
 
-rollback_target( #target{ref = _Ref})->
-  ok.
+drop_target( Target )->
+  mnesia_eleveldb:delete_table(mnesia_eleveldb:default_alias(), Target).
 
-fold(#source{ref = Ref, iterator = Iter, start = Start, on_batch = OnBatch}, Acc0)->
-  case try eleveldb:fold(Ref,Iter, Acc0, [{first_key, Start}])
-  catch
-    _:{stop,Acc}-> Acc
-  end of
-    {[], Hash, 0} -> Hash;
-    {Tail, Hash, _Size} -> OnBatch(Tail, Hash)
-  end.
+fold(#source{ref = Ref, start = Start}, Iterator, Acc0)->
+  eleveldb:fold(Ref,Iterator, Acc0, [{first_key, Start}]).
 
-%----------------------NO STOP KEY-----------------------------
-iterator({K,V},{Batch, Hash, Size},_OnBatch)
-  when Size < ?BATCH_SIZE->
-  if
-    V=:=?DELETED->
-      {[{delete, K}|Batch], Hash, Size + size(K)};
-    true->
-      {[{put,K,V}|Batch], Hash, Size + size(K)+size(V)}
-  end;
-
-iterator({K,V},{Batch, Hash, _Size},OnBatch)->
-  if
-    V=:=?DELETED->
-      {[{delete, K}], OnBatch(Batch,Hash), size(K)};
-    true->
-      {[{put,K,V}], OnBatch(Batch,Hash), size(K)+size(V)}
-  end.
-
-%----------------------WITH STOP KEY-----------------------------
-iterator({K,V},{Batch, Hash, Size},_OnBatch, Stop)
-  when Size < ?BATCH_SIZE, K < Stop->
-  if
-    V=:=?DELETED->
-      {[{delete, K}|Batch], Hash, Size + size(K)};
-    true->
-      {[{put,K,V}|Batch], Hash, Size + size(K)+size(V)}
-  end;
-
-iterator({K,V},{Batch, Hash, _Size},OnBatch,Stop)
-  when K < Stop->
-  if
-    V=:=?DELETED->
-      {[{delete, K}], OnBatch(Batch,Hash), size(K)};
-    true->
-      {[{put,K,V}], OnBatch(Batch,Hash), size(K)+size(V)}
-  end;
-iterator(_Rec,Acc, _OnBatch, _Stop)->
-  throw( Acc ).
-
+action({K,?DELETED})->
+  {{delete, K},size(K)};
+action({K,V})->
+  {{put,K,V},size(K)+size(V)}.
 
 write_batch(Batch, #target{ref = Ref,sync = Sync})->
   eleveldb:write(Ref,Batch, [{sync, Sync}]).
+
+init_reverse( Source, Fun )->
+  Ref = ?REF( Source ),
+  {ok, I} = eleveldb:iterator(Ref, []),
+  try
+    case ?MOVE(I,last) of
+      {ok,?INFO_TAG,_}->Fun(empty);
+      {ok,K,V}-> Fun({I,size(K)+size(V),K})
+    end
+  after
+    catch eleveldb:iterator_close(I)
+  end.
+
+get_key({put,K,_V})->K;
+get_key({delete,K})->K.
+
+decode_key(K)->?DECODE_KEY(K).
+
+prev(I,_K)->
+  case ?PREV(I) of
+    {ok, K, V}->
+      Size = size(K) + size(V),
+      {K, Size};
+    {error, invalid_iterator}->
+      % End of the table (start)
+      '$end_of_table';
+    {error, iterator_closed}->
+      throw(iterator_closed)
+  end.
+
+
+
 

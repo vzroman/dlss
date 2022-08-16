@@ -16,21 +16,28 @@
 %% under the License.
 %%----------------------------------------------------------------
 
--ifndef(DLSS_ELEVELDB).
--define(DLSS_ELEVELDB,1).
+-ifndef(DLSS_COPY).
+-define(DLSS_COPY,1).
 
--define(REF(T),mnesia_eleveldb:get_ref(T)).
--define(DECODE_KEY(K),mnesia_eleveldb:decode_key(K)).
--define(ENCODE_KEY(K),mnesia_eleveldb:encode_key(K)).
--define(DECODE_VALUE(V),element(3,mnesia_eleveldb:decode_val(V))).
--define(ENCODE_VALUE(V),mnesia_eleveldb:encode_val({[],[],V}).
+-define(BATCH_SIZE, 1048576). % 1 MB
 
--define(DATA_START, <<2>>).
--define(INFO_TAG,<<1,_/binary >>).
+% Copy properties
+-define(PROPS,[
+  type,
+  user_properties,
+  storage_properties,
+  record_name,
+  load_order,
+  access_mode,
+  majority,
+  index,
+  local_content,
+  attributes,
+  version
+]).
 
--define(MOVE(I,K),eleveldb:iterator_move(I,K)).
--define(NEXT(I),eleveldb:iterator_move(I,next)).
--define(PREV(I),eleveldb:iterator_move(I,prev)).
+-record(source,{ref,start,stop}).
+-record(target,{name,ref,sync,trick}).
 
 
 -endif.

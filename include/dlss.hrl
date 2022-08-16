@@ -48,6 +48,9 @@
 
 -define(A2B(Atom),unicode:characters_to_binary(atom_to_list(Atom))).
 
+-define(PRETTY_SIZE(S),dlss_util:pretty_size(S)).
+-define(PRETTY_COUNT(C),dlss_util:pretty_count(C)).
+
 -ifndef(TEST).
 
 -define(LOGERROR(Text),lager:error(Text)).
