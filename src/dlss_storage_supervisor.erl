@@ -364,9 +364,7 @@ loop( #state{ storage =  Storage, type = Type} = State )->
 
   Node = node(),
 
-  % Check hash values of storage segments
   Trace = fun(Text,Args)->?LOGDEBUG(Text, Args) end,
-  verify_storage_hash(Storage, Node, _Force = false, Trace ),
 
   % Synchronize actual copies configuration to the schema settings
   sync_copies( Storage, Node, Trace),
@@ -394,6 +392,8 @@ loop( #state{ storage =  Storage, type = Type} = State )->
       % Master commits the schema transformation if it is finished
       hash_confirm( Operation, Segment, Node );
     _ ->
+      % Check hash values of storage segments
+      verify_storage_hash(Storage, Node, _Force = false, Trace ),
 
       % Remove stale head
       purge_stale( Storage, Node ),
