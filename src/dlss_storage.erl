@@ -354,8 +354,11 @@ split_segment( Storage, Segment )->
     %% Locking an old Root table
     dlss_backend:lock({table,dlss_schema},write),
 
-    {ok, Prn = #sgm{ copies = Copies0, lvl = Level }} = segment_by_name( Segment ),
+    {ok, Prn = #sgm{ copies = Copies0, lvl = Level, ver = Ver }} = segment_by_name( Segment ),
     Copies = maps:map(fun(_K,_V)->undefined end, Copies0 ),
+
+    % Increment the version of the segment
+    ok = dlss_segment:write(dlss_schema, Prn#sgm{ver = Ver+1}, Segment , write),
 
     % Put the new segment on the floating level
     ok = dlss_segment:write(dlss_schema, Prn#sgm{lvl= Level+0.1 ,ver = 0,copies = Copies}, NewSegment , write),

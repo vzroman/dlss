@@ -463,19 +463,18 @@ do_transformation(split, Segment )->
 
   Node = node(),
 
-  {ok, #{
-    version:=Version,
-    copies := #{ Node := Dump }
-  }} = dlss_storage:segment_params( Segment ),
+  {ok, #{ version:=ChildVersion }} = dlss_storage:segment_params( Segment ),
 
   Parent = dlss_storage:parent_segment( Segment ),
-  InitHash=
-    case Dump of
-      #dump{hash = _H}->_H;
-      _-><<>>
-    end,
-  ?LOGINFO("~p splitting: init size ~s, child ~p init size ~s init hash ~s",[
-    Parent, ?PRETTY_SIZE(dlss_segment:get_size(Parent)), Segment, ?PRETTY_SIZE(dlss_segment:get_size(Segment)), ?PRETTY_HASH(InitHash)
+  {ok, #{
+    version:=ParentVersion,
+    copies := #{ Node := ParentDump }}
+  } = dlss_storage:segment_params( Parent ),
+
+
+  InitHash = <<>>,
+  ?LOGINFO("~p splitting: init size ~s, child ~p init size ~s",[
+    Parent, ?PRETTY_SIZE(dlss_segment:get_size(Parent)), Segment, ?PRETTY_SIZE(dlss_segment:get_size(Segment))
   ]),
 
   case dlss_storage:segment_transaction(Segment, read, fun()->
@@ -483,8 +482,20 @@ do_transformation(split, Segment )->
     ?LOGINFO("~p split finish: split key ~p, final size ~s, child ~p final size ~s, hash ~s, commit...",[
       Parent,SplitKey,?PRETTY_SIZE(dlss_segment:get_size(Parent)),Segment,?PRETTY_SIZE(dlss_segment:get_size(Segment)), ?PRETTY_HASH(FinalHash)
     ]),
-    % Update the version of the segment in the schema
-    dlss_storage:set_segment_version( Segment, Node, #dump{hash = FinalHash, version = Version }),
+    % Update the version of the child segment in the schema
+    dlss_storage:set_segment_version( Segment, Node, #dump{hash = FinalHash, version = ChildVersion }),
+
+    % Update the version of the parent segment in the schema
+    ParentInitHash =
+      case ParentDump of
+        #dump{ hash = Hash0 } -> Hash0;
+        _-> <<>>
+      end,
+    ParentHash0 = crypto:hash_update(crypto:hash_init(sha256),ParentInitHash),
+    NewParentHash = crypto:hash_update(ParentHash0, FinalHash),
+    FinalParentHash = crypto:hash_final( NewParentHash ),
+
+    dlss_storage:set_segment_version( Parent, Node, #dump{hash = FinalParentHash, version = ParentVersion }),
 
     % Commit the transformation
     split_commit(Segment, SplitKey, master_node( Segment ))
