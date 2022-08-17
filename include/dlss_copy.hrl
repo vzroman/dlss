@@ -19,7 +19,8 @@
 -ifndef(DLSS_COPY).
 -define(DLSS_COPY,1).
 
--define(BATCH_SIZE, 10485760). % 10 MB
+%-define(BATCH_SIZE, 10485760). % 10 MB
+-define(BATCH_SIZE, 52428800). % 50 MB
 
 % Copy properties
 -define(PROPS,[
