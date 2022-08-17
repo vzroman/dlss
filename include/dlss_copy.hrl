@@ -36,7 +36,7 @@
   version
 ]).
 
--record(source,{ref,start,stop}).
+-record(source,{name,ref,start,stop}).
 -record(target,{name,ref,sync,trick}).
 
 

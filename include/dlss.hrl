@@ -50,6 +50,7 @@
 
 -define(PRETTY_SIZE(S),dlss_util:pretty_size(S)).
 -define(PRETTY_COUNT(C),dlss_util:pretty_count(C)).
+-define(PRETTY_HASH(H),binary_to_list(base64:encode(H))).
 
 -ifndef(TEST).
 

@@ -472,8 +472,8 @@ split_commit( Sgm, #sgm{lvl = Level }=Prn )->
 
             % The Next is the key on which the parent is split
             ?LOGINFO("split commit: parent ~p, key ~p, child ~p, key ~p",[
-              Parent, Next,
-              Segment, element(1,Sgm#sgm.key)
+              Parent, {Next},
+              Segment, Sgm#sgm.key
             ]),
 
             % Remove old versions

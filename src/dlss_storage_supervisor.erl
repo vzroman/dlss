@@ -487,14 +487,14 @@ do_transformation(split, _Type, Segment )->
       #dump{hash = _H}->_H;
       _-><<>>
     end,
-  ?LOGINFO("splitting: child ~p, parent ~p, init hash ~ts, from key ~p",[
-    Segment, Parent, base64:encode(InitHash), dlss_segment:dirty_first( Parent )
+  ?LOGINFO("~p splitting: child ~p, init size ~s, init hash ~s, from key ~p",[
+    Parent, Segment, ?PRETTY_SIZE(dlss_segment:get_size(Segment)), ?PRETTY_HASH(InitHash), dlss_segment:dirty_first( Parent )
   ]),
 
   dlss_storage:segment_transaction(Segment, read, fun()->
-    FinalHash = dlss_copy:split(Parent, Segment,#{ hash => InitHash }),
-    ?LOGINFO("split finish: child ~p, parent ~p, new hash ~ts, split key ~p",[
-      Segment, Parent, base64:encode(FinalHash), dlss_segment:dirty_last( Segment )
+    {SplitKey,FinalHash} = dlss_copy:split(Parent, Segment,#{ hash => InitHash }),
+    ?LOGINFO("~p split finish: child ~p, final size ~s, split key ~p, new hash ~s, actual split key ~p",[
+      Parent,Segment,?PRETTY_SIZE(dlss_segment:get_size(Segment)), SplitKey, ?PRETTY_HASH(FinalHash), dlss_segment:dirty_last( Segment )
     ]),
     % Update the version of the segment in the schema
     dlss_storage:set_segment_version( Segment, Node, #dump{hash = FinalHash, version = Version })
@@ -551,20 +551,21 @@ merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], So
           #dump{hash = _H}->_H;
           _-><<>>
         end,
-      ?LOGINFO("merge: source ~p, target ~p, from ~p, to ~p, init hash ~ts",[
-        Source, S, FromKey, EndKey, base64:encode(InitHash)
+      ?LOGINFO("~p merge to ~p, range ~p : ~p, init size ~s, init hash ~s",[
+        Source, S, FromKey, EndKey, ?PRETTY_SIZE(dlss_segment:get_size(S)), ?PRETTY_HASH(InitHash)
       ]),
 
+      % Merge 1 segment at a time
       case dlss_storage:segment_transaction(S,read,fun()->
         FinalHash = dlss_copy:copy(Source,S,#{ hash => InitHash, start_key =>StartKey, end_key => EndKey}),
-        ?LOGINFO("merged sucessully: source ~p, target ~p, from ~p, to ~p, new hash ~ts",[
-          Source, S, FromKey, EndKey, base64:encode(FinalHash)
+        ?LOGINFO("~p merged sucessully to ~p, range ~p, to ~p, final size ~s, new hash ~s",[
+          Source, S, FromKey, EndKey, ?PRETTY_SIZE(dlss_segment:get_size(S)), ?PRETTY_HASH(FinalHash)
         ]),
         % Update the version of the segment in the schema
         dlss_storage:set_segment_version( S, Node, #dump{hash = FinalHash, version = Version })
       end) of
-        {error,Error}->{error, Error};
-        ok-> merge_level(Tail, Source, Params, Node, Type)
+        ok -> merge_level(Tail, Source, Params, Node, Type);
+        Error -> Error
       end;
     _->
       % The Node doesn't hosts the target segment, check the rest of the level
@@ -585,7 +586,7 @@ hash_confirm( Operation, Segment, Node )->
         Node ->
           master_commit( Operation, Segment,Node, Params );
         undefined ->
-          ?LOGWARNING("~p undefined master"),
+          ?LOGWARNING("~p undefined master",[Segment]),
           ok;
         Master->
           check_hash( Operation, Segment, Node, Master, Params )
@@ -601,7 +602,7 @@ master_commit( split, Segment, Master, #{version := Version,copies:=Copies})->
       % The master has already updated its version
       case not_confirmed( Version, Hash, Copies ) of
         [] ->
-          ?LOGINFO("split commit: ~p, copies ~p",[ Segment, Copies ]),
+          ?LOGINFO("~p split commit: copies ~p",[ Segment, Copies ]),
           dlss_storage:split_commit( Segment );
         Nodes->
           % There are still nodes that are not confirmed the hash yet
@@ -698,7 +699,7 @@ purge_stale( Storage, Node )->
         case dlss_segment:dirty_prev( S, FirstKey ) of
           '$end_of_table'->ok;
           _->
-            ?LOGINFO("~p purge stale head to ~p",[ S,FirstKey ]),
+            ?LOGINFO("~p purge stale head to ~p, init size ~s",[ S,FirstKey,?PRETTY_SIZE(dlss_segment:get_size(S)) ]),
             case dlss_storage:segment_transaction(S, read, fun()->
               % Not inclusive
               dlss_copy:purge_to( S, FirstKey )
@@ -706,7 +707,7 @@ purge_stale( Storage, Node )->
               {error, Error}->
                 ?LOGERROR("~p unable to purge stale head, error ~p",[S,Error]);
               Length ->
-                ?LOGINFO("~p purged stale head finish, length ~s, schema first key ~p, actual first key ~p, size ~s",[
+                ?LOGINFO("~p purged stale head finish, length ~s, schema first key ~p, actual first key ~p, final size ~s",[
                   S, ?PRETTY_COUNT(Length), FirstKey, dlss_segment:dirty_first( S ), ?PRETTY_SIZE(dlss_segment:get_size(S))
                 ])
             end

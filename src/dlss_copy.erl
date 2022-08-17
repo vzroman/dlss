@@ -75,6 +75,10 @@ get_read_node( Table )->
    true-> Node
  end.
 
+init_source(Source, Module, Options)->
+  S = Module:init_source( Source, Options ),
+  S#source{name = Source}.
+
 init_target(Target, Source, Module, Options)->
  case lists:member( Target, dlss:get_local_segments()) of
    true ->
@@ -139,7 +143,7 @@ local_copy( Source, Target, Module, #{
       crypto:hash_update(Hash, term_to_binary( Batch ))
     end,
 
-  SourceRef = Module:init_source( Source, Options ),
+  SourceRef = init_source( Source, Module, Options ),
 
   InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
 
@@ -148,7 +152,7 @@ local_copy( Source, Target, Module, #{
 
   Module:dump_target( TargetRef ),
 
-  ?LOGINFO("finish local copying: source ~p, target ~p, hash ~ts",[Source, Target, base64:encode( FinalHash )]),
+  ?LOGINFO("finish local copying: source ~p, target ~p, hash ~s",[Source, Target, ?PRETTY_HASH(FinalHash)]),
 
   FinalHash.
 
@@ -162,7 +166,7 @@ remote_copy( Source, Target, Module, Options)->
       process_flag(trap_exit,Trap)
     end,
 
-  ?LOGINFO("finish remote copying: source ~p, target ~p, hash ~ts", [Source, Target, base64:encode( FinalHash )] ),
+  ?LOGINFO("finish remote copying: source ~p, target ~p, hash ~s", [Source, Target, ?PRETTY_HASH( FinalHash )] ),
 
   FinalHash.
 
@@ -236,13 +240,13 @@ remote_copy_request(Owner, Source, Module, OnBatch,#{
 
   ?LOGINFO("remote copy request on ~p, options ~p", [Source, Options]),
 
-  SourceRef = Module:init_source( Source, Options ),
+  SourceRef = init_source( Source, Module, Options ),
 
   InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
   FinalHash0 = do_copy( SourceRef, Module, OnBatch, InitHash ),
   FinalHash = crypto:hash_final( FinalHash0 ),
 
-  ?LOGINFO("finish remote copy request on ~p, final hash ~ts",[Source,base64:encode(FinalHash)]),
+  ?LOGINFO("finish remote copy request on ~p, final hash ~s",[Source,?PRETTY_HASH(FinalHash)]),
 
   unlink( Owner ),
   Owner ! {finish,self(),FinalHash}.
@@ -355,8 +359,8 @@ split( Source, Target, Options0 )->
   Options = ?OPTIONS( Options0 ),
   Module = get_module( Source ),
 
-  SourceRef = Module:init_source( Source, Options ),
-  TargetRef = Module:init_target(Target, Options),
+  SourceRef = init_source( Source, Module, Options ),
+  TargetRef = init_target(Target, Source, Module, Options),
 
   % Target considered to be empty
   InitHash = crypto:hash_update(crypto:hash_init(sha256),<<>>),
@@ -366,7 +370,7 @@ split( Source, Target, Options0 )->
     hash = InitHash
   },
 
-  #r_acc{ hash = FinalHash0 } =
+  #r_acc{ hash = FinalHash0, h_key = SplitKey0 } =
     Module:init_reverse(Source,
       fun
         ('$end_of_table')->
@@ -377,14 +381,16 @@ split( Source, Target, Options0 )->
       end),
 
   FinalHash = crypto:hash_final( FinalHash0 ),
+  SplitKey = Module:decode_key(SplitKey0),
 
-  ?LOGINFO("split finish: source ~p, target ~p, hash ~ts",[
+  ?LOGINFO("split finish: source ~p, target ~p, split key ~p, hash ~s",[
     Source,
     Target,
-    base64:encode( FinalHash )
+    SplitKey,
+    ?PRETTY_HASH( FinalHash )
   ]),
 
-  FinalHash.
+  {SplitKey,FinalHash}.
 
 do_split(Module, Source, Target, SourceRef, TargetRef, Acc0)->
 
@@ -393,7 +399,11 @@ do_split(Module, Source, Target, SourceRef, TargetRef, Acc0)->
 
       % Enter the reverse loop
       HKey = Module:get_key(hd(Batch)),
-      NextAcc = reverse_loop(Acc#r_acc{head = H + Size, h_key = HKey }),
+      NextAcc =
+        try reverse_loop(Acc#r_acc{head = H + Size, h_key = HKey })
+        catch
+          _:stop-> throw({final,Acc})
+        end,
 
       ?LOGINFO("DEBUG: split ~p, target ~p, write batch size ~s, length ~s, head ~s, tail ~s, hkey ~p, tkey ~p",[
         Source,
@@ -414,15 +424,15 @@ do_split(Module, Source, Target, SourceRef, TargetRef, Acc0)->
   do_copy(SourceRef, Module, OnBatch, Acc0).
 
 %% THIS IS THE MEDIAN!
-reverse_loop(#r_acc{h_key = HKey, t_key = TKey}=Acc) when HKey >= TKey->
-  throw({final,Acc});
+reverse_loop(#r_acc{h_key = HKey, t_key = TKey}) when HKey >= TKey->
+  throw(stop);
 
 reverse_loop(#r_acc{i=I, module = Module, head = H,tail = T,t_key = TKey} = Acc) when T < H->
  case Module:prev(I,TKey) of
    {K,Size} ->
      reverse_loop(Acc#r_acc{tail = T + Size, t_key = K});
    '$end_of_table' ->
-     throw({final,Acc})
+     throw(stop)
  end;
 % We reached the head size
 reverse_loop(Acc)->
@@ -433,7 +443,7 @@ purge_to( Source, Key )->
   Module = get_module( Source ),
   Options = ?OPTIONS(#{start_key => undefined, end_key => Key}),
 
-  SourceRef = Module:init_source(Source, Options),
+  SourceRef = init_source(Source, Module, Options),
   Module:purge_head( SourceRef ).
 
 get_size( Table )->
@@ -455,7 +465,7 @@ debug(Storage, Count)->
 
 fill(S,C) when C>0 ->
   if C rem 100000 =:= 0-> ?LOGINFO("DEBUG: write ~p",[C]); true->ignore end,
-  dlss:dirty_write(S, {x, erlang:phash2(C, C)}, {y, binary:copy(integer_to_binary(C), 100)}),
+  dlss:dirty_write(S, {x, erlang:phash2({C}, 200000000), erlang:phash2({C}, 200000000)}, {y, binary:copy(integer_to_binary(C), 100)}),
   fill(S,C-1);
 fill(_S,_C)->
   ok.

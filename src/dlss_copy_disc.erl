@@ -137,17 +137,16 @@ prev(I,_K)->
       throw(iterator_closed)
   end.
 
-purge_head(#source{ref = Ref, start = Start, stop = Stop})->
+purge_head(#source{name=N, ref = Ref, start = Start, stop = Stop})->
   case try eleveldb:fold_keys(Ref,fun(K,{Batch,L})->
     if
-      K >= Stop->
-        eleveldb:write(Ref,Batch,[{sync, false}]),
-        throw({stop,{Batch,L}});
+      K >= Stop-> throw({stop,{Batch,L}});
       true ->
         L1 = L + 1,
         Batch1 = [{delete,K}|Batch],
         if
           L1 rem 1000 =:= 0 ->
+            ?LOGINFO("DEBUG: ~p purge to ~p",[N,?DECODE_KEY(K)]),
             eleveldb:write(Ref,Batch,[{sync, false}]),
             {[],L1};
           true ->
@@ -159,7 +158,8 @@ purge_head(#source{ref = Ref, start = Start, stop = Stop})->
     _:{stop,TailAcc}->TailAcc
   end of
     {[], Length}->Length;
-    {Tail,L}->
+    {[{delete,K}|_]=Tail,L}->
+      ?LOGINFO("DEBUG: ~p purge to ~p",[N,?DECODE_KEY(K)]),
       eleveldb:write(Ref,Tail,[{sync, false}]),
       L + length( Tail )
   end.
