@@ -229,8 +229,8 @@ sync_segment_copies( Segment, Node, Trace)->
       case { maps:is_key( Node, Copies ), lists:member(Node,Nodes) } of
         { true, false }->
           % The segment is in the schema but is not on the node yet
-          case Nodes of
-            []-> ?LOGWARNING("~p does not have active copies on other nodes");
+          case Nodes -- dlss:get_ready_nodes() of
+            []-> ?LOGWARNING("~p does not have active copies on other nodes",[Segment]);
             _-> add_segment_copy(Segment, Node)
           end;
         { false, true }->

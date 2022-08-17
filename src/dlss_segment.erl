@@ -503,7 +503,8 @@ add_node(Segment,Node)->
   % ATTENTION! Mnesia trick, we do copy ourselves and tell mnesia to add it
   if
     Node =:= node()->
-      case catch dlss_copy:copy(Segment,Segment) of
+      case try dlss_copy:copy(Segment,Segment)
+      catch _:E->{error,E} end of
         Hash when is_binary( Hash )->
           add_node(Segment, Node, mnesia:table_info(Segment, access_mode));
         Error -> Error
