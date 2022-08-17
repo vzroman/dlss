@@ -185,7 +185,7 @@ do_remote_copy( Source, Target, Module, #{
      Hash = crypto:hash_update(Hash0, Batch),
      Zip = zlib:zip( Batch ),
 
-     ?LOGDEBUG("send batch: source ~p, target ~p, size ~s, zip ~s, length ~s",[
+     ?LOGINFO("DEBUG: send batch: source ~p, target ~p, size ~s, zip ~s, length ~s",[
        Source,
        Target,
        ?PRETTY_SIZE(Size),
@@ -254,7 +254,7 @@ remote_copy_loop(Worker, Module, #target{name = Target} =TargetRef, Hash0)->
   receive
      {write_batch, Worker, Zip, Size, WorkerHash }->
 
-       ?LOGDEBUG("~p batch received",[Target]),
+       ?LOGINFO("DEBUG: ~p batch received",[Target]),
 
        BatchBin = zlib:unzip( Zip ),
        Hash = crypto:hash_update(Hash0, BatchBin),
@@ -265,7 +265,7 @@ remote_copy_loop(Worker, Module, #target{name = Target} =TargetRef, Hash0)->
            Worker ! {confirmed, self()},
            Batch = binary_to_term(BatchBin),
 
-           ?LOGDEBUG("~p write batch size ~s, length ~p",[
+           ?LOGINFO("DEBUG: ~p write batch size ~s, length ~p",[
              Target,
              ?PRETTY_SIZE(Size),
              ?PRETTY_COUNT(length(Batch))
@@ -278,7 +278,7 @@ remote_copy_loop(Worker, Module, #target{name = Target} =TargetRef, Hash0)->
        remote_copy_loop(Worker, Module, TargetRef, Hash);
      {finish,Worker,WorkerFinalHash}->
        % Finish
-       ?LOGDEBUG("~p remote worker finished",[Target]),
+       ?LOGINFO("DEBUG: ~p remote worker finished",[Target]),
        case crypto:hash_final(Hash0) of
          WorkerFinalHash -> WorkerFinalHash;
          _-> throw(invalid_hash)
