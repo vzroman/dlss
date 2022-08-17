@@ -27,7 +27,6 @@
 -export([
   copy/2,copy/3,
   split/2, split/3,
-  purge_to/2,
   get_size/1
 ]).
 
@@ -370,11 +369,11 @@ split( Source, Target, Options0 )->
     hash = InitHash
   },
 
-  #r_acc{ hash = FinalHash0, h_key = SplitKey0 } =
+  #r_acc{ hash = FinalHash0, t_key = SplitKey0 } =
     Module:init_reverse(Source,
       fun
         ('$end_of_table')->
-          InitAcc#r_acc{ hash = <<>> };
+          InitAcc#r_acc{ hash = <<>>, t_key = '$end_of_table' };
         ({I,TSize,TKey})->
           Acc0 = InitAcc#r_acc{i=I, t_key = TKey ,tail = TSize},
           do_split(Module, Source, Target, SourceRef, TargetRef, Acc0 )
@@ -402,7 +401,7 @@ do_split(Module, Source, Target, SourceRef, TargetRef, Acc0)->
       NextAcc =
         try reverse_loop(Acc#r_acc{head = H + Size, h_key = HKey })
         catch
-          _:stop-> throw({final,Acc})
+          _:stop-> throw({final,Acc#r_acc{ h_key = Module:get_key( lists:last(Batch) )}})
         end,
 
       ?LOGINFO("DEBUG: split ~p, target ~p, write batch size ~s, length ~s, head ~s, tail ~s, hkey ~p, tkey ~p",[
@@ -417,6 +416,8 @@ do_split(Module, Source, Target, SourceRef, TargetRef, Acc0)->
       ]),
 
       Module:write_batch(Batch, TargetRef),
+      Module:drop_batch(Batch, SourceRef),
+
       NextAcc#r_acc{ hash = crypto:hash_update(Hash, term_to_binary( Batch ))}
     end,
 
@@ -432,19 +433,12 @@ reverse_loop(#r_acc{i=I, module = Module, head = H,tail = T,t_key = TKey} = Acc)
    {K,Size} ->
      reverse_loop(Acc#r_acc{tail = T + Size, t_key = K});
    '$end_of_table' ->
+     % Can we reach here?
      throw(stop)
  end;
 % We reached the head size
 reverse_loop(Acc)->
   Acc.
-
-purge_to( Source, Key )->
-
-  Module = get_module( Source ),
-  Options = ?OPTIONS(#{start_key => undefined, end_key => Key}),
-
-  SourceRef = init_source(Source, Module, Options),
-  Module:purge_head( SourceRef ).
 
 get_size( Table )->
 

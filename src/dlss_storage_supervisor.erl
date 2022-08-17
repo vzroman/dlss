@@ -360,11 +360,14 @@ terminate(Reason,#state{storage = Storage})->
 code_change(_OldVsn, State, _Extra) ->
   {ok, State}.
 
-loop( #state{ storage =  Storage, type = Type} = State )->
+loop( #state{ storage =  Storage} = State )->
 
   Node = node(),
 
   Trace = fun(Text,Args)->?LOGDEBUG(Text, Args) end,
+
+  % Check hash values of storage segments
+  verify_storage_hash(Storage, Node, _Force = false, Trace ),
 
   % Synchronize actual copies configuration to the schema settings
   sync_copies( Storage, Node, Trace),
@@ -375,24 +378,8 @@ loop( #state{ storage =  Storage, type = Type} = State )->
   % Check for pending transformation
   case pending_transformation(Storage, Node) of
     {Operation, Segment} ->
-      % Master commits the schema transformation if it is finished
-      case do_transformation(Operation, Type, Segment) of
-        ok ->
-          % Master commits the schema transformation if it is finished
-          hash_confirm( Operation, Segment, Node );
-        {error, Error} ->
-          ?LOGERROR("~p ~p error ~p",[Segment, Operation, Error])
-      end;
-    {wait, Segment, Operation}->
-      % Master commits the schema transformation if it is finished
-      hash_confirm( Operation, Segment, Node );
+      do_transformation(Operation, Segment);
     _ ->
-      % Check hash values of storage segments
-      verify_storage_hash(Storage, Node, _Force = false, Trace ),
-
-      % Remove stale head
-      purge_stale( Storage, Node ),
-
       % Check if a transformation required
       check_limits( Storage, Node )
 
@@ -472,7 +459,7 @@ pending_transformation( Storage, Node )->
   end.
 
 
-do_transformation(split, _Type, Segment )->
+do_transformation(split, Segment )->
 
   Node = node(),
 
@@ -491,46 +478,47 @@ do_transformation(split, _Type, Segment )->
     Parent, Segment, ?PRETTY_SIZE(dlss_segment:get_size(Segment)), ?PRETTY_HASH(InitHash), dlss_segment:dirty_first( Parent )
   ]),
 
-  dlss_storage:segment_transaction(Segment, read, fun()->
+  case dlss_storage:segment_transaction(Segment, read, fun()->
     {SplitKey,FinalHash} = dlss_copy:split(Parent, Segment,#{ hash => InitHash }),
-    ?LOGINFO("~p split finish: child ~p, final size ~s, split key ~p, new hash ~s, actual split key ~p",[
+    ?LOGINFO("~p split finish: child ~p, final size ~s, split key ~p, new hash ~s, actual split key ~p, commit...",[
       Parent,Segment,?PRETTY_SIZE(dlss_segment:get_size(Segment)), SplitKey, ?PRETTY_HASH(FinalHash), dlss_segment:dirty_last( Segment )
     ]),
     % Update the version of the segment in the schema
-    dlss_storage:set_segment_version( Segment, Node, #dump{hash = FinalHash, version = Version })
-  end);
+    dlss_storage:set_segment_version( Segment, Node, #dump{hash = FinalHash, version = Version }),
 
-do_transformation(merge, Type, Segment )->
+    % Commit the transformation
+    split_commit(Segment, SplitKey, master_node( Segment ))
+  end) of
+    ok -> ok;
+    {error,Error}->
+      ?LOGERROR("~p split to ~p error ~p",[ Parent, Segment, Error ])
+  end;
+
+do_transformation(merge, Segment )->
 
   {ok, Params} = dlss_storage:segment_params( Segment ),
 
-  #{
-    level:=Level ,
-    storage:=Storage,
-    key := FromKey
-  } = Params,
+  #{ key := FromKey} = Params,
 
-  Segments=
+  Children =
     [ begin
-        {ok, P } = dlss_storage:segment_params(S),
-        { S, P }
-      end || S <- dlss_storage:get_segments(Storage) ],
+        {ok,CParams} = dlss_storage:segment_params(C),
+        {C,CParams}
+      end || C <- dlss_storage:get_children( Segment )],
 
-  MergeLevel = round(Level),
-  [ {S0 , P0 } | MergeTo ] =
-    [ {S, P} || { S, #{level := L} = P } <- Segments, L=:=MergeLevel],
+  [{C0,P0}|Tail] = Children,
 
   % The first segment takes keys from the parent's head even if they are
   % smaller than its first key
-  merge_level( [ {S0, P0#{key => FromKey }} | MergeTo], Segment, Params, node(), Type ).
+  merge_level( [{C0, P0#{key => FromKey }} | Tail], Segment, Params, node() ).
 
 %---------------------MERGE---------------------------------------------------
-merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], Source, Params, Node, Type )->
+merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], Source, Params, Node )->
   % This is the segment that is currently copying the keys from the source
   case Copies of
     #{ Node := #dump{version = Version} }->
       % The segment is already updated
-      merge_level( Tail, Source, Params, Node, Type );
+      merge_level( Tail, Source, Params, Node );
     #{ Node := Dump } when Dump=:=undefined; Dump#dump.version < Version->
       % This node hosts the target segment, it must to play its role
       StartKey =
@@ -558,165 +546,173 @@ merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], So
       % Merge 1 segment at a time
       case dlss_storage:segment_transaction(S,read,fun()->
         FinalHash = dlss_copy:copy(Source,S,#{ hash => InitHash, start_key =>StartKey, end_key => EndKey}),
-        ?LOGINFO("~p merged sucessully to ~p, range ~p, to ~p, final size ~s, new hash ~s",[
+        ?LOGINFO("~p merged to ~p, range ~p, to ~p, final size ~s, new hash ~s, commit...",[
           Source, S, FromKey, EndKey, ?PRETTY_SIZE(dlss_segment:get_size(S)), ?PRETTY_HASH(FinalHash)
         ]),
         % Update the version of the segment in the schema
-        dlss_storage:set_segment_version( S, Node, #dump{hash = FinalHash, version = Version })
+        dlss_storage:set_segment_version( S, Node, #dump{hash = FinalHash, version = Version }),
+
+        % Commit the transformation
+        merge_commit_child(S, master_node( S ))
+
       end) of
-        ok -> merge_level(Tail, Source, Params, Node, Type);
+        ok -> merge_level(Tail, Source, Params, Node);
+        {error,{abort,_}}->
+          % Segment commit aborted, do not proceed. Let's start the next cycle,
+          % do hash verification and copies synchronization and only then proceed.
+          % Already committed segments are going to be skipped during the version check
+          ok;
         Error -> Error
       end;
     _->
       % The Node doesn't hosts the target segment, check the rest of the level
-      merge_level( Tail, Source, Params, Node, Type )
+      merge_level( Tail, Source, Params, Node )
   end;
-merge_level([], _Source, _Params, _Node, _Type )->
-  % There is no locally hosted segments to merge to
-  ok.
+merge_level([], Source, _Params, _Node )->
+  % There is no more locally hosted segments to merge to, final commit.
+  % Final commit must do to the master for the last segment
+  Last = lists:last( dlss_storage:get_children(Source) ),
 
-%%============================================================================
-%% Confirm schema transformation
-%%============================================================================
-hash_confirm( Operation, Segment, Node )->
-  {ok, #{copies:= Copies} = Params } = dlss_storage:segment_params( Segment ),
-  case Copies of
-    #{ Node := _Version }->
-      case master_node( Segment ) of
-        Node ->
-          master_commit( Operation, Segment,Node, Params );
-        undefined ->
-          ?LOGWARNING("~p undefined master",[Segment]),
-          ok;
-        Master->
-          check_hash( Operation, Segment, Node, Master, Params )
-      end;
-    _ ->
-      % The node doesn't have a copy of the segment
-      ok
-  end.
+  merge_commit_final(Source, Last, master_node(Last)).
 
-master_commit( split, Segment, Master, #{version := Version,copies:=Copies})->
-  case maps:get( Master, Copies ) of
-    #dump{ version = Version, hash = Hash }->
-      % The master has already updated its version
-      case not_confirmed( Version, Hash, Copies ) of
-        [] ->
-          ?LOGINFO("~p split commit: copies ~p",[ Segment, Copies ]),
-          dlss_storage:split_commit( Segment );
-        Nodes->
-          % There are still nodes that are not confirmed the hash yet
-          ?LOGDEBUG("~p splitting is not finished yet, waiting for ~p",[Segment, Nodes]),
-          ok
-      end;
-    _->
-      %  The master is not ready itself
-      ok
+%%------------------------------------------------------------
+%%  TRANSFORMATION COMMIT
+%%------------------------------------------------------------
+%%------------------------------------------------------------
+%%  Split
+%%------------------------------------------------------------
+%-----------------Master commit--------------------------------
+split_commit(Segment, SplitKey, Master) when Master=:=node()->
+
+  {ok, #{copies:=Copies}} = dlss_storage:segment_params( Segment ),
+  Dump =
+    #dump{version = Version, hash = Hash} = maps:get( Master, Copies ),
+  case not_confirmed( Dump, Copies ) of
+    [] ->
+      % All are ready
+      ?LOGINFO("~p split commit, version ~p, hash ~s",[ Segment, Version, ?PRETTY_HASH(Hash) ]),
+      dlss_storage:split_commit( Segment, SplitKey );
+    Nodes->
+      % There are still nodes that are not confirmed the hash yet
+      ?LOGDEBUG("~p splitting is not finished yet, waiting for ~p",[Segment, Nodes]),
+      timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
+      % Update the master
+      split_commit(Segment, SplitKey, master_node( Segment ))
   end;
 
-master_commit( merge, Segment, _Node, _Params )->
-  Children = dlss_storage:get_children( Segment ),
-  Children1=
-    [ begin
-        {ok, #{version:=V, copies:=C} } = dlss_storage:segment_params(S),
-        M = master_node( S ),
-        W =
-          case C of
-            #{M := #dump{ version = V, hash = H }}->
-              not_confirmed( V, H, C );
-            _->
-              % The master is not ready itself
-              maps:keys( C )
+%--------------------Slave commit-----------------------------------
+split_commit(Segment, SplitKey, Master)->
 
-          end,
-        {S, W }
-      end || S <- Children ],
-  case [ {S,W} || {S, W } <- Children1, length(W)>0 ] of
-    []->
-      ?LOGINFO("merge commit: ~p",[ Segment ]),
-      dlss_storage:merge_commit( Segment );
-    Wait->
-      ?LOGINFO("~p merging is not finished yet, waiting for ~p",[ Segment, Wait ]),
-      ok
+  {ok, #{copies:=Copies}} = dlss_storage:segment_params( Segment ),
+  MasterDump =
+    #dump{ version = MasterVersion, hash = MasterHash } = maps:get( Master, Copies ),
+  MyDump =
+    #dump{ version = MyVersion, hash = MyHash } = maps:get( node(), Copies ),
+
+  if
+    MyDump =:= MasterDump->
+      ?LOGINFO("~p split commit, version ~p, hash ~s",[ Segment, MyVersion, ?PRETTY_HASH(MyHash) ]);
+    not is_number(MasterVersion); MyVersion > MasterVersion ->
+
+      % There are still nodes that are not confirmed the hash yet
+      ?LOGDEBUG("~p splitting is not finished yet, waiting for master ~p",[Segment, Master]),
+      timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
+      % Update the master
+      split_commit(Segment, SplitKey, master_node( Segment ));
+    true->
+      % Something went wrong.
+      % The local copy is going to be dropped during hash verification and reloaded during copies synchronization on the next cycle
+      ?LOGERROR("~p split abort: has different dump to master ~p, master version ~p, master hash ~s, local version ~p, local hash ~s",[
+        Segment, Master, MasterVersion, ?PRETTY_HASH(MasterHash), MyVersion, ?PRETTY_HASH(MyHash)
+      ])
   end.
 
-check_hash( merge, Segment, Node, _Master, _Params )->
-  Children = dlss_storage:get_children( Segment ),
-  [ begin
-      { ok, P} = dlss_storage:segment_params( S ),
-      M = master_node( S ),
-      check_hash( undefined, S, Node, M, P )
-    end || S <- Children ],
-  ok;
+%%------------------------------------------------------------
+%%  Merge child commit
+%%------------------------------------------------------------
+%-----------------Master commit--------------------------------
+merge_commit_child(Segment, Master) when Master =:= node()->
+  {ok, #{copies:=Copies}} = dlss_storage:segment_params( Segment ),
+  Dump =
+    #dump{version = Version, hash = Hash} = maps:get( Master, Copies ),
 
-check_hash( _Other, Segment, Node, Master, #{version:=Version,copies:=Copies} )->
-  case Copies of
-    #{ Master := #dump{ version = Version, hash = Hash }}->
-      % The master has already updated its hash
-      case Copies of
-        #{ Node := #dump{ version = Version, hash = Hash }}->
-          ?LOGDEBUG("~p confirm hash ~p",[ Segment, Hash ]),
-          % The hash for the Node is confirmed
-          ok;
-        #{ Node := #dump{ version = Version, hash = Invalid } }->
-          % The version of the segment for the Node has a different hash.
-          % We purge the local copy of the segment to let the sync mechanism to reload it
-          % next cycle
-          ?LOGWARNING("~p invalid hash ~p, master hash ~p, drop local copy",[ Segment, Invalid, Hash ]),
-          dlss_segment:remove_node( Segment, Node );
-        #{ Node := Dump }->
-          ?LOGDEBUG("~p local copy is not updated yet: version ~p, local ~p",[Version,Dump]),
-          % The segment has not updated yet
-          ok;
-        _ ->
-          % The node doesn't have a copy of the segment
-          ok
-      end;
-    _->
-      ?LOGDEBUG("check hash ~p, master ~p is not ready yet: ~p",[
-        Segment, Master, maps:get(Master,Copies)
+  case not_confirmed( Dump, Copies ) of
+    [] ->
+      % All are ready
+      ?LOGINFO("~p merge committed, version ~p, hash ~s",[ Segment, Version, ?PRETTY_HASH(Hash) ]);
+    Nodes->
+      % There are still nodes that are not confirmed the hash yet
+      ?LOGDEBUG("~p merging is not finished yet, waiting for ~p",[Segment, Nodes]),
+      timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
+      % Update the master
+      merge_commit_child(Segment, master_node( Segment ))
+  end;
+
+%--------------------Slave commit-----------------------------------
+merge_commit_child(Segment, Master)->
+
+  {ok, #{copies:=Copies}} = dlss_storage:segment_params( Segment ),
+  MasterDump =
+    #dump{ version = MasterVersion, hash = MasterHash } = maps:get( Master, Copies ),
+  MyDump =
+    #dump{ version = MyVersion, hash = MyHash } = maps:get( node(), Copies ),
+
+  if
+    MyDump =:= MasterDump->
+      ?LOGINFO("~p merge commit, version ~p, hash ~s",[ Segment, MyVersion, ?PRETTY_HASH(MyHash) ]);
+    not is_number(MasterVersion); MyVersion > MasterVersion->
+
+      % There are still nodes that are not confirmed the hash yet
+      ?LOGDEBUG("~p merging is not finished yet, waiting for master ~p",[Segment, Master]),
+      timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
+      % Update the master
+      merge_commit_child(Segment, master_node( Segment ));
+    true->
+      % Something went wrong.
+      % The local copy is going to be dropped during hash verification and reloaded during copies synchronization on the next cycle
+      ?LOGERROR("~p merge abort: has different dump to master ~p, master version ~p, master hash ~s, local version ~p, local hash ~s",[
+        Segment, Master, MasterVersion, ?PRETTY_HASH(MasterHash), MyVersion, ?PRETTY_HASH(MyHash)
       ]),
-      ok
+
+      throw(abort)
   end.
 
-not_confirmed( Version, Hash, Copies )->
-  InvalidHashNodes =
-    [ N || { N, Dump} <- maps:to_list(Copies),
-      case Dump of
-        #dump{version = Version,hash = Hash} -> false;
-        _->true
-      end ],
-  InvalidHashNodes -- ( InvalidHashNodes -- dlss:get_ready_nodes() ).
+%%------------------------------------------------------------
+%%  Merge final commit
+%%------------------------------------------------------------
+%-----------------Master commit--------------------------------
+merge_commit_final(Source, Segment, Master) when Master =:= node()->
 
+  {ok, #{copies:=Copies}} = dlss_storage:segment_params( Segment ),
+  Dump = maps:get( Master, Copies ),
 
-%%============================================================================
-%% Remove the keys from the segments that are smaller than the FirstKey
-%% of the segment. This is the case after the segment was split
-%%============================================================================
-purge_stale( Storage, Node )->
-  [ case dlss_storage:segment_params(S) of
-      {ok, #{ copies:= #{Node:=_}, key := FirstKey } }->
-        case dlss_segment:dirty_prev( S, FirstKey ) of
-          '$end_of_table'->ok;
-          _->
-            ?LOGINFO("~p purge stale head to ~p, init size ~s",[ S,FirstKey,?PRETTY_SIZE(dlss_segment:get_size(S)) ]),
-            case dlss_storage:segment_transaction(S, read, fun()->
-              % Not inclusive
-              dlss_copy:purge_to( S, FirstKey )
-            end) of
-              {error, Error}->
-                ?LOGERROR("~p unable to purge stale head, error ~p",[S,Error]);
-              Length ->
-                ?LOGINFO("~p purged stale head finish, length ~s, schema first key ~p, actual first key ~p, final size ~s",[
-                  S, ?PRETTY_COUNT(Length), FirstKey, dlss_segment:dirty_first( S ), ?PRETTY_SIZE(dlss_segment:get_size(S))
-                ])
-            end
-        end;
-      _->
-        % The node does not have a copy of the segment
-        ok
-    end || S <- dlss_storage:get_segments(Storage) ],
-  ok.
+  case not_confirmed( Dump, Copies ) of
+    [] ->
+      % All are ready
+      ?LOGINFO("~p merge final commit",[ Source ]),
+      dlss_storage:merge_commit( Source );
+    Nodes->
+      % There are still nodes that are not confirmed the hash yet
+      ?LOGDEBUG("~p merging is not finished yet, waiting for ~p",[Source, Nodes]),
+      timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
+      % Update the master
+      merge_commit_final(Source, Segment, master_node( Segment ))
+  end;
+
+%-----------------Slave commit--------------------------------
+merge_commit_final(Source, _Segment, Master)->
+  % It's a job for the master. May be I'm even not engaged
+  ?LOGDEBUG("~p merge commit wait for master ~p",[Source,Master]).
+
+not_confirmed(Dump, Copies0)->
+
+  Copies = maps:to_list(Copies0),
+
+  All = [N|| {N,_} <- Copies],
+  Confirmed =
+    [N|| {N,D} <- Copies, D=:=Dump],
+
+  (All -- Confirmed) -- dlss:get_ready_nodes().
 
 %%============================================================================
 %% This is the entry point for all rebalancing transformations
@@ -888,16 +884,18 @@ eval_segment_efficiency( Segment )->
 master_node( Segment )->
 
   {ok, #{copies:= Copies} } = dlss_storage:segment_params( Segment ),
-  SetNodes = lists:usort([ N || { N, _Dump } <- maps:to_list( Copies ) ]),
 
-  ActualNodes = lists:usort( dlss_segment:get_active_nodes( Segment ) ),
+  SegmentNodes = lists:usort([ N || { N, _Dump } <- maps:to_list( Copies ) ]),
+  LiveNodes = lists:usort( dlss_segment:get_active_nodes( Segment ) ),
 
-  Nodes = ordsets:intersection( SetNodes, ActualNodes ),
+  SegmentLiveNodes = ordsets:intersection( SegmentNodes, LiveNodes ),
 
-  Ready = dlss:get_ready_nodes( ),
+  ReadyNodes = dlss:get_ready_nodes(),
 
-  case Nodes -- (Nodes -- Ready) of
-    [ Master | _ ]-> Master;
+  case SegmentLiveNodes -- (SegmentLiveNodes -- ReadyNodes) of
+    [ Master | _ ]->
+      % The master is the node with the least name
+      Master;
     _-> undefined
   end.
 

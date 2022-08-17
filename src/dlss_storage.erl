@@ -65,7 +65,7 @@
   % rebalance the storage schema
   split_segment/1,
   set_segment_version/3,
-  split_commit/1,
+  split_commit/2,
   merge_segment/1,
   merge_commit/1
 
@@ -424,13 +424,13 @@ new_root_segment( Storage ) ->
       ?ERROR( SchemaError )
   end.
 
-split_commit( Segment )->
+split_commit( Segment, SplitKey )->
   Parent = parent_segment( Segment ),
   {ok, Sgm } = segment_by_name( Segment ),
   {ok, Prn } = segment_by_name( Parent ),
-  split_commit( Sgm, Prn ).
+  split_commit( Sgm, Prn, SplitKey ).
 
-split_commit( Sgm, #sgm{lvl = Level }=Prn )->
+split_commit( Sgm, #sgm{lvl = Level }=Prn, SplitKey )->
 
   % Set a version for a segment in the schema
   case dlss:transaction(fun()->
@@ -439,53 +439,18 @@ split_commit( Sgm, #sgm{lvl = Level }=Prn )->
     Segment = dlss_segment:read( dlss_schema, Sgm, write ),
     Parent = dlss_segment:read( dlss_schema, Prn, write ),
 
-    case dlss_segment:dirty_last( Segment ) of
-      '$end_of_table'->
+    ?LOGINFO("split commit: parent ~p, child ~p, split key ~p",[
+      Parent, Segment, SplitKey
+    ]),
 
-        % If the child is empty then the parent has only '@deleted@' records
-        % Neither parent nor child are actually needed
-
-        ?LOGWARNING("split commit: empty child segment, remove both parent ~p and child ~p",[
-          Parent, Segment
-        ]),
-        ok = dlss_segment:delete(dlss_schema, Sgm , write ),
-        ok = dlss_segment:delete(dlss_schema, Prn , write );
-      Last ->
-
-        case dlss_segment:dirty_next( Parent, Last ) of
-          '$end_of_table' ->
-
-            % If the parent has no more keys then all not '@deleted@' are in the child now
-            % the parent is no longer needed
-
-            ?LOGWARNING("split commit: empty parent segment, remove parent ~p ",[
-              Parent
-            ]),
-
-            ok = dlss_segment:delete(dlss_schema, Prn , write ),
-
-            % Remove old version of the child
-            ok = dlss_segment:delete(dlss_schema, Sgm , write ),
-            % Add new version of the child
-            ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level }, Segment, write );
-          Next ->
-
-            % The Next is the key on which the parent is split
-            ?LOGINFO("split commit: parent ~p, key ~p, child ~p, key ~p",[
-              Parent, {Next},
-              Segment, Sgm#sgm.key
-            ]),
-
-            % Remove old versions
-            ok = dlss_segment:delete(dlss_schema, Sgm , write ),
-            ok = dlss_segment:delete(dlss_schema, Prn , write ),
+    % Remove old versions
+    ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+    ok = dlss_segment:delete(dlss_schema, Prn , write ),
 
 
-            % Add the new versions
-            ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level }, Segment, write ),
-            ok = dlss_segment:write( dlss_schema, Prn#sgm{ key = { Next } }, Parent, write )
-        end
-    end,
+    % Add the new versions
+    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level }, Segment, write ),
+    ok = dlss_segment:write( dlss_schema, Prn#sgm{ key = { SplitKey } }, Parent, write ),
 
     % Transaction end
     ok
@@ -1268,7 +1233,7 @@ segment_transaction(Segment, Lock, Fun, Timeout)->
   receive
     {locked, Holder}->
       Result =
-        try Fun() catch _:Error -> {error,Error} end,
+        try Fun() catch _:E:S -> {error,{E,S}} end,
       Holder ! {unlock,self()},
       Result;
     {error,Holder,Error} -> {error,Error}

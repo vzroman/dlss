@@ -39,11 +39,11 @@
   fold/3,
   action/1,
   write_batch/2,
+  drop_batch/2,
   init_reverse/2,
   prev/2,
   get_key/1,
   decode_key/1,
-  purge_head/1,
   get_size/1
 ]).
 
@@ -108,6 +108,11 @@ action({K,V})->
 write_batch(Batch, #target{ref = Ref,sync = Sync})->
   eleveldb:write(Ref,Batch, [{sync, Sync}]).
 
+drop_batch(Batch0,#source{ref = Ref})->
+  Batch =
+    [case R of {put,K,_}->{delete,K};_-> R end || R <- Batch0],
+  eleveldb:write(Ref,Batch, [{sync, false}]).
+
 init_reverse( Source, Fun )->
   Ref = ?REF( Source ),
   {ok, I} = eleveldb:iterator(Ref, []),
@@ -135,33 +140,6 @@ prev(I,_K)->
       '$end_of_table';
     {error, iterator_closed}->
       throw(iterator_closed)
-  end.
-
-purge_head(#source{name=N, ref = Ref, start = Start, stop = Stop})->
-  case try eleveldb:fold_keys(Ref,fun(K,{Batch,L})->
-    if
-      K >= Stop-> throw({stop,{Batch,L}});
-      true ->
-        L1 = L + 1,
-        Batch1 = [{delete,K}|Batch],
-        if
-          L1 rem 1000 =:= 0 ->
-            ?LOGINFO("DEBUG: ~p purge to ~p",[N,?DECODE_KEY(K)]),
-            eleveldb:write(Ref,Batch,[{sync, false}]),
-            {[],L1};
-          true ->
-            {Batch1,L1}
-        end
-    end
-  end,{[],0},[{first_key, Start}])
-  catch
-    _:{stop,TailAcc}->TailAcc
-  end of
-    {[], Length}->Length;
-    {[{delete,K}|_]=Tail,L}->
-      ?LOGINFO("DEBUG: ~p purge to ~p",[N,?DECODE_KEY(K)]),
-      eleveldb:write(Ref,Tail,[{sync, false}]),
-      L + length( Tail )
   end.
 
 get_size( Table )->
