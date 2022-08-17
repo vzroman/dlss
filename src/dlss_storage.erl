@@ -576,6 +576,7 @@ merge_commit( Segment )->
         ok
     end,
 
+    ?LOGINFO("~p merge committed, remove",[Segment]),
     ok
   end) of
     {ok, ok } ->

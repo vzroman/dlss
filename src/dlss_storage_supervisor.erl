@@ -474,14 +474,14 @@ do_transformation(split, Segment )->
       #dump{hash = _H}->_H;
       _-><<>>
     end,
-  ?LOGINFO("~p splitting: child ~p, init size ~s, init hash ~s, from key ~p",[
-    Parent, Segment, ?PRETTY_SIZE(dlss_segment:get_size(Segment)), ?PRETTY_HASH(InitHash), dlss_segment:dirty_first( Parent )
+  ?LOGINFO("~p splitting: init size ~s, child ~p init size ~s init hash ~s",[
+    Parent, ?PRETTY_SIZE(dlss_segment:get_size(Parent)), Segment, ?PRETTY_SIZE(dlss_segment:get_size(Segment)), ?PRETTY_HASH(InitHash)
   ]),
 
   case dlss_storage:segment_transaction(Segment, read, fun()->
     {SplitKey,FinalHash} = dlss_copy:split(Parent, Segment,#{ hash => InitHash }),
-    ?LOGINFO("~p split finish: child ~p, final size ~s, split key ~p, new hash ~s, actual split key ~p, commit...",[
-      Parent,Segment,?PRETTY_SIZE(dlss_segment:get_size(Segment)), SplitKey, ?PRETTY_HASH(FinalHash), dlss_segment:dirty_last( Segment )
+    ?LOGINFO("~p split finish: split key ~p, final size ~s, child ~p final size ~s, hash ~s, commit...",[
+      Parent,SplitKey,?PRETTY_SIZE(dlss_segment:get_size(Parent)),Segment,?PRETTY_SIZE(dlss_segment:get_size(Segment)), ?PRETTY_HASH(FinalHash)
     ]),
     % Update the version of the segment in the schema
     dlss_storage:set_segment_version( Segment, Node, #dump{hash = FinalHash, version = Version }),

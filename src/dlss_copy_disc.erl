@@ -34,6 +34,7 @@
   init_source/2,
   init_target/2,
   init_copy/2,
+  dump_source/1,
   dump_target/1,
   drop_target/1,
   fold/3,
@@ -91,6 +92,10 @@ init_copy(Target, Props)->
       throw(Error)
   end.
 
+dump_source( _SourceRef )->
+  % Give it some rest time to settle down
+  timer:sleep( 10000 ),
+  ok.
 dump_target( _TargetRef )->
   ok.
 

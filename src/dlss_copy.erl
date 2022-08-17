@@ -382,6 +382,9 @@ split( Source, Target, Options0 )->
   FinalHash = crypto:hash_final( FinalHash0 ),
   SplitKey = Module:decode_key(SplitKey0),
 
+  Module:dump_source( SourceRef ),
+  Module:dump_target( TargetRef ),
+
   ?LOGINFO("split finish: source ~p, target ~p, split key ~p, hash ~s",[
     Source,
     Target,
