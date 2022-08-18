@@ -257,7 +257,7 @@ remote_copy_request(Owner, Source, Module, Options, #{
     #{batch := TailBatch, hash := TailHash} = do_copy( SourceRef, Module, fun remote_batch/3, InitState ),
 
   % Send the tail batch if exists
-  case TailBatch of [] -> send_batch( TailState ); _->ok end,
+  case TailBatch of [] -> ok; _->send_batch( TailState ) end,
 
   FinalHash = crypto:hash_final( TailHash ),
 
