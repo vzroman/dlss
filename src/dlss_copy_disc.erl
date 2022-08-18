@@ -147,12 +147,19 @@ prev(I,_K)->
       throw(iterator_closed)
   end.
 
-get_size( Table )->
+get_size( Table)->
+  get_size( Table, 10 ).
+get_size( Table, Attempts ) when Attempts > 0->
   MP = mnesia_eleveldb:data_mountpoint( Table ),
   S = list_to_binary(os:cmd("du -s --block-size=1 "++MP)),
   case binary:split(S,<<"\t">>) of
     [Size|_]->
-      binary_to_integer( Size );
+      try binary_to_integer( Size )
+      catch _:_->
+        % Sometimes du returns error when there are some file transformations
+        timer:sleep(200),
+        get_size( Table, Attempts - 1 )
+      end;
     _ -> -1
   end.
 
