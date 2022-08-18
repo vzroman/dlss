@@ -276,14 +276,14 @@ remote_copy_loop(Worker, Module, #target{name = Target} =TargetRef, Hash0)->
   receive
      {write_batch, Worker, ZipBatch, ZipSize, WorkerHash }->
 
-       ?LOGINFO("DEBUG: ~p batch received, size ~s, hash ~s",[Target,?PRETTY_SIZE(ZipSize),?PRETTY_HASH(WorkerHash)]),
-       {Hash, BatchList} = unzip_batch( lists:reverse(ZipBatch), {[],Hash0}),
+       ?LOGINFO("~p: batch received, size ~s, hash ~s",[Target,?PRETTY_SIZE(ZipSize),?PRETTY_HASH(WorkerHash)]),
+       {BatchList,Hash} = unzip_batch( lists:reverse(ZipBatch), {[],Hash0}),
 
        % Check hash
        case crypto:hash_final(Hash) of
          WorkerHash -> Worker ! {confirmed, self()};
          LocalHash->
-           ?LOGERROR("~p invalid remote hash ~s, local hash ~s",[Target,?PRETTY_HASH(WorkerHash), ?PRETTY_HASH(LocalHash)]),
+           ?LOGERROR("~p: invalid remote hash ~s, local hash ~s",[Target,?PRETTY_HASH(WorkerHash), ?PRETTY_HASH(LocalHash)]),
            Worker!{not_confirmed,self()},
            throw(invalid_hash)
        end,
@@ -292,7 +292,7 @@ remote_copy_loop(Worker, Module, #target{name = Target} =TargetRef, Hash0)->
        [ begin
            Batch = binary_to_term( BatchBin ),
 
-           ?LOGINFO("DEBUG: ~p write batch size ~s, length ~p",[
+           ?LOGINFO("~p: write batch size ~s, length ~p",[
              Target,
              ?PRETTY_SIZE(size( BatchBin )),
              ?PRETTY_COUNT(length(Batch))
@@ -305,11 +305,11 @@ remote_copy_loop(Worker, Module, #target{name = Target} =TargetRef, Hash0)->
        remote_copy_loop(Worker, Module, TargetRef, Hash);
      {finish,Worker,WorkerFinalHash}->
        % Finish
-       ?LOGINFO("DEBUG: ~p remote worker finished, final hash ~s",[Target, ?PRETTY_HASH(WorkerFinalHash)]),
+       ?LOGINFO("~p: remote worker finished, final hash ~s",[Target, ?PRETTY_HASH(WorkerFinalHash)]),
        case crypto:hash_final(Hash0) of
          WorkerFinalHash -> WorkerFinalHash;
          LocalFinalHash->
-           ?LOGERROR("~p invalid remote final hash ~s, local final hash ~s",[
+           ?LOGERROR("~p: invalid remote final hash ~s, local final hash ~s",[
              Target,
              ?PRETTY_HASH(WorkerFinalHash),
              ?PRETTY_HASH(LocalFinalHash)
