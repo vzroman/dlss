@@ -667,7 +667,9 @@ do_subscribe(Segment, ClientPID)->
     PID when is_pid( PID )->
       PID ! {subscribe, ClientPID},
       receive
-        {ok,PID}-> ok
+        {ok,PID}->
+          link(PID),
+          ok
       after
         60000->
           PID ! {unsubscribe, ClientPID},
@@ -710,6 +712,7 @@ wait_loop(Subs, Sup)->
       PID ! {ok, self()},
       wait_loop( [PID | Subs -- [PID]], Sup);
     {unsubscribe, PID}->
+      unlink(PID),
       wait_loop( Subs -- [PID], Sup);
     {'EXIT',PID, Reason} when PID =/= Sup->
       ?LOGDEBUG("~p subcriber ~p died, reason ~p, remove subscription",[ hd(registered()), PID, Reason ]),
