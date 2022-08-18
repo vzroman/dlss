@@ -44,7 +44,7 @@
 
 -record(acc,{acc, module, batch, size, on_batch, stop }).
 
--record(split_l,{module, size, key, hash, total}).
+-record(split_l,{module, key, hash, total_size}).
 -record(split_r,{i, module, size, key}).
 
  -define(OPTIONS(O),maps:merge(#{
@@ -455,7 +455,7 @@ split( Source, Target, Options0 )->
   InitHash = crypto:hash_update(crypto:hash_init(sha256),<<>>),
   InitAcc = #split_l{
     module = Module,
-    size = 0,
+    total_size = 0,
     hash = InitHash
   },
 
@@ -501,7 +501,7 @@ split( Source, Target, Options0 )->
 do_split(Reverse, Module, Source, Target, SourceRef, TargetRef, Acc0)->
 
   OnBatch =
-    fun(Batch, Size, #split_l{hash = Hash, total = Total} = Acc)->
+    fun(Batch, Size, #split_l{hash = Hash, total_size = Total} = Acc)->
 
       % Enter the reverse loop
       HKey = Module:get_key(hd(Batch)),
@@ -522,7 +522,7 @@ do_split(Reverse, Module, Source, Target, SourceRef, TargetRef, Acc0)->
           Module:write_batch(Batch, TargetRef),
           Module:drop_batch(Batch, SourceRef),
 
-          Acc#split_l{ hash = crypto:hash_update(Hash, term_to_binary( Batch )), total = Total + Size};
+          Acc#split_l{ hash = crypto:hash_update(Hash, term_to_binary( Batch )), total_size = Total + Size};
         {key, _TKey, Reverse}->
           %% THIS IS THE MEDIAN!
           Reverse ! {stop, self() },

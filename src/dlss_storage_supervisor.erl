@@ -555,8 +555,8 @@ merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], So
       % Merge 1 segment at a time
       case dlss_storage:segment_transaction(S,read,fun()->
         FinalHash = dlss_copy:copy(Source,S,#{ hash => InitHash, start_key =>StartKey, end_key => EndKey}),
-        ?LOGINFO("~p merged to ~p, range ~p, to ~p, final size ~s, new hash ~s, commit...",[
-          Source, S, FromKey, EndKey, ?PRETTY_SIZE(dlss_segment:get_size(S)), ?PRETTY_HASH(FinalHash)
+        ?LOGINFO("~p merged to ~p, range ~p, to ~p, final size ~s, new version ~p, new hash ~s, commit...",[
+          Source, S, FromKey, EndKey, ?PRETTY_SIZE(dlss_segment:get_size(S)), Version, ?PRETTY_HASH(FinalHash)
         ]),
         % Update the version of the segment in the schema
         dlss_storage:set_segment_version( S, Node, #dump{hash = FinalHash, version = Version }),
