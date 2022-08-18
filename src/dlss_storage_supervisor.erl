@@ -643,21 +643,6 @@ split_commit(Segment, SplitKey, Master)->
 merge_commit_child(_Segment, Master) when Master =:= node()->
   % I'm the master I do only the final commit
   ok;
-%%  {ok, #{copies:=Copies}} = dlss_storage:segment_params( Segment ),
-%%  Dump =
-%%    #dump{version = Version, hash = Hash} = maps:get( Master, Copies ),
-%%
-%%  case not_confirmed( Dump, Copies ) of
-%%    [] ->
-%%      % All are ready
-%%      ?LOGINFO("~p merge committed, version ~p, hash ~s",[ Segment, Version, ?PRETTY_HASH(Hash) ]);
-%%    Nodes->
-%%      % There are still nodes that are not confirmed the hash yet
-%%      ?LOGDEBUG("~p merging is not finished yet, waiting for ~p",[Segment, Nodes]),
-%%      timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
-%%      % Update the master
-%%      merge_commit_child(Segment, master_node( Segment ))
-%%  end;
 
 %--------------------Slave commit-----------------------------------
 merge_commit_child(Segment, Master)->
@@ -734,7 +719,9 @@ confirm_children([Segment|Rest])->
           ?LOGINFO("~p merge is not finished, wait for master ~p",[Segment,Master]),
           [Segment| confirm_children( Rest )]
       end
-  end.
+  end;
+confirm_children([])->
+  [].
 
 not_confirmed(Dump, Copies0)->
 

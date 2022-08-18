@@ -359,6 +359,7 @@ split_segment( Storage, Segment )->
     Copies = maps:map(fun(_K,_V)->undefined end, Copies0 ),
 
     % Increment the version of the segment
+    ok = dlss_segment:delete(dlss_schema, Prn, write ),
     ok = dlss_segment:write(dlss_schema, Prn#sgm{ver = Ver+1}, Segment , write),
 
     % Put the new segment on the floating level
