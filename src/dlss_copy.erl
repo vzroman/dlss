@@ -34,7 +34,8 @@
 %%	Remote API
 %%=================================================================
 -export([
-  remote_copy_request/5
+  remote_copy_request/5,
+  remote_batch/3
 ]).
 
 -export([
@@ -76,26 +77,50 @@ get_read_node( Table )->
 
 init_source(Source, Module, Options)->
   S = Module:init_source( Source, Options ),
-  S#source{name = Source}.
+  S#source{name = Source,module = Module}.
 
 init_target(Target, Source, Module, Options)->
  case lists:member( Target, dlss:get_local_segments()) of
    true ->
      % It's not add_copy, simple copy
      T = Module:init_target(Target,Options),
-     T#target{ name = Target, trick = false };
+     T#target{ name = Target, module = Module, trick = false };
    _->
      % TRICK mnesia, Add a copy to this node before ask mnesia to add it
      Props = init_props(Source),
      Module:init_copy( Target, Props ),
 
-     T = Module:init_target(Target,Options),
-     T#target{ name = Target, trick = true }
+     T0 = Module:init_target(Target,Options),
+     T1 = T0#target{ name = Target, module = Module, trick = true },
+
+     % Set the guard to rollback target if I die
+     Me = self(),
+     Guard = spawn_link(fun()->
+       process_flag(trap_exit,true),
+       receive
+         {commit,Me}->ok;
+         {rollback,Me}->ok;
+         {'EXIT',Me,Reason}->
+           ?LOGERROR("~p local receiver died, reason ~p",[Target,Reason]),
+           Module:drop_target( Target )
+       end
+     end),
+
+     T1#target{guard = Guard}
  end.
 
-rollback_target(#target{trick = true, name = Target}, Module )->
-  Module:drop_target( Target );
-rollback_target(_T, _M)->
+commit_target(#target{module = Module, guard = Guard } = T)->
+  Module:dump_target( T ),
+  if
+    is_pid( Guard ), Guard=/=self() -> Guard ! {commit,self()} ;
+    true -> ok
+  end.
+
+
+rollback_target(#target{trick = true, module = Module,name = Target, guard = Guard} )->
+  Module:drop_target( Target ),
+  Guard ! {rollback,self()};
+rollback_target(_T)->
   ok.
 
 %%=================================================================
@@ -149,7 +174,7 @@ local_copy( Source, Target, Module, #{
   FinalHash0 = do_copy(SourceRef, Module, OnBatch, InitHash ),
   FinalHash = crypto:hash_final( FinalHash0 ),
 
-  Module:dump_target( TargetRef ),
+  commit_target( TargetRef ),
 
   ?LOGINFO("finish local copying: source ~p, target ~p, hash ~s",[Source, Target, ?PRETTY_HASH(FinalHash)]),
 
@@ -178,38 +203,29 @@ do_remote_copy( Source, Target, Module, #{
   TargetRef = init_target( Target, Source, Module, Options ),
 
   Self = self(),
-  OnBatch =
-   fun(Batch0, Size, Hash0)->
+  InitState = #{
+    source => Source,
+    target => Target,
+    hash => InitHash0,
+    owner => Self,
+    size => 0,
+    batch => []
+  },
 
-     Batch = term_to_binary( Batch0 ),
-     Hash = crypto:hash_update(Hash0, Batch),
-     Zip = zlib:zip( Batch ),
-
-     ?LOGINFO("DEBUG: send batch: source ~p, target ~p, size ~s, zip ~s, length ~s",[
-       Source,
-       Target,
-       ?PRETTY_SIZE(Size),
-       ?PRETTY_SIZE(size(Zip)),
-       ?PRETTY_COUNT(length(Batch0))
-     ]),
-
-     Self ! {write_batch, self(), Zip, Size, crypto:hash_final( Hash)},
-     receive
-       {confirmed, Self}-> Hash
-     end
-   end,
-
-  Worker = spawn_link(ReadNode, ?MODULE, remote_copy_request,[Self,Source,Module,OnBatch,Options]),
+  Worker = spawn_link(ReadNode, ?MODULE, remote_copy_request,[Self,Source,Module,Options,InitState]),
 
   InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
 
-  ?LOGINFO("copy ~p from ~p...",[Source,ReadNode]),
+  % The remote worker needs a confirmation of the previous batch before it sends the next one
+  Worker ! {confirmed, self()},
 
+  %-------Enter the copy loop----------------------
+  ?LOGINFO("copy ~p from ~p...",[Source,ReadNode]),
   FinalHash =
     try remote_copy_loop(Worker, Module, TargetRef, InitHash)
     catch
       _:Error->
-        rollback_target( TargetRef, Module ),
+        rollback_target( TargetRef ),
         case Error of
           invalid_hash->
             ?LOGERROR("~p invalid remote hash from ~p, left attempts ~p",[Source,ReadNode,Attempts-1]);
@@ -229,65 +245,149 @@ do_remote_copy( Source, Target, Module, #{
       exit(Worker,shutdown)
     end,
 
-  Module:dump_target( TargetRef ),
+  commit_target( TargetRef ),
 
   FinalHash.
 
-remote_copy_request(Owner, Source, Module, OnBatch,#{
+
+remote_copy_request(Owner, Source, Module, Options, #{
   hash := InitHash0
-} = Options)->
+} = InitState0)->
 
   ?LOGINFO("remote copy request on ~p, options ~p", [Source, Options]),
 
   SourceRef = init_source( Source, Module, Options ),
 
   InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
-  FinalHash0 = do_copy( SourceRef, Module, OnBatch, InitHash ),
-  FinalHash = crypto:hash_final( FinalHash0 ),
+  InitState = InitState0#{
+    hash => InitHash
+  },
+
+  TailState =
+    #{batch := TailBatch, hash := TailHash} = do_copy( SourceRef, Module, fun remote_batch/3, InitState ),
+
+  % Send the tail batch if exists
+  case TailBatch of [] -> send_batch( TailState ); _->ok end,
+
+  FinalHash = crypto:hash_final( TailHash ),
 
   ?LOGINFO("finish remote copy request on ~p, final hash ~s",[Source,?PRETTY_HASH(FinalHash)]),
 
-  unlink( Owner ),
-  Owner ! {finish,self(),FinalHash}.
+  Owner ! {finish, self(), FinalHash}.
+
+unzip_batch( [Zip|Rest], {Acc0,Hash0})->
+  Batch = zlib:unzip( Zip ),
+  Hash = crypto:hash_update(Hash0, Batch),
+  unzip_batch(Rest ,{[Batch|Acc0], Hash});
+unzip_batch([], Acc)->
+  Acc.
 
 remote_copy_loop(Worker, Module, #target{name = Target} =TargetRef, Hash0)->
   receive
-     {write_batch, Worker, Zip, Size, WorkerHash }->
+     {write_batch, Worker, ZipBatch, ZipSize, WorkerHash }->
 
-       ?LOGINFO("DEBUG: ~p batch received",[Target]),
+       ?LOGINFO("DEBUG: ~p batch received, size ~s, hash ~s",[Target,?PRETTY_SIZE(ZipSize),?PRETTY_HASH(WorkerHash)]),
+       {Hash, BatchList} = unzip_batch( lists:reverse(ZipBatch), {[],Hash0}),
 
-       BatchBin = zlib:unzip( Zip ),
-       Hash = crypto:hash_update(Hash0, BatchBin),
-
+       % Check hash
        case crypto:hash_final(Hash) of
-         WorkerHash ->
+         WorkerHash -> Worker ! {confirmed, self()};
+         LocalHash->
+           ?LOGERROR("~p invalid remote hash ~s, local hash ~s",[Target,?PRETTY_HASH(WorkerHash), ?PRETTY_HASH(LocalHash)]),
+           Worker!{not_confirmed,self()},
+           throw(invalid_hash)
+       end,
 
-           Worker ! {confirmed, self()},
-           Batch = binary_to_term(BatchBin),
+       % Dump batch
+       [ begin
+           Batch = binary_to_term( BatchBin ),
 
            ?LOGINFO("DEBUG: ~p write batch size ~s, length ~p",[
              Target,
-             ?PRETTY_SIZE(Size),
+             ?PRETTY_SIZE(size( BatchBin )),
              ?PRETTY_COUNT(length(Batch))
            ]),
 
-           Module:write_batch(Batch, TargetRef);
-         _->
-           throw(invalid_hash)
-       end,
+           Module:write_batch(Batch, TargetRef)
+
+         end || BatchBin <- BatchList ],
+
        remote_copy_loop(Worker, Module, TargetRef, Hash);
      {finish,Worker,WorkerFinalHash}->
        % Finish
-       ?LOGINFO("DEBUG: ~p remote worker finished",[Target]),
+       ?LOGINFO("DEBUG: ~p remote worker finished, final hash ~s",[Target, ?PRETTY_HASH(WorkerFinalHash)]),
        case crypto:hash_final(Hash0) of
          WorkerFinalHash -> WorkerFinalHash;
-         _-> throw(invalid_hash)
+         LocalFinalHash->
+           ?LOGERROR("~p invalid remote final hash ~s, local final hash ~s",[
+             Target,
+             ?PRETTY_HASH(WorkerFinalHash),
+             ?PRETTY_HASH(LocalFinalHash)
+           ]),
+           throw(invalid_hash)
        end;
      {'EXIT',Worker,Reason}->
        throw({interrupted,Reason});
      {'EXIT',_Other,Reason}->
        throw({exit,Reason})
  end.
+
+% Zip and stockpile local batches until they reach ?REMOTE_BATCH_SIZE
+remote_batch(Batch0, Size, #{
+  size := TotalZipSize0,
+  batch := ZipBatch,
+  hash := Hash0,
+  source := Source,
+  target := Target
+}=State) when TotalZipSize0 < ?REMOTE_BATCH_SIZE->
+
+  Batch = term_to_binary( Batch0 ),
+  Hash = crypto:hash_update(Hash0, Batch),
+  Zip = zlib:zip( Batch ),
+
+  ZipSize = size(Zip),
+  TotalZipSize = TotalZipSize0 + ZipSize,
+
+  ?LOGINFO("DEBUG: add zip: source ~p, target ~p, size ~s, zip size ~p, total zip size ~p",[
+   Source, Target, ?PRETTY_SIZE(Size), ?PRETTY_SIZE(ZipSize), ?PRETTY_SIZE(TotalZipSize)
+  ]),
+
+  State#{
+   size => TotalZipSize,
+   batch => [Zip|ZipBatch],
+   hash => Hash
+  };
+
+% The batch is ready, send it
+remote_batch(Batch0, Size, #{
+  owner := Owner
+}=State)->
+   % First we have to receive a confirmation of the previous batch
+   receive
+     {confirmed, Owner}->
+       send_batch( State ),
+       remote_batch(Batch0, Size,State#{ batch=>[], size =>0 });
+     {not_confirmed,Owner}->
+       throw(invalid_hash)
+   end.
+
+send_batch(#{
+  size := ZipSize,
+  batch := ZipBatch,
+  hash := Hash,
+  source := Source,
+  target := Target,
+  owner := Owner
+})->
+
+ ?LOGINFO("send batch: source ~p, target ~p, zip size ~s, length ~p",[
+   Source,
+   Target,
+   ?PRETTY_SIZE(ZipSize),
+   length(ZipBatch)
+ ]),
+
+ Owner ! {write_batch, self(), ZipBatch, ZipSize, crypto:hash_final(Hash) }.
 
 
 active_copy(Source, Target, Module, Options )->
@@ -383,7 +483,7 @@ split( Source, Target, Options0 )->
   SplitKey = Module:decode_key(SplitKey0),
 
   Module:dump_source( SourceRef ),
-  Module:dump_target( TargetRef ),
+  commit_target( TargetRef ),
 
   ?LOGINFO("split finish: source ~p, target ~p, split key ~p, hash ~s",[
     Source,

@@ -19,8 +19,8 @@
 -ifndef(DLSS_COPY).
 -define(DLSS_COPY,1).
 
-%-define(BATCH_SIZE, 10485760). % 10 MB
--define(BATCH_SIZE, 52428800). % 50 MB
+-define(BATCH_SIZE, 31457280). % 30 MB Default eleveldb buffer size
+-define(REMOTE_BATCH_SIZE, 4194304). % 4 MB
 
 % Copy properties
 -define(PROPS,[
@@ -37,8 +37,8 @@
   version
 ]).
 
--record(source,{name,ref,start,stop}).
--record(target,{name,ref,sync,trick}).
+-record(source,{name,module,ref,start,stop}).
+-record(target,{name,module,ref,sync,trick,guard}).
 
 
 -endif.
