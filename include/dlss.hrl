@@ -21,6 +21,10 @@
 
 -define(MB,1048576).
 
+-define(DEFAULT_MAX_RESTARTS,10).
+-define(DEFAULT_MAX_PERIOD,1000).
+-define(DEFAULT_STOP_TIMEOUT,600000). % 10 min.
+
 -define(DEFAULT_SEGMENT_LIMIT,#{
   0 => 512,
   1 => 4096

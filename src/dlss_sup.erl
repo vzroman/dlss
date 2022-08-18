@@ -26,15 +26,8 @@
 
 -export([init/1]).
 
--define(SERVER, ?MODULE).
-
--define(DEFAULT_MAX_RESTARTS,10).
--define(DEFAULT_MAX_PERIOD,1000).
--define(DEFAULT_SCAN_CYCLE,1000).
--define(DEFAULT_STOP_TIMEOUT,600000). % 10 min.
-
 start_link() ->
-    supervisor:start_link({local, ?SERVER}, ?MODULE, []).
+    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 
 init([]) ->
@@ -57,25 +50,15 @@ init([]) ->
     modules=>[dlss_schema_sup]
   },
 
-  SchemaScanner=#{
-    id=>dlss_schema_scanner,
-    start=>{dlss_schema_scanner,start_link,[]},
-    restart=>permanent,
-    shutdown=>?ENV(stop_timeout, ?DEFAULT_STOP_TIMEOUT),
-    type=>worker,
-    modules=>[dlss_schema_scanner]
-  },
-
   Supervisor=#{
     strategy=>one_for_one,
-    intensity=>?ENV(segemnt_max_restarts, ?DEFAULT_MAX_RESTARTS),
-    period=>?ENV(segemnt_max_period, ?DEFAULT_MAX_PERIOD)
+    intensity=>?ENV(max_restarts, ?DEFAULT_MAX_RESTARTS),
+    period=>?ENV(max_period, ?DEFAULT_MAX_PERIOD)
   },
 
   {ok, {Supervisor, [
     Backend,
-    SchemaSupervisor,
-    SchemaScanner
+    SchemaSupervisor
   ]}}.
 
 

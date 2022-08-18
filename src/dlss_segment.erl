@@ -58,18 +58,10 @@
   get_size/1,
   get_access_mode/1,
   set_access_mode/2,
+  where_to_read/1,
+  where_to_write/1,
   get_active_nodes/1,
   in_read_write_mode/2
-]).
-
-%%=================================================================
-%%	Subscriptions API
-%%=================================================================
--export([
-  start_link/1,
-  wait_loop/2,
-  subscribe/1, do_subscribe/2,
-  unsubscribe/1, do_unsubscribe/2
 ]).
 
 -define(MAX_SIZE(Type),
@@ -106,7 +98,7 @@ dirty_prev(Segment,Key)->
 dirty_scan(Segment,From,To)->
   dirty_scan(Segment,From,To,infinity).
 dirty_scan(Segment,From,To,Limit)->
-  Node = mnesia:table_info( Segment, where_to_read ),
+  Node = where_to_read( Segment ),
   if
     Node =:= nowhere ->[];
     Node =:= node()->
@@ -516,6 +508,12 @@ is_empty(Segment)->
   end.
 
 add_node(Segment,Node)->
+
+  case get_info(Segment) of
+    #{local:=true}-> throw(local_only);
+    _-> ok
+  end,
+
   % ATTENTION! Mnesia trick, we do copy ourselves and tell mnesia to add it
   if
     Node =:= node()->
@@ -591,6 +589,15 @@ set_access_mode( Segment , Mode )->
     {aborted,Reason}->{error,Reason}
   end.
 
+where_to_read( Segment )->
+  mnesia:table_info( Segment, where_to_read ).
+
+where_to_write( Segment )->
+  case mnesia:table_info( Segment, where_to_write ) of
+    [Node|_]-> Node;
+    Other -> Other
+  end.
+
 get_active_nodes( Segment )->
   mnesia:table_info(Segment, active_replicas).
 
@@ -634,103 +641,5 @@ table_attributes(#{
     end,
   TypeAttr++LocalContent.
 
-%%=================================================================
-%%	Subscriptions API
-%%=================================================================
-start_link( Segment )->
-  case whereis( Segment ) of
-    PID when is_pid( PID )->
-      {error, {already_started, PID}};
-    _ ->
 
-      Worker = spawn_link(?MODULE, fun wait_loop/2,[Segment, self()]),
-      true = register( Segment, Worker),
-      ?LOGINFO("~p register service process ~p",[Segment, self()]),
-      {ok, Worker}
-  end.
-
-subscribe( Segment )->
-  Node = mnesia:table_info( Segment, where_to_write ),
-  if
-    Node =:= nowhere -> {error, unavailable};
-    Node =:= node()->
-      do_subscribe(Segment, self());
-    true->
-      case rpc:call(Node, ?MODULE, do_subscribe, [ Segment, self() ]) of
-        {badrpc, Error} -> {error, Error};
-        Result -> Result
-      end
-  end.
-
-do_subscribe(Segment, ClientPID)->
-  case whereis( Segment ) of
-    PID when is_pid( PID )->
-      PID ! {subscribe, ClientPID},
-      receive
-        {ok,PID}->
-          link(PID),
-          ok
-      after
-        60000->
-          PID ! {unsubscribe, ClientPID},
-          {error, timeout}
-      end;
-      _->
-        {error, not_registered}
-  end.
-
-unsubscribe( Segment )->
-  Node = mnesia:table_info( Segment, where_to_write ),
-  if
-    Node =:= nowhere -> ok;
-    Node =:= node()->
-      do_unsubscribe(Segment, self());
-    true->
-      case rpc:call(Node, ?MODULE, do_unsubscribe, [ Segment, self() ]) of
-        {badrpc, Error} -> {error, Error};
-        Result -> Result
-      end
-  end.
-
-do_unsubscribe(Segment, ClientPID)->
-  case whereis( Segment ) of
-    PID when is_pid( PID )->
-      unlink( PID ),
-      Segment ! {unsubscribe, ClientPID},
-      ok;
-    _->
-      ok
-  end.
-
-wait_loop(Segment, Sup)->
-  process_flag(trap_exit,true),
-  wait_loop([], Segment, Sup).
-
-wait_loop(Subs, Segment, Sup)->
-  receive
-    {write, Rec}->
-      Update = {subscription, Segment, {write,Rec}},
-      [ PID ! Update || PID <- Subs ],
-      wait_loop( Subs, Segment, Sup );
-    {delete, K}->
-      Update = {subscription,Segment, {delete,K}},
-      [ PID ! Update || PID <- Subs ],
-      wait_loop( Subs, Segment, Sup );
-    {subscribe, PID}->
-      PID ! {ok, self()},
-      wait_loop( [PID | Subs -- [PID]], Segment, Sup);
-    {unsubscribe, PID}->
-      unlink(PID),
-      wait_loop( Subs -- [PID], Segment, Sup);
-    {'EXIT',PID, Reason} when PID =/= Sup->
-      ?LOGDEBUG("~p subcriber ~p died, reason ~p, remove subscription",[ Segment, PID, Reason ]),
-      wait_loop( Subs -- [PID], Segment, Sup);
-    {'EXIT',Sup, Reason} when Reason =:= normal; Reason=:=shutdown->
-      ?LOGINFO("~p stop service process, reason ~p",[Segment, Reason]);
-    {'EXIT',Sup, Reason}->
-      ?LOGERROR("~p exit, reason ~p",[Segment, Reason ]);
-    Unexpected->
-      ?LOGDEBUG("~p got unexpected message ~p",[Segment, Unexpected]),
-      wait_loop( Subs, Segment, Sup )
-  end.
 

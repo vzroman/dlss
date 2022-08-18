@@ -16,7 +16,7 @@
 %% under the License.
 %%----------------------------------------------------------------
 
--module(dlss_copy_disc).
+-module(dlss_ramdisc).
 
 -include("dlss.hrl").
 -include("dlss_copy.hrl").
@@ -34,18 +34,16 @@
   init_source/2,
   init_target/2,
   init_copy/2,
-  dump_source/1,
   dump_target/1,
   drop_target/1,
   fold/3,
   action/1,
-  live_action/1,
   write_batch/2,
-  drop_batch/2,
   init_reverse/2,
   prev/2,
   get_key/1,
   decode_key/1,
+  purge_head/1,
   get_size/1
 ]).
 
@@ -81,10 +79,6 @@ init_target(Target, #{
   #target{ ref = ?REF(Target), sync = Sync }.
 
 init_copy(Target, Props)->
-  % Remove mount point if it's rolled back during the previous copy attempt
-  MP = mnesia_eleveldb:data_mountpoint( Target ),
-  os:cmd("rm -rf " ++ MP),
-
   Alias = mnesia_eleveldb:default_alias(),
   case mnesia_eleveldb:create_table(Alias, Target, Props) of
     ok->
@@ -97,10 +91,6 @@ init_copy(Target, Props)->
       throw(Error)
   end.
 
-dump_source( _SourceRef )->
-  % Give it some rest time to settle down
-  timer:sleep( 10000 ),
-  ok.
 dump_target( _TargetRef )->
   ok.
 
@@ -115,28 +105,15 @@ action({K,?DELETED})->
 action({K,V})->
   {{put,K,V},size(K)+size(V)}.
 
-live_action({write, {K,V}})->
-  K1 = ?ENCODE_KEY(K),
-  {K1, {put, K1,?ENCODE_VALUE(V)} };
-live_action({delete,K})->
-  K1 = ?ENCODE_KEY(K),
-  {K1,{delete,K1}}.
-
-
 write_batch(Batch, #target{ref = Ref,sync = Sync})->
   eleveldb:write(Ref,Batch, [{sync, Sync}]).
-
-drop_batch(Batch0,#source{ref = Ref})->
-  Batch =
-    [case R of {put,K,_}->{delete,K};_-> R end || R <- Batch0],
-  eleveldb:write(Ref,Batch, [{sync, false}]).
 
 init_reverse( Source, Fun )->
   Ref = ?REF( Source ),
   {ok, I} = eleveldb:iterator(Ref, []),
   try
     case ?MOVE(I,last) of
-      {ok,?INFO_TAG,_}->Fun('$end_of_table');
+      {ok,?INFO_TAG,_}->Fun(empty);
       {ok,K,V}-> Fun({I,size(K)+size(V),K})
     end
   after
@@ -160,27 +137,32 @@ prev(I,_K)->
       throw(iterator_closed)
   end.
 
-get_size( Table)->
-  get_size( Table, 10 ).
-get_size( Table, Attempts ) when Attempts > 0->
-  MP = mnesia_eleveldb:data_mountpoint( Table ),
-  S = list_to_binary(os:cmd("du -s --block-size=1 "++MP)),
-  case binary:split(S,<<"\t">>) of
-    [Size|_]->
-      try binary_to_integer( Size )
-      catch _:_->
-        % Sometimes du returns error when there are some file transformations
-        timer:sleep(200),
-        get_size( Table, Attempts - 1 )
-      end;
-    _ ->
-      timer:sleep(200),
-      get_size( Table, Attempts - 1 )
-  end;
-get_size( _Table, 0 )->
-  -1.
+purge_head(#source{ref = Ref, start = Start, stop = Stop})->
+  try eleveldb:fold_keys(Ref,fun(K,{Batch,L})->
+    if
+      K >= Stop->
+        eleveldb:write(Ref,Batch,[{sync, false}]),
+        throw({stop,L});
+      true ->
+        L1 = L + 1,
+        Batch1 = [{delete,K}|Batch],
+        if
+          L1 rem 1000 =:= 0 ->
+            eleveldb:write(Ref,Batch,[{sync, false}]),
+            {[],L1};
+          true ->
+            {Batch1,L1}
+        end
+    end
+  end,{[],0},[{first_key, Start}])
+  catch
+    _:{stop,Length}->Length
+  end.
 
-
-
+get_size( Table )->
+  % du -s ./dlss_s1_1-_tab.extldb
+  Memory = mnesia:table_info(Table,memory),
+  % for ram and ramdisc tables the mnesia returns a number of allocated words
+  erlang:system_info(wordsize) * Memory.
 
 

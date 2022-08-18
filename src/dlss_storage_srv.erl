@@ -16,14 +16,13 @@
 %% under the License.
 %%----------------------------------------------------------------
 
--module(dlss_storage_supervisor).
+-module(dlss_storage_srv).
 
 -behaviour(gen_server).
 
 -include("dlss.hrl").
 
--define(PROCESS(Storage), list_to_atom( atom_to_list(Storage) ++ "_sup" ) ).
--define(DEFAULT_SCAN_CYCLE,5000).
+-define(CYCLE,5000).
 -define(SPLIT_SYNC_DELAY, 3000).
 -define(WAIT_LIMIT, 5).
 
@@ -81,9 +80,7 @@
 %%	OTP
 %%=================================================================
 -export([
-  start/1,
   start_link/1,
-  stop/1,
   init/1,
   handle_call/3,
   handle_cast/2,
@@ -106,19 +103,8 @@
 %%=================================================================
 %%	API
 %%=================================================================
-start( Storage )->
-  dlss_schema_sup:start_storage( Storage ).
-
 start_link( Storage )->
-  gen_server:start_link({local, ?PROCESS(Storage) }, ?MODULE, [Storage], []).
-
-stop(Storage)->
-  case whereis(?PROCESS(Storage)) of
-    PID when is_pid(PID)->
-      dlss_schema_sup:stop_storage(PID);
-    _ ->
-      { error, not_started }
-  end.
+  gen_server:start_link({local, Storage }, ?MODULE, [Storage], []).
 
 %%============================================================================
 %% Verify hash of the segments for the Node
@@ -130,9 +116,9 @@ do_verify_hash([])->
   ok;
 do_verify_hash( Storages )->
   Results =
-    [ case whereis(?PROCESS(S)) of
+    [ case whereis(S) of
         undefined -> S;
-        _-> gen_server:cast(?PROCESS(S), verify_hash)
+        _-> gen_server:cast(S, verify_hash)
       end || S <- Storages],
   do_verify_hash([R || R <- Results, R=/=ok]).
 
@@ -288,7 +274,7 @@ get_efficiency( Storage )->
 
 rebalance( Storage )->
   Master = master_node( dlss_storage:root_segment(Storage) ),
-  gen_server:cast({?PROCESS(Storage), Master}, rebalance).
+  gen_server:cast({Storage, Master}, rebalance).
 
 
 %%=================================================================
@@ -296,10 +282,10 @@ rebalance( Storage )->
 %%=================================================================
 init([ Storage ])->
 
-  ?LOGINFO("starting storage server for ~p pid ~p",[ Storage, self() ]),
+  ?LOGINFO("~p: starting storage server pid ~p",[ Storage, self() ]),
 
   Type = dlss_storage:get_type( Storage ),
-  Cycle=?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE),
+  Cycle=?ENV(storage_supervisor_cycle, ?CYCLE),
 
   % Enter the loop
   self()!loop,
@@ -348,7 +334,7 @@ handle_info(loop,#state{
     try loop( State )
     catch
       _:Error:Stack->
-        ?LOGERROR("~p storage supervisor error ~p, stack ~p",[ Storage, Error, Stack ]),
+        ?LOGERROR("~p storage server error ~p, stack ~p",[ Storage, Error, Stack ]),
         State
     end,
 
@@ -356,7 +342,7 @@ handle_info(loop,#state{
 
 
 terminate(Reason,#state{storage = Storage})->
-  ?LOGINFO("terminating storage supervisor ~p, reason ~p",[Storage,Reason]),
+  ?LOGINFO("terminating storage server ~p, reason ~p",[Storage,Reason]),
   ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -606,7 +592,7 @@ split_commit(Segment, SplitKey, Master) when Master=:=node()->
     Nodes->
       % There are still nodes that are not confirmed the hash yet
       ?LOGINFO("~p splitting is not finished yet, waiting for ~p",[Segment, Nodes]),
-      timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
+      timer:sleep( ?CYCLE ),
       % Update the master
       split_commit(Segment, SplitKey, master_node( Segment ))
   end;
@@ -627,7 +613,7 @@ split_commit(Segment, SplitKey, Master)->
 
       % There are still nodes that are not confirmed the hash yet
       ?LOGINFO("~p splitting is not finished yet, waiting for master ~p",[Segment, Master]),
-      timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
+      timer:sleep( ?CYCLE ),
       % Update the master
       split_commit(Segment, SplitKey, master_node( Segment ));
     true->
@@ -662,7 +648,7 @@ merge_commit_child(Segment, Master)->
 
       % There are still nodes that are not confirmed the hash yet
       ?LOGINFO("~p merging is not finished yet, waiting for master ~p",[Segment, Master]),
-      timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
+      timer:sleep( ?CYCLE ),
       % Update the master
       merge_commit_child(Segment, master_node( Segment ));
     true->
@@ -701,7 +687,7 @@ merge_commit_final(Source, Master) when Master =:= node()->
     NotConfirmed->
       % There are still nodes that are not confirmed the hash yet
       ?LOGINFO("~p merging is not finished yet, waiting for ~p",[Source, NotConfirmed]),
-      timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
+      timer:sleep( ?CYCLE ),
       % Update the master
       merge_commit_final( Source )
   end;

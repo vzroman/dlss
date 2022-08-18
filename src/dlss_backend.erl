@@ -53,14 +53,13 @@
 ]).
 
 
--define(DEFAULT_START_TIMEOUT, 24*3600*1000). % 1 hour.
+-define(DEFAULT_START_TIMEOUT, 60000). % 10 min.
 -define(WAIT_SCHEMA_TIMEOUT,24*3600*1000). % 1 day
 -define(ATTACH_TIMEOUT,600000). %10 min.
--define(DEFAULT_MASTER_CYCLE, 1000).
+-define(CYCLE, 1000).
 -define(SEGMENT_REMOVE_DELAY, 5 * 60000). % 5 minutes
 
 -record(state,{
-  cycle,
   to_delete
 }).
 
@@ -134,18 +133,18 @@ init([])->
 
   Logger = spawn_link(fun log_init/0),
 
+  dlss_schema_sup:on_init(),
+
   init_backend(),
 
   Logger!finish,
 
-  Cycle=?ENV(master_node_cycle,?DEFAULT_MASTER_CYCLE),
-
   % Subscribe to mnesia events
   mnesia:subscribe( system ),
 
-  timer:send_after(Cycle,on_cycle),
+  timer:send_after(?CYCLE,on_cycle),
 
-  {ok,#state{cycle = Cycle, to_delete = #{}}}.
+  {ok,#state{to_delete = #{}}}.
 
 handle_call(Request, From, State) ->
   ?LOGWARNING("backend got an unexpected call resquest ~p from ~p",[Request,From]),
@@ -168,8 +167,8 @@ handle_info({mnesia_system_event,Event},State) ->
   on_mnesia_event( Event ),
   {noreply,State};
 
-handle_info(on_cycle, #state{cycle = Cycle, to_delete = ToDelete} = State)->
-  timer:send_after( Cycle, on_cycle ),
+handle_info(on_cycle, #state{to_delete = ToDelete} = State)->
+  timer:send_after( ?CYCLE, on_cycle ),
 
   % If some other node reset my status
   case dlss_node:get_status( node() ) of
@@ -390,10 +389,10 @@ mark_read_write_segments()->
 synchronize_segments()->
 
   ?LOGINFO("verify hash values for hosted storages"),
-  dlss_storage_supervisor:verify_hash(_Force = true),
+  dlss_storage_srv:verify_hash(_Force = true),
 
   ?LOGINFO("run data synchronization"),
-  dlss_storage_supervisor:sync_copies(),
+  dlss_storage_srv:sync_copies(),
 
   ok.
 

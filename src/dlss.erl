@@ -168,7 +168,7 @@ is_local_storage(Storage) ->
 %-----------------------------------------------------------------
 -spec get_storage_efficiency(Storage :: atom()) -> float().
 get_storage_efficiency(Storage) ->
-  dlss_storage_supervisor:get_efficiency(Storage).
+  dlss_storage_srv:get_efficiency(Storage).
 
 %-----------------------------------------------------------------
 %% @doc Triggers the storage rebalancing procedure. A new root
@@ -178,7 +178,7 @@ get_storage_efficiency(Storage) ->
 %-----------------------------------------------------------------
 -spec rebalance_storage(Storage :: atom()) -> ok | no_return().
 rebalance_storage(Storage) ->
-  dlss_storage_supervisor:rebalance(Storage).
+  dlss_storage_srv:rebalance(Storage).
 
 %-----------------------------------------------------------------
 %% @doc Get list of all dlss segments.
@@ -289,7 +289,7 @@ verify_hash() ->
 -spec verify_hash(Node :: atom()) -> ok | no_return().
 verify_hash(Node) ->
   case node() of
-    Node -> dlss_storage_supervisor:verify_hash();
+    Node -> dlss_storage_srv:verify_hash();
     _ -> spawn(Node, fun()->dlss:verify_hash(Node) end)
   end.
 %-----------------------------------------------------------------

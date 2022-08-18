@@ -1,4 +1,4 @@
- %%----------------------------------------------------------------
+%%----------------------------------------------------------------
 %% Copyright (c) 2022 Faceplate
 %%
 %% This file is provided to you under the Apache License,
@@ -47,13 +47,13 @@
 -record(split_l,{module, key, hash, total_size}).
 -record(split_r,{i, module, size, key}).
 
- -define(OPTIONS(O),maps:merge(#{
-   start_key =>undefined,
-   end_key => undefined,
-   hash => <<>>,
-   sync => false,
-   attempts => 3
- }, O)).
+-define(OPTIONS(O),maps:merge(#{
+  start_key =>undefined,
+  end_key => undefined,
+  hash => <<>>,
+  sync => false,
+  attempts => 3
+}, O)).
 
 %%-----------------------------------------------------------------
 %%  Utilities
@@ -61,8 +61,9 @@
 get_module( Table )->
   #{ type := Type } = dlss_segment:get_info(Table),
   if
-    Type =:= disc -> dlss_copy_disc;
-    true -> dlss_copy_ram
+    Type =:= disc -> dlss_disc;
+    Type =:= ramdisc -> dlss_ramdisc;
+    true -> dlss_ram
   end.
 
 init_props( Source )->
@@ -71,45 +72,45 @@ init_props( Source )->
   maps:to_list( maps:with(?PROPS,All)).
 
 get_read_node( Table )->
- Node = mnesia:table_info( Table, where_to_read ),
- if
-   Node =:= nowhere ->throw({unavailable,Table});
-   true-> Node
- end.
+  Node = dlss_segment:where_to_read(Table),
+  if
+    Node =:= nowhere ->throw({unavailable,Table});
+    true-> Node
+  end.
 
 init_source(Source, Module, Options)->
   S = Module:init_source( Source, Options ),
   S#source{name = Source,module = Module}.
 
 init_target(Target, Source, Module, Options)->
- case lists:member( Target, dlss:get_local_segments()) of
-   true ->
-     % It's not add_copy, simple copy
-     T = Module:init_target(Target,Options),
-     T#target{ name = Target, module = Module, trick = false };
-   _->
-     % TRICK mnesia, Add a copy to this node before ask mnesia to add it
-     Props = init_props(Source),
-     Module:init_copy( Target, Props ),
+  case lists:member( Target, dlss:get_local_segments()) of
+    true ->
+      % It's not add_copy, simple copy
+      T = Module:init_target(Target,Options),
+      T#target{ name = Target, module = Module, trick = false };
+    _->
+      % TRICK mnesia, Add a copy to this node before ask mnesia to add it
+      Props = init_props(Source),
+      Module:init_copy( Target, Props ),
 
-     T0 = Module:init_target(Target,Options),
-     T1 = T0#target{ name = Target, module = Module, trick = true },
+      T0 = Module:init_target(Target,Options),
+      T1 = T0#target{ name = Target, module = Module, trick = true },
 
-     % Set the guard to rollback target if I die
-     Me = self(),
-     Guard = spawn_link(fun()->
-       process_flag(trap_exit,true),
-       receive
-         {commit,Me}->ok;
-         {rollback,Me}->ok;
-         {'EXIT',Me,Reason}->
-           ?LOGERROR("~p local receiver died, reason ~p",[Target,Reason]),
-           Module:drop_target( Target )
-       end
-     end),
+      % Set the guard to rollback target if I die
+      Me = self(),
+      Guard = spawn_link(fun()->
+        process_flag(trap_exit,true),
+        receive
+          {commit,Me}->ok;
+          {rollback,Me}->ok;
+          {'EXIT',Me,Reason}->
+            ?LOGERROR("~p local receiver died, reason ~p",[Target,Reason]),
+            Module:drop_target( Target )
+        end
+      end),
 
-     T1#target{guard = Guard}
- end.
+      T1#target{guard = Guard}
+  end.
 
 commit_target(#target{module = Module, guard = Guard } = T)->
   Module:dump_target( T ),
@@ -199,27 +200,12 @@ remote_copy( Source, Target, Module, #{
   % The remote worker needs a confirmation of the previous batch before it sends the next one
   Worker ! {confirmed, self()},
 
-  % Subscribe to live updates if it's a live copy
-  AccessMode = mnesia:table_info(Source, access_mode),
-  if
-    AccessMode =:= read_only->
-      ?LOGINFO("~p passive copy from ~p, module ~p, options ~p",[Source, ReadNode, Module, Options]);
-    true->
-      ?LOGINFO("LIVE COPY! ~p live copy from ~p, module ~p, options ~p",[Source, ReadNode, Module, Options]),
-      case dlss_segment:subscribe( Source ) of
-        ok->
-          % Unsubscribe normally done
-          ?LOGINFO("DEBUG: subscribed on ~p",[Source]);
-        {error,SubscribeError}->
-          throw({unable_to_subscribe,Source,SubscribeError})
-      end
-  end,
+  ?LOGINFO("~p: copy from ~p, module ~p, options ~p",[Source, ReadNode, Module, Options]),
 
-  % Prepare the storage for live updates anyway to avoid excessive check during the copying
-  Live = ets:new(live,[private,ordered_set]),
+  % Check if it's a live copy
+  Live = prepare_live_copy( Source ),
 
   %-------Enter the copy loop----------------------
-  ?LOGINFO("copy ~p from ~p...",[Source,ReadNode]),
   FinalHash =
     try remote_copy_loop(Worker, TargetRef, #{hash => InitHash, live =>Live})
     catch
@@ -245,20 +231,45 @@ remote_copy( Source, Target, Module, #{
       exit(Worker,shutdown)
     end,
 
-  % Give away live updates to another process until the mnesia is ready
-  if
-    AccessMode =/= read_only->
-      give_away_live_updates(Live, TargetRef);
-    true->
-      ignore
-  end,
+  finish_live_copy( Source, Live, TargetRef ),
 
-  ets:delete( Live ),
   commit_target( TargetRef ),
 
   ?LOGINFO("finish remote copying: source ~p, target ~p, hash ~s", [Source, Target, ?PRETTY_HASH( FinalHash )] ),
 
   FinalHash.
+
+prepare_live_copy( Source )->
+  AccessMode = dlss_segment:get_access_mode( Source ),
+  if
+    AccessMode =:= read_write->
+      ?LOGINFO("LIVE COPY! ~p",[Source]),
+      case dlss_segment_srv:subscribe( Source ) of
+        ok->
+          % Unsubscribe normally done
+          ?LOGINFO("DEBUG: subscribed on ~p",[Source]);
+        {error,SubscribeError}->
+          throw({unable_to_subscribe,Source,SubscribeError})
+      end;
+    true->
+      ignore
+  end,
+
+  % Prepare the storage for live updates anyway to avoid excessive check during the copying
+  ets:new(live,[private,ordered_set]).
+
+finish_live_copy(Source, Live, TargetRef)->
+
+  AccessMode = dlss_segment:get_access_mode(Source),
+  if
+    AccessMode =:= read_write->
+      % Give away live updates to another process until the mnesia is ready
+      give_away_live_updates(Live, TargetRef);
+    true->
+      ignore
+  end,
+
+  ets:delete( Live ).
 
 
 remote_copy_request(Owner, Source, Module, Options, #{
@@ -303,7 +314,7 @@ remote_batch(Batch0, Size, #{
   TotalZipSize = TotalZipSize0 + ZipSize,
 
   ?LOGINFO("DEBUG: add zip: source ~p, target ~p, size ~s, zip size ~p, total zip size ~p",[
-   Source, Target, ?PRETTY_SIZE(Size), ?PRETTY_SIZE(ZipSize), ?PRETTY_SIZE(TotalZipSize)
+    Source, Target, ?PRETTY_SIZE(Size), ?PRETTY_SIZE(ZipSize), ?PRETTY_SIZE(TotalZipSize)
   ]),
 
   State#{
@@ -316,13 +327,13 @@ remote_batch(Batch0, Size, #{
 remote_batch(Batch0, Size, #{
   owner := Owner
 }=State)->
- % First we have to receive a confirmation of the previous batch
+  % First we have to receive a confirmation of the previous batch
   receive
-   {confirmed, Owner}->
-     send_batch( State ),
-     remote_batch(Batch0, Size,State#{ batch=>[], size =>0 });
-   {not_confirmed,Owner}->
-     throw(invalid_hash)
+    {confirmed, Owner}->
+      send_batch( State ),
+      remote_batch(Batch0, Size,State#{ batch=>[], size =>0 });
+    {not_confirmed,Owner}->
+      throw(invalid_hash)
   end.
 
 send_batch(#{
@@ -355,76 +366,76 @@ remote_copy_loop(Worker, #target{module = Module, name = Target} =TargetRef, #{
 }=Acc)->
   receive
     {subscription, Target, Update}->
-       {K, Action} = Module:live_action( Update ),
-       case Acc of
-         #{ tail_key := TailKey } when TailKey =< K->
-           % The live update key is in the copy keys range already we can safely put it to he copy
-           ?LOGINFO("DEBUG: ~p live update key ~p, action ~p, write to the copy",[Target,Module:decode_key(K), Action]),
-           Module:write_batch([Action],TargetRef);
-         _->
-           % Tail key either not defined yet or greater than the last batch tail key.
-           % We can't write the action to the target because the next batch may not contain the update
-           % and so will overwrite the live update.
-           % Stockpile the action until the copy reaches the action key and then roll it over
-           ?LOGINFO("DEBUG: ~p live update key ~p, action ~p, stockpile update",[Target,Module:decode_key(K), Action]),
-           true = ets:insert(Live,{K,Action})
-       end,
-       remote_copy_loop(Worker, TargetRef, Acc);
+      {K, Action} = Module:live_action( Update ),
+      case Acc of
+        #{ tail_key := TailKey } when TailKey =< K->
+          % The live update key is in the copy keys range already we can safely put it to he copy
+          ?LOGINFO("DEBUG: ~p live update key ~p, action ~p, write to the copy",[Target,Module:decode_key(K), Action]),
+          Module:write_batch([Action],TargetRef);
+        _->
+          % Tail key either not defined yet or greater than the last batch tail key.
+          % We can't write the action to the target because the next batch may not contain the update
+          % and so will overwrite the live update.
+          % Stockpile the action until the copy reaches the action key and then roll it over
+          ?LOGINFO("DEBUG: ~p live update key ~p, action ~p, stockpile update",[Target,Module:decode_key(K), Action]),
+          true = ets:insert(Live,{K,Action})
+      end,
+      remote_copy_loop(Worker, TargetRef, Acc);
 
-     {write_batch, Worker, ZipBatch, ZipSize, WorkerHash }->
+    {write_batch, Worker, ZipBatch, ZipSize, WorkerHash }->
 
-       ?LOGINFO("~p: batch received, size ~s, hash ~s",[Target,?PRETTY_SIZE(ZipSize),?PRETTY_HASH(WorkerHash)]),
-       {BatchList,Hash} = unzip_batch( lists:reverse(ZipBatch), {[],Hash0}),
+      ?LOGINFO("~p: batch received, size ~s, hash ~s",[Target,?PRETTY_SIZE(ZipSize),?PRETTY_HASH(WorkerHash)]),
+      {BatchList,Hash} = unzip_batch( lists:reverse(ZipBatch), {[],Hash0}),
 
-       % Check hash
-       case crypto:hash_final(Hash) of
-         WorkerHash -> Worker ! {confirmed, self()};
-         LocalHash->
-           ?LOGERROR("~p: invalid remote hash ~s, local hash ~s",[Target,?PRETTY_HASH(WorkerHash), ?PRETTY_HASH(LocalHash)]),
-           Worker!{not_confirmed,self()},
-           throw(invalid_hash)
-       end,
+      % Check hash
+      case crypto:hash_final(Hash) of
+        WorkerHash -> Worker ! {confirmed, self()};
+        LocalHash->
+          ?LOGERROR("~p: invalid remote hash ~s, local hash ~s",[Target,?PRETTY_HASH(WorkerHash), ?PRETTY_HASH(LocalHash)]),
+          Worker!{not_confirmed,self()},
+          throw(invalid_hash)
+      end,
 
-       % Dump batch
-       [TailKey|_] =
-       [ begin
-           Batch = binary_to_term( BatchBin ),
-           BTailKey = Module:get_key( hd(Batch) ),
-           ?LOGINFO("~p: write batch size ~s, length ~p, last key ~p",[
-             Target,
-             ?PRETTY_SIZE(size( BatchBin )),
-             ?PRETTY_COUNT(length(Batch)),
-             Module:decode_key( BTailKey )
-           ]),
+      % Dump batch
+      [TailKey|_] =
+        [ begin
+            Batch = binary_to_term( BatchBin ),
+            BTailKey = Module:get_key( hd(Batch) ),
+            ?LOGINFO("~p: write batch size ~s, length ~p, last key ~p",[
+              Target,
+              ?PRETTY_SIZE(size( BatchBin )),
+              ?PRETTY_COUNT(length(Batch)),
+              Module:decode_key( BTailKey )
+            ]),
 
-           Module:write_batch(Batch, TargetRef),
-           % Return batch tail key
-           BTailKey
-         end || BatchBin <- BatchList ],
+            Module:write_batch(Batch, TargetRef),
+            % Return batch tail key
+            BTailKey
+          end || BatchBin <- BatchList ],
 
-       % Roll over stockpiled live updates
-       roll_live_updates(ets:first(Live), Live, TargetRef, TailKey),
+      % Roll over stockpiled live updates
+      roll_live_updates(ets:first(Live), Live, TargetRef, TailKey),
 
-       remote_copy_loop(Worker, TargetRef, Acc#{hash => Hash, tail_key => TailKey});
-     {finish,Worker,WorkerFinalHash}->
-       % Finish
-       ?LOGINFO("~p: remote worker finished, final hash ~s",[Target, ?PRETTY_HASH(WorkerFinalHash)]),
-       case crypto:hash_final(Hash0) of
-         WorkerFinalHash ->
-           WorkerFinalHash;
-         LocalFinalHash->
-           ?LOGERROR("~p: invalid remote final hash ~s, local final hash ~s",[
-             Target,
-             ?PRETTY_HASH(WorkerFinalHash),
-             ?PRETTY_HASH(LocalFinalHash)
-           ]),
-           throw(invalid_hash)
-       end;
-     {'EXIT',Worker,Reason}->
-       throw({interrupted,Reason});
-     {'EXIT',_Other,Reason}->
-       throw({exit,Reason})
- end.
+      remote_copy_loop(Worker, TargetRef, Acc#{hash => Hash, tail_key => TailKey});
+    {finish,Worker,WorkerFinalHash}->
+      % Finish
+      ?LOGINFO("~p: remote worker finished, final hash ~s",[Target, ?PRETTY_HASH(WorkerFinalHash)]),
+      case crypto:hash_final(Hash0) of
+        WorkerFinalHash ->
+          WorkerFinalHash;
+        LocalFinalHash->
+          ?LOGERROR("~p: invalid remote final hash ~s, local final hash ~s",[
+            Target,
+            ?PRETTY_HASH(WorkerFinalHash),
+            ?PRETTY_HASH(LocalFinalHash)
+          ]),
+          throw(invalid_hash)
+      end;
+    {'EXIT',Worker,Reason}->
+      throw({interrupted,Reason});
+    {'EXIT',_Other,Reason}->
+      throw({exit,Reason})
+  end.
 
 roll_live_updates(K, Live, #target{name = Target, module = Module} = TargetRef, TailKey)
   when K=/='$end_of_table', K =< TailKey->
@@ -441,17 +452,17 @@ give_away_live_updates(Live, #target{ name = Target } = TargetRef)->
   Owner = self(),
   Worker =
     spawn_link(fun()->
-      ok = dlss_segment:subscribe( Target ),
+      ok = dlss_segment_srv:subscribe( Target ),
       Owner ! {ready,self()},
       receive
         {start, Owner}->
           ?LOGINFO("DEBUG: ~p take live updates"),
-          wait_table_ready(TargetRef, mnesia:table_info( Target, where_to_write ))
+          wait_table_ready(TargetRef, dlss_segment:where_to_write( Target ))
       end
     end),
 
   % From now the Worker receives updates
-  dlss_segment:unsubscribe( Target ),
+  dlss_segment_srv:unsubscribe( Target ),
 
   ?LOGINFO("DEBUG: ~p roll tail live updates",[Target]),
   roll_tail_updates(ets:first(Live), Live, TargetRef),
@@ -462,14 +473,14 @@ give_away_live_updates(Live, #target{ name = Target } = TargetRef)->
   Worker ! {start, Owner}.
 
 roll_tail_updates('$end_of_table', _Live, _TargetRef)->
-   ok;
+  ok;
 roll_tail_updates(K, Live, #target{name = Target, module = Module} = TargetRef) ->
 
-   [{_,Action}] = ets:lookup(Live, K),
-   ?LOGINFO("DEBUG: ~p roll tail update key ~p, action ~p",[Target, Module:decode_key(K), Action]),
-   Module:write_batch([Action],TargetRef),
+  [{_,Action}] = ets:lookup(Live, K),
+  ?LOGINFO("DEBUG: ~p roll tail update key ~p, action ~p",[Target, Module:decode_key(K), Action]),
+  Module:write_batch([Action],TargetRef),
 
-   roll_tail_updates(ets:next(Live,K), Live, TargetRef).
+  roll_tail_updates(ets:next(Live,K), Live, TargetRef).
 
 flush_subscriptions(#target{name = Target, module = Module}=TargetRef)->
   receive
@@ -487,12 +498,12 @@ wait_table_ready(#target{name = Target} = TargetRef, Node) when Node =/= node()-
   % It's not ready yet
   flush_subscriptions(TargetRef),
 
-  wait_table_ready(TargetRef, mnesia:table_info( Target, where_to_write ));
+  wait_table_ready(TargetRef, dlss_segment:where_to_write(Target) );
 
 wait_table_ready(#target{name = Target} = TargetRef, Node) when Node=:=node()->
   ?LOGINFO("DEBUG: ~p copy is ready, flush tail subscriptions"),
 
-  dlss_segment:unsubscribe( Target ),
+  dlss_segment_srv:unsubscribe( Target ),
   flush_subscriptions( TargetRef ),
 
   ?LOGINFO("~p live copy is ready").
@@ -520,10 +531,10 @@ do_copy(SourceRef, Module, OnBatch, InAcc)->
   end.
 %----------------------WITH STOP KEY-----------------------------
 iterator({K,V},#acc{module = Module, batch = Batch, size = Size0, stop = Stop} = Acc)
- when Size0 < ?BATCH_SIZE, Stop =/= undefined, K < Stop->
+  when Size0 < ?BATCH_SIZE, Stop =/= undefined, K < Stop->
 
- {Action,Size} = Module:action({K,V}),
- Acc#acc{batch = [Action|Batch], size = Size0 + Size};
+  {Action,Size} = Module:action({K,V}),
+  Acc#acc{batch = [Action|Batch], size = Size0 + Size};
 
 % Batch is ready
 iterator({K,V},#acc{module = Module, batch = Batch, on_batch = OnBatch, acc = InAcc0, size = Size0, stop = Stop} = Acc)
@@ -535,15 +546,15 @@ iterator({K,V},#acc{module = Module, batch = Batch, on_batch = OnBatch, acc = In
 
 % stop key reached
 iterator(_Rec,#acc{stop = Stop} = Acc)
- when Stop =/= undefined->
- throw({stop, Acc});
+  when Stop =/= undefined->
+  throw({stop, Acc});
 
 %----------------------NO STOP KEY-----------------------------
 iterator({K,V},#acc{module = Module, batch = Batch, size = Size0} = Acc)
- when Size0 < ?BATCH_SIZE->
+  when Size0 < ?BATCH_SIZE->
 
- {Action,Size} = Module:action({K,V}),
- Acc#acc{batch = [Action|Batch], size = Size0 + Size};
+  {Action,Size} = Module:action({K,V}),
+  Acc#acc{batch = [Action|Batch], size = Size0 + Size};
 
 % Batch is ready
 iterator({K,V},#acc{module = Module, batch = Batch, on_batch = OnBatch, size = Size0, acc = InAcc0} = Acc) ->
@@ -655,8 +666,8 @@ reverse_loop(Owner, #split_r{i=I, module = Module, size = Size0, key = Key} = Ac
     {K, Size} ->
       reverse_loop(Owner, Acc#split_r{size = Size0 + Size, key = K});
     '$end_of_table' ->
-       % Can we reach here?
-       Owner ! {'$end_of_table', self()}
+      % Can we reach here?
+      Owner ! {'$end_of_table', self()}
   end;
 % Batch size reached
 reverse_loop(Owner, #split_r{key = Key} = Acc)->
@@ -670,17 +681,17 @@ reverse_loop(Owner, #split_r{key = Key} = Acc)->
 
 get_size( Table )->
 
- Module = get_module( Table ),
- ReadNode = get_read_node( Table ),
- if
-   ReadNode =:= node()->
-     Module:get_size( Table );
-   true->
-     case rpc:call(ReadNode, Module, get_size, [ Table ]) of
-       {badrpc, _Error} -> -1;
-       Result -> Result
-     end
- end.
+  Module = get_module( Table ),
+  ReadNode = get_read_node( Table ),
+  if
+    ReadNode =:= node()->
+      Module:get_size( Table );
+    true->
+      case rpc:call(ReadNode, Module, get_size, [ Table ]) of
+        {badrpc, _Error} -> -1;
+        Result -> Result
+      end
+  end.
 
 debug(Storage, Count)->
   spawn(fun()->fill(Storage, Count) end).

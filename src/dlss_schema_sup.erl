@@ -22,62 +22,72 @@
 
 -behaviour(supervisor).
 
-%%=================================================================
-%%	API
-%%=================================================================
+-export([start_link/0]).
+
 -export([
-  start_link/0,
-  start_storage/1,
-  stop_storage/1
+  on_init/0,
+  init/1
 ]).
 
-%%=================================================================
-%%	OTP
-%%=================================================================
--export([init/1]).
-
--define(SERVER, ?MODULE).
-
--define(MAX_RESTARTS,10).
--define(MAX_PERIOD,1000).
--define(DEFAULT_SCAN_CYCLE,1000).
--define(DEFAULT_STOP_TIMEOUT,60000). % 1 min.
-
-%%=================================================================
-%%	API
-%%=================================================================
 start_link() ->
-  supervisor:start_link({local, ?SERVER}, ?MODULE, []).
+    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-start_storage(Storage)->
-  supervisor:start_child(?SERVER,[Storage]).
+on_init()->
+  spawn_link(fun()-> register(dlss_schema,self()), schema_updates() end).
 
-stop_storage(Storage)->
-  case gen_server:stop(Storage,shutdown,?ENV(storage_stop_timeout, ?DEFAULT_STOP_TIMEOUT)) of
-    ok->ok;
-    _->supervisor:terminate_child(?SERVER,Storage)
-  end.
+schema_updates()->
+  % At mean time we are not interested in live schema updates
+  receive _-> schema_updates() end.
 
-%%=================================================================
-%%	OTP
-%%=================================================================
 init([]) ->
 
-  ?LOGINFO("starting schema supervisor ~p",[self()]),
-
-  ChildConfig = #{
-    id => dlss_storage_supervisor,
-    start => { dlss_storage_supervisor, start_link, [] },
-    restart => transient,
-    shutdown => ?ENV(storage_stop_timeout, ?DEFAULT_STOP_TIMEOUT),
-    type=> worker,
-    modules=>[ dlss_storage_supervisor ]
+  StorageSupervisor=#{
+    id=>dlss_storage_sup,
+    start=>{dlss_storage_sup,start_supervisor,[]},
+    restart=>permanent,
+    shutdown=>infinity,
+    type=>supervisor,
+    modules=>[dlss_storage_sup]
   },
 
-  Supervisor = #{
-    strategy => simple_one_for_one,
-    intensity => ?ENV(storage_max_restarts, ?MAX_RESTARTS),
-    period => ?ENV(storage_max_period, ?MAX_PERIOD)
+  StorageSupervisorServer=#{
+    id=>dlss_storage_sup_srv,
+    start=>{dlss_storage_sup,start_server,[]},
+    restart=>permanent,
+    shutdown=>infinity,
+    type=>worker,
+    modules=>[dlss_storage_sup]
   },
 
-  {ok, { Supervisor, [ ChildConfig ]}}.
+  SegmentSupervisor=#{
+    id=>dlss_segment_sup,
+    start=>{dlss_segment_sup,start_supervisor,[]},
+    restart=>permanent,
+    shutdown=>infinity,
+    type=>supervisor,
+    modules=>[dlss_segment_sup]
+  },
+
+  SegmentSupervisorServer=#{
+    id=>dlss_segment_sup_srv,
+    start=>{dlss_segment_sup,start_server,[]},
+    restart=>permanent,
+    shutdown=>infinity,
+    type=>worker,
+    modules=>[dlss_segment_sup]
+  },
+
+  Supervisor=#{
+    strategy=>one_for_one,
+    intensity=>?ENV(max_restarts, ?DEFAULT_MAX_RESTARTS),
+    period=>?ENV(max_period, ?DEFAULT_MAX_PERIOD)
+  },
+
+  {ok, {Supervisor, [
+    StorageSupervisor,
+    StorageSupervisorServer,
+    SegmentSupervisor,
+    SegmentSupervisorServer
+  ]}}.
+
+
