@@ -23,7 +23,7 @@
 -define(DECODE_KEY(K),mnesia_eleveldb:decode_key(K)).
 -define(ENCODE_KEY(K),mnesia_eleveldb:encode_key(K)).
 -define(DECODE_VALUE(V),element(3,mnesia_eleveldb:decode_val(V))).
--define(ENCODE_VALUE(V),mnesia_eleveldb:encode_val({[],[],V}).
+-define(ENCODE_VALUE(V),mnesia_eleveldb:encode_val({[],[],V})).
 
 -define(DATA_START, <<2>>).
 -define(INFO_TAG,<<1,_/binary >>).

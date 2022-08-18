@@ -141,15 +141,7 @@ copy( Source, Target, Options0 )->
       ?LOGINFO("~p copy to ~p, module ~p, options ~p",[Source, Target, Module, Options]),
       local_copy(Source, Target, Module, Options );
     true ->
-      AccessMode = mnesia:table_info(Source, access_mode),
-      if
-        AccessMode =:= read_only->
-          ?LOGINFO("~p passive copy to ~p, module ~p, options ~p",[Source, Target, Module, Options]),
-          remote_copy(Source, Target, Module, Options );
-        true->
-          ?LOGINFO("~p active copy to ~p, module ~p, options ~p",[Source, Target, Module, Options]),
-          active_copy(Source, Target, Module, Options )
-      end
+      remote_copy(Source, Target, Module, Options )
   end.
 
 local_copy( Source, Target, Module, #{
@@ -207,12 +199,32 @@ remote_copy( Source, Target, Module, #{
   % The remote worker needs a confirmation of the previous batch before it sends the next one
   Worker ! {confirmed, self()},
 
+  % Subscribe to live updates if it's a live copy
+  AccessMode = mnesia:table_info(Source, access_mode),
+  if
+    AccessMode =:= read_only->
+      ?LOGINFO("~p passive copy from ~p, module ~p, options ~p",[Source, ReadNode, Module, Options]);
+    true->
+      ?LOGINFO("LIVE COPY! ~p live copy from ~p, module ~p, options ~p",[Source, ReadNode, Module, Options]),
+      case dlss_segment:subscribe( Source ) of
+        ok->
+          % Unsubscribe normally done
+          ?LOGINFO("DEBUG: subscribed on ~p",[Source]);
+        {error,SubscribeError}->
+          throw({unable_to_subscribe,Source,SubscribeError})
+      end
+  end,
+
+  % Prepare the storage for live updates anyway to avoid excessive check during the copying
+  Live = ets:new(live,[private,ordered_set]),
+
   %-------Enter the copy loop----------------------
   ?LOGINFO("copy ~p from ~p...",[Source,ReadNode]),
   FinalHash =
-    try remote_copy_loop(Worker, Module, TargetRef, InitHash)
+    try remote_copy_loop(Worker, TargetRef, #{hash => InitHash, live =>Live})
     catch
       _:Error->
+        ets:delete( Live ),
         rollback_target( TargetRef ),
         case Error of
           invalid_hash->
@@ -233,6 +245,15 @@ remote_copy( Source, Target, Module, #{
       exit(Worker,shutdown)
     end,
 
+  % Give away live updates to another process until the mnesia is ready
+  if
+    AccessMode =/= read_only->
+      give_away_live_updates(Live, TargetRef);
+    true->
+      ignore
+  end,
+
+  ets:delete( Live ),
   commit_target( TargetRef ),
 
   ?LOGINFO("finish remote copying: source ~p, target ~p, hash ~s", [Source, Target, ?PRETTY_HASH( FinalHash )] ),
@@ -265,63 +286,6 @@ remote_copy_request(Owner, Source, Module, Options, #{
 
   Owner ! {finish, self(), FinalHash}.
 
-unzip_batch( [Zip|Rest], {Acc0,Hash0})->
-  Batch = zlib:unzip( Zip ),
-  Hash = crypto:hash_update(Hash0, Batch),
-  unzip_batch(Rest ,{[Batch|Acc0], Hash});
-unzip_batch([], Acc)->
-  Acc.
-
-remote_copy_loop(Worker, Module, #target{name = Target} =TargetRef, Hash0)->
-  receive
-     {write_batch, Worker, ZipBatch, ZipSize, WorkerHash }->
-
-       ?LOGINFO("~p: batch received, size ~s, hash ~s",[Target,?PRETTY_SIZE(ZipSize),?PRETTY_HASH(WorkerHash)]),
-       {BatchList,Hash} = unzip_batch( lists:reverse(ZipBatch), {[],Hash0}),
-
-       % Check hash
-       case crypto:hash_final(Hash) of
-         WorkerHash -> Worker ! {confirmed, self()};
-         LocalHash->
-           ?LOGERROR("~p: invalid remote hash ~s, local hash ~s",[Target,?PRETTY_HASH(WorkerHash), ?PRETTY_HASH(LocalHash)]),
-           Worker!{not_confirmed,self()},
-           throw(invalid_hash)
-       end,
-
-       % Dump batch
-       [ begin
-           Batch = binary_to_term( BatchBin ),
-
-           ?LOGINFO("~p: write batch size ~s, length ~p",[
-             Target,
-             ?PRETTY_SIZE(size( BatchBin )),
-             ?PRETTY_COUNT(length(Batch))
-           ]),
-
-           Module:write_batch(Batch, TargetRef)
-
-         end || BatchBin <- BatchList ],
-
-       remote_copy_loop(Worker, Module, TargetRef, Hash);
-     {finish,Worker,WorkerFinalHash}->
-       % Finish
-       ?LOGINFO("~p: remote worker finished, final hash ~s",[Target, ?PRETTY_HASH(WorkerFinalHash)]),
-       case crypto:hash_final(Hash0) of
-         WorkerFinalHash -> WorkerFinalHash;
-         LocalFinalHash->
-           ?LOGERROR("~p: invalid remote final hash ~s, local final hash ~s",[
-             Target,
-             ?PRETTY_HASH(WorkerFinalHash),
-             ?PRETTY_HASH(LocalFinalHash)
-           ]),
-           throw(invalid_hash)
-       end;
-     {'EXIT',Worker,Reason}->
-       throw({interrupted,Reason});
-     {'EXIT',_Other,Reason}->
-       throw({exit,Reason})
- end.
-
 % Zip and stockpile local batches until they reach ?REMOTE_BATCH_SIZE
 remote_batch(Batch0, Size, #{
   size := TotalZipSize0,
@@ -343,23 +307,23 @@ remote_batch(Batch0, Size, #{
   ]),
 
   State#{
-   size => TotalZipSize,
-   batch => [Zip|ZipBatch],
-   hash => Hash
+    size => TotalZipSize,
+    batch => [Zip|ZipBatch],
+    hash => Hash
   };
 
 % The batch is ready, send it
 remote_batch(Batch0, Size, #{
   owner := Owner
 }=State)->
-   % First we have to receive a confirmation of the previous batch
-   receive
-     {confirmed, Owner}->
-       send_batch( State ),
-       remote_batch(Batch0, Size,State#{ batch=>[], size =>0 });
-     {not_confirmed,Owner}->
-       throw(invalid_hash)
-   end.
+ % First we have to receive a confirmation of the previous batch
+  receive
+   {confirmed, Owner}->
+     send_batch( State ),
+     remote_batch(Batch0, Size,State#{ batch=>[], size =>0 });
+   {not_confirmed,Owner}->
+     throw(invalid_hash)
+  end.
 
 send_batch(#{
   size := ZipSize,
@@ -370,19 +334,168 @@ send_batch(#{
   owner := Owner
 })->
 
- ?LOGINFO("send batch: source ~p, target ~p, zip size ~s, length ~p",[
-   Source,
-   Target,
-   ?PRETTY_SIZE(ZipSize),
-   length(ZipBatch)
- ]),
+  ?LOGINFO("send batch: source ~p, target ~p, zip size ~s, length ~p",[
+    Source,
+    Target,
+    ?PRETTY_SIZE(ZipSize),
+    length(ZipBatch)
+  ]),
+  Owner ! {write_batch, self(), ZipBatch, ZipSize, crypto:hash_final(Hash) }.
 
- Owner ! {write_batch, self(), ZipBatch, ZipSize, crypto:hash_final(Hash) }.
+unzip_batch( [Zip|Rest], {Acc0,Hash0})->
+  Batch = zlib:unzip( Zip ),
+  Hash = crypto:hash_update(Hash0, Batch),
+  unzip_batch(Rest ,{[Batch|Acc0], Hash});
+unzip_batch([], Acc)->
+  Acc.
 
+remote_copy_loop(Worker, #target{module = Module, name = Target} =TargetRef, #{
+  hash := Hash0,
+  live := Live
+}=Acc)->
+  receive
+    {subscription, Target, Update}->
+       {K, Action} = Module:live_action( Update ),
+       case Acc of
+         #{ tail_key := TailKey } when TailKey =< K->
+           % The live update key is in the copy keys range already we can safely put it to he copy
+           ?LOGINFO("DEBUG: ~p live update key ~p, action ~p, write to the copy",[Target,Module:decode_key(K), Action]),
+           Module:write_batch([Action],TargetRef);
+         _->
+           % Tail key either not defined yet or greater than the last batch tail key.
+           % We can't write the action to the target because the next batch may not contain the update
+           % and so will overwrite the live update.
+           % Stockpile the action until the copy reaches the action key and then roll it over
+           ?LOGINFO("DEBUG: ~p live update key ~p, action ~p, stockpile update",[Target,Module:decode_key(K), Action]),
+           true = ets:insert(Live,{K,Action})
+       end,
+       remote_copy_loop(Worker, TargetRef, Acc);
 
-active_copy(Source, Target, Module, Options )->
-  % TODO
-  remote_copy(Source, Target, Module, Options).
+     {write_batch, Worker, ZipBatch, ZipSize, WorkerHash }->
+
+       ?LOGINFO("~p: batch received, size ~s, hash ~s",[Target,?PRETTY_SIZE(ZipSize),?PRETTY_HASH(WorkerHash)]),
+       {BatchList,Hash} = unzip_batch( lists:reverse(ZipBatch), {[],Hash0}),
+
+       % Check hash
+       case crypto:hash_final(Hash) of
+         WorkerHash -> Worker ! {confirmed, self()};
+         LocalHash->
+           ?LOGERROR("~p: invalid remote hash ~s, local hash ~s",[Target,?PRETTY_HASH(WorkerHash), ?PRETTY_HASH(LocalHash)]),
+           Worker!{not_confirmed,self()},
+           throw(invalid_hash)
+       end,
+
+       % Dump batch
+       [TailKey|_] =
+       [ begin
+           Batch = binary_to_term( BatchBin ),
+           BTailKey = Module:get_key( hd(Batch) ),
+           ?LOGINFO("~p: write batch size ~s, length ~p, last key ~p",[
+             Target,
+             ?PRETTY_SIZE(size( BatchBin )),
+             ?PRETTY_COUNT(length(Batch)),
+             Module:decode_key( BTailKey )
+           ]),
+
+           Module:write_batch(Batch, TargetRef),
+           % Return batch tail key
+           BTailKey
+         end || BatchBin <- BatchList ],
+
+       % Roll over stockpiled live updates
+       roll_live_updates(ets:first(Live), Live, TargetRef, TailKey),
+
+       remote_copy_loop(Worker, TargetRef, Acc#{hash => Hash, tail_key => TailKey});
+     {finish,Worker,WorkerFinalHash}->
+       % Finish
+       ?LOGINFO("~p: remote worker finished, final hash ~s",[Target, ?PRETTY_HASH(WorkerFinalHash)]),
+       case crypto:hash_final(Hash0) of
+         WorkerFinalHash ->
+           WorkerFinalHash;
+         LocalFinalHash->
+           ?LOGERROR("~p: invalid remote final hash ~s, local final hash ~s",[
+             Target,
+             ?PRETTY_HASH(WorkerFinalHash),
+             ?PRETTY_HASH(LocalFinalHash)
+           ]),
+           throw(invalid_hash)
+       end;
+     {'EXIT',Worker,Reason}->
+       throw({interrupted,Reason});
+     {'EXIT',_Other,Reason}->
+       throw({exit,Reason})
+ end.
+
+roll_live_updates(K, Live, #target{name = Target, module = Module} = TargetRef, TailKey)
+  when K=/='$end_of_table', K =< TailKey->
+
+  [{_,Action}] = ets:lookup(Live, K),
+  ?LOGINFO("DEBUG: ~p roll live update key ~p, action ~p",[Target, Module:decode_key(K), Action]),
+  Module:write_batch([Action],TargetRef),
+
+  roll_live_updates(ets:next(Live,K), Live, TargetRef, TailKey);
+roll_live_updates(_K, _Live, _TargetRef, _TailKey)->
+  ok.
+
+give_away_live_updates(Live, #target{ name = Target } = TargetRef)->
+  Owner = self(),
+  Worker =
+    spawn_link(fun()->
+      ok = dlss_segment:subscribe( Target ),
+      Owner ! {ready,self()},
+      receive
+        {start, Owner}->
+          ?LOGINFO("DEBUG: ~p take live updates"),
+          wait_table_ready(TargetRef, mnesia:table_info( Target, where_to_write ))
+      end
+    end),
+
+  % From now the Worker receives updates
+  dlss_segment:unsubscribe( Target ),
+
+  ?LOGINFO("DEBUG: ~p roll tail live updates",[Target]),
+  roll_tail_updates(ets:first(Live), Live, TargetRef),
+
+  % Flush tail subscriptions
+  flush_subscriptions(TargetRef),
+
+  Worker ! {start, Owner}.
+
+roll_tail_updates('$end_of_table', _Live, _TargetRef)->
+   ok;
+roll_tail_updates(K, Live, #target{name = Target, module = Module} = TargetRef) ->
+
+   [{_,Action}] = ets:lookup(Live, K),
+   ?LOGINFO("DEBUG: ~p roll tail update key ~p, action ~p",[Target, Module:decode_key(K), Action]),
+   Module:write_batch([Action],TargetRef),
+
+   roll_tail_updates(ets:next(Live,K), Live, TargetRef).
+
+flush_subscriptions(#target{name = Target, module = Module}=TargetRef)->
+  receive
+    {subscription, Target, Update}->
+      {K, Action} = Module:live_action( Update ),
+      ?LOGINFO("DEBUG: ~p flush subscription key ~p, action ~p",[ Target, Module:decode_key(K), Action]),
+      Module:write_batch([Action],TargetRef),
+      flush_subscriptions(TargetRef)
+  after
+    0->ok
+  end.
+
+wait_table_ready(#target{name = Target} = TargetRef, Node) when Node =/= node()->
+  ?LOGINFO("DEBUG: ~p is not ready yet",[Target]),
+  % It's not ready yet
+  flush_subscriptions(TargetRef),
+
+  wait_table_ready(TargetRef, mnesia:table_info( Target, where_to_write ));
+
+wait_table_ready(#target{name = Target} = TargetRef, Node) when Node=:=node()->
+  ?LOGINFO("DEBUG: ~p copy is ready, flush tail subscriptions"),
+
+  dlss_segment:unsubscribe( Target ),
+  flush_subscriptions( TargetRef ),
+
+  ?LOGINFO("~p live copy is ready").
 
 do_copy(SourceRef, Module, OnBatch, InAcc)->
 

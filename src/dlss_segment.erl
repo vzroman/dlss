@@ -67,7 +67,7 @@
 %%=================================================================
 -export([
   start_link/1,
-  wait_loop/1,
+  wait_loop/2,
   subscribe/1, do_subscribe/2,
   unsubscribe/1, do_unsubscribe/2
 ]).
@@ -643,7 +643,7 @@ start_link( Segment )->
       {error, {already_started, PID}};
     _ ->
 
-      Worker = spawn_link(?MODULE, fun wait_loop/2,[self()]),
+      Worker = spawn_link(?MODULE, fun wait_loop/2,[Segment, self()]),
       true = register( Segment, Worker),
       ?LOGINFO("~p register service process ~p",[Segment, self()]),
       {ok, Worker}
@@ -702,33 +702,35 @@ do_unsubscribe(Segment, ClientPID)->
       ok
   end.
 
-wait_loop( Sup )->
+wait_loop(Segment, Sup)->
   process_flag(trap_exit,true),
-  wait_loop([], Sup).
+  wait_loop([], Segment, Sup).
 
-wait_loop(Subs, Sup)->
+wait_loop(Subs, Segment, Sup)->
   receive
-    {write,Rec}->
-      [ PID ! {write, Rec} || PID <- Subs ],
-      wait_loop( Subs, Sup );
+    {write, Rec}->
+      Update = {subscription, Segment, {write,Rec}},
+      [ PID ! Update || PID <- Subs ],
+      wait_loop( Subs, Segment, Sup );
     {delete, K}->
-      [ PID ! {delete, K} || PID <- Subs ],
-      wait_loop( Subs, Sup );
+      Update = {subscription,Segment, {delete,K}},
+      [ PID ! Update || PID <- Subs ],
+      wait_loop( Subs, Segment, Sup );
     {subscribe, PID}->
       PID ! {ok, self()},
-      wait_loop( [PID | Subs -- [PID]], Sup);
+      wait_loop( [PID | Subs -- [PID]], Segment, Sup);
     {unsubscribe, PID}->
       unlink(PID),
-      wait_loop( Subs -- [PID], Sup);
+      wait_loop( Subs -- [PID], Segment, Sup);
     {'EXIT',PID, Reason} when PID =/= Sup->
-      ?LOGDEBUG("~p subcriber ~p died, reason ~p, remove subscription",[ hd(registered()), PID, Reason ]),
-      wait_loop( Subs -- [PID], Sup);
+      ?LOGDEBUG("~p subcriber ~p died, reason ~p, remove subscription",[ Segment, PID, Reason ]),
+      wait_loop( Subs -- [PID], Segment, Sup);
     {'EXIT',Sup, Reason} when Reason =:= normal; Reason=:=shutdown->
-      ?LOGINFO("~p stop service process, reason ~p",[hd(registered()), Reason]);
+      ?LOGINFO("~p stop service process, reason ~p",[Segment, Reason]);
     {'EXIT',Sup, Reason}->
-      ?LOGERROR("~p exit, reason ~p",[hd(registered()), Reason ]);
+      ?LOGERROR("~p exit, reason ~p",[Segment, Reason ]);
     Unexpected->
-      ?LOGDEBUG("~p got unexpected message ~p",[hd(registered()), Unexpected]),
-      wait_loop( Subs, Sup )
+      ?LOGDEBUG("~p got unexpected message ~p",[Segment, Unexpected]),
+      wait_loop( Subs, Segment, Sup )
   end.
 

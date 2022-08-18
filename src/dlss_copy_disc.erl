@@ -39,6 +39,7 @@
   drop_target/1,
   fold/3,
   action/1,
+  live_action/1,
   write_batch/2,
   drop_batch/2,
   init_reverse/2,
@@ -113,6 +114,14 @@ action({K,?DELETED})->
   {{delete, K},size(K)};
 action({K,V})->
   {{put,K,V},size(K)+size(V)}.
+
+live_action({write, {K,V}})->
+  K1 = ?ENCODE_KEY(K),
+  {K1, {put, K1,?ENCODE_VALUE(V)} };
+live_action({delete,K})->
+  K1 = ?ENCODE_KEY(K),
+  {K1,{delete,K1}}.
+
 
 write_batch(Batch, #target{ref = Ref,sync = Sync})->
   eleveldb:write(Ref,Batch, [{sync, Sync}]).
