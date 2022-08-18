@@ -40,11 +40,11 @@
 add( Node )->
   case dlss_backend:add_node(Node) of
     true->
-      set_status( Node, ready );
+      set_status( Node, down ),
+      ok;
     _->
-      set_status( Node, down )
-  end,
-  ok.
+      error
+  end.
 
 remove( Node )->
   dlss_backend:remove_node(Node),
