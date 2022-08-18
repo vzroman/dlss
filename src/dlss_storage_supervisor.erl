@@ -18,6 +18,8 @@
 
 -module(dlss_storage_supervisor).
 
+-behaviour(gen_server).
+
 -include("dlss.hrl").
 
 -define(PROCESS(Storage), list_to_atom( atom_to_list(Storage) ++ "_sup" ) ).
@@ -67,9 +69,6 @@
 %%	API
 %%=================================================================
 -export([
-  start/1,
-  start_link/1,
-  stop/1,
   verify_hash/0, verify_hash/1,
   sync_copies/0
 ]).
@@ -82,6 +81,9 @@
 %%	OTP
 %%=================================================================
 -export([
+  start/1,
+  start_link/1,
+  stop/1,
   init/1,
   handle_call/3,
   handle_cast/2,
@@ -600,7 +602,7 @@ split_commit(Segment, SplitKey, Master) when Master=:=node()->
       dlss_storage:split_commit( Segment, SplitKey );
     Nodes->
       % There are still nodes that are not confirmed the hash yet
-      ?LOGDEBUG("~p splitting is not finished yet, waiting for ~p",[Segment, Nodes]),
+      ?LOGINFO("~p splitting is not finished yet, waiting for ~p",[Segment, Nodes]),
       timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
       % Update the master
       split_commit(Segment, SplitKey, master_node( Segment ))
@@ -656,7 +658,7 @@ merge_commit_child(Segment, Master)->
     not is_number(MasterVersion); MyVersion > MasterVersion->
 
       % There are still nodes that are not confirmed the hash yet
-      ?LOGDEBUG("~p merging is not finished yet, waiting for master ~p",[Segment, Master]),
+      ?LOGINFO("~p merging is not finished yet, waiting for master ~p",[Segment, Master]),
       timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
       % Update the master
       merge_commit_child(Segment, master_node( Segment ));

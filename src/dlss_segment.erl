@@ -62,6 +62,13 @@
   in_read_write_mode/2
 ]).
 
+%%=================================================================
+%%	Subscriptions API
+%%=================================================================
+-export([
+  start_link/1
+]).
+
 -define(MAX_SIZE(Type),
   if
     Type=:=leveldb_copies -> 1 bsl 128;
@@ -617,3 +624,15 @@ table_attributes(#{
       true->[]
     end,
   TypeAttr++LocalContent.
+
+%%=================================================================
+%%	Subscriptions API
+%%=================================================================
+start_link( Segment )->
+  ?LOGINFO("~p register service process ~p",[Segment, self()]),
+  register(Segment, self()),
+
+  wait_loop(#{}).
+
+wait_loop(Subscriptions)->
+
