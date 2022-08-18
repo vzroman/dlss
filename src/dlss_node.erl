@@ -26,14 +26,32 @@
 %%	API
 %%=================================================================
 -export([
+  add/1,
+  remove/1,
   set_status/2,
   get_status/1,
+  get_nodes/0,
   get_ready_nodes/0
 ]).
 
 %%=================================================================
 %%	API
 %%=================================================================
+add( Node )->
+  case dlss_backend:add_node(Node) of
+    true->
+      set_status( Node, down ),
+      ok;
+    _->
+      error
+  end.
+
+remove( Node )->
+  dlss_backend:remove_node(Node),
+  dlss_storage:remove_all_segments_from( Node ),
+  dlss_segment:dirty_delete(dlss_schema,#node{node=Node}),
+  ok.
+
 set_status(Node,Status)->
   dlss_segment:dirty_write(dlss_schema, #node{node=Node},Status).
 
@@ -42,6 +60,14 @@ get_status(Node)->
     not_found->{ error, invalid_node };
     Status -> Status
   end.
+
+get_nodes()->
+  MS=[{
+    #kv{key = #node{node = '$1' }, value = '_' },
+    [],
+    ['$1']
+  }],
+  dlss_segment:dirty_select(dlss_schema,MS).
 
 get_ready_nodes()->
   MS=[{

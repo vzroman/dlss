@@ -76,7 +76,8 @@
 %-----------------------------------------------------------------
 -spec add_node(Node :: node()) -> true | false.
 add_node(Node)->
-  dlss_backend:add_node(Node).
+  dlss_node:add( Node ).
+
 
 %-----------------------------------------------------------------
 %% @doc  Remove a node from the schema.
@@ -86,8 +87,7 @@ add_node(Node)->
 %-----------------------------------------------------------------
 -spec remove_node(Node :: node()) -> {atomic, ok} | {aborted, Reason :: term()}.
 remove_node(Node)->
-  dlss_storage:remove_all_segments_from( Node ),
-  dlss_backend:remove_node(Node).
+  dlss_node:remove( Node ).
 
 %-----------------------------------------------------------------
 %% @doc	Get list of all dlss nodes
@@ -98,7 +98,7 @@ remove_node(Node)->
 %-----------------------------------------------------------------
 -spec get_nodes() -> ListOfNode :: list().
 get_nodes()->
-  dlss_backend:get_nodes().
+  dlss_node:get_nodes().
 
 %-----------------------------------------------------------------
 %% @doc	Get list of ready dlss nodes

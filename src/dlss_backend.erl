@@ -80,7 +80,10 @@ add_node(Node)->
 
 % Remove a node from the schema
 remove_node(Node)->
-  mnesia:del_table_copy(schema,Node).
+  case mnesia:del_table_copy(schema,Node) of
+    {atomic,ok} -> ok;
+    Error -> ?ERROR(Error)
+  end.
 
 get_nodes()->
   mnesia:system_info(db_nodes).
