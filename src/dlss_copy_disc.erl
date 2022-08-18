@@ -160,8 +160,12 @@ get_size( Table, Attempts ) when Attempts > 0->
         timer:sleep(200),
         get_size( Table, Attempts - 1 )
       end;
-    _ -> -1
-  end.
+    _ ->
+      timer:sleep(200),
+      get_size( Table, Attempts - 1 )
+  end;
+get_size( _Table, 0 )->
+  -1.
 
 
 
