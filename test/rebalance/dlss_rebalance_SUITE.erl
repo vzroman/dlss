@@ -117,6 +117,14 @@ disk_rebalance(_Config)->
   T0 = erlang:system_time(millisecond),
   ct:pal("root size ~p MB",[dlss_segment:get_size(dlss_disk_rebalance_1)/?MB]),
   Count0 = 20000000,
+  GB = 200000000.
+  dlss:add_storage(s1,disc).
+  P=dlss_copy:debug(s1,10*200000000).
+
+  dlss_segment:dirty_last(dlss_s1_1).
+  dlss_segment:dirty_first(dlss_s1_6).
+
+  exit(P,shutdown).
   [ begin
       if
         V rem 100000 =:=0 ->

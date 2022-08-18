@@ -19,6 +19,7 @@
 -module(dlss_storage).
 
 -include("dlss.hrl").
+-include("dlss_copy.hrl").
 
 -record(sgm,{str,key,lvl,ver,copies}).
 
@@ -442,18 +443,28 @@ split_commit( Sgm, #sgm{lvl = Level }=Prn, SplitKey )->
     Segment = dlss_segment:read( dlss_schema, Sgm, write ),
     Parent = dlss_segment:read( dlss_schema, Prn, write ),
 
-    ?LOGINFO("split commit: parent ~p, child ~p, split key ~p",[
-      Parent, Segment, SplitKey
-    ]),
+    case dlss_segment:dirty_first( Segment ) of
+      '$end_of_table' ->
+        ?LOGWARNING("~p is smaller than the copy batch size ~s, it can not splitted, remove ~p",[
+          Parent, ?PRETTY_SIZE(?BATCH_SIZE), Segment
+        ]),
+        ok = dlss_segment:delete(dlss_schema, Sgm , write );
+      _->
 
-    % Remove old versions
-    ok = dlss_segment:delete(dlss_schema, Sgm , write ),
-    ok = dlss_segment:delete(dlss_schema, Prn , write ),
+        ?LOGINFO("split commit: parent ~p, child ~p, split key ~p",[
+          Parent, Segment, SplitKey
+        ]),
+
+        % Remove old versions
+        ok = dlss_segment:delete(dlss_schema, Sgm , write ),
+        ok = dlss_segment:delete(dlss_schema, Prn , write ),
 
 
-    % Add the new versions
-    ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level }, Segment, write ),
-    ok = dlss_segment:write( dlss_schema, Prn#sgm{ key = { SplitKey } }, Parent, write ),
+        % Add the new versions
+        ok = dlss_segment:write( dlss_schema, Sgm#sgm{ lvl = Level }, Segment, write ),
+        ok = dlss_segment:write( dlss_schema, Prn#sgm{ key = { SplitKey } }, Parent, write )
+
+    end,
 
     % Transaction end
     ok

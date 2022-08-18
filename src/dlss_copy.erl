@@ -43,7 +43,9 @@
 ]).
 
 -record(acc,{acc, module, batch, size, on_batch, stop }).
--record(r_acc,{i, module, head, tail, h_key, t_key, hash}).
+
+-record(split_l,{module, size, key, hash, total}).
+-record(split_r,{i, module, size, key}).
 
  -define(OPTIONS(O),maps:merge(#{
    start_key =>undefined,
@@ -180,21 +182,7 @@ local_copy( Source, Target, Module, #{
 
   FinalHash.
 
-remote_copy( Source, Target, Module, Options)->
-
-  Trap = process_flag(trap_exit,true),
-
-  FinalHash =
-    try  do_remote_copy( Source, Target, Module, Options )
-    after
-      process_flag(trap_exit,Trap)
-    end,
-
-  ?LOGINFO("finish remote copying: source ~p, target ~p, hash ~s", [Source, Target, ?PRETTY_HASH( FinalHash )] ),
-
-  FinalHash.
-
-do_remote_copy( Source, Target, Module, #{
+remote_copy( Source, Target, Module, #{
   hash := InitHash0,
   attempts := Attempts
 } = Options )->
@@ -237,7 +225,7 @@ do_remote_copy( Source, Target, Module, #{
         end,
         if
           Attempts > 0->
-            do_remote_copy( Source, Target, Module, Options#{ attempts => Attempts -1});
+            remote_copy( Source, Target, Module, Options#{ attempts => Attempts -1});
           true->
             throw( Error )
         end
@@ -246,6 +234,8 @@ do_remote_copy( Source, Target, Module, #{
     end,
 
   commit_target( TargetRef ),
+
+  ?LOGINFO("finish remote copying: source ~p, target ~p, hash ~s", [Source, Target, ?PRETTY_HASH( FinalHash )] ),
 
   FinalHash.
 
@@ -463,21 +453,35 @@ split( Source, Target, Options0 )->
 
   % Target considered to be empty
   InitHash = crypto:hash_update(crypto:hash_init(sha256),<<>>),
-  InitAcc = #r_acc{
+  InitAcc = #split_l{
     module = Module,
-    head = 0,
+    size = 0,
     hash = InitHash
   },
 
-  #r_acc{ hash = FinalHash0, t_key = SplitKey0 } =
-    Module:init_reverse(Source,
-      fun
-        ('$end_of_table')->
-          InitAcc#r_acc{ hash = <<>>, t_key = '$end_of_table' };
-        ({I,TSize,TKey})->
-          Acc0 = InitAcc#r_acc{i=I, t_key = TKey ,tail = TSize},
-          do_split(Module, Source, Target, SourceRef, TargetRef, Acc0 )
-      end),
+  % Init the reverse iterator
+  Owner = self(),
+  Reverse =
+    spawn_link(fun()->
+      Module:init_reverse(Source,
+        fun
+          ('$end_of_table')->
+            Owner ! {'$end_of_table', self()};
+          ({I,TSize,TKey})->
+            Owner ! {started, self()},
+            Acc0 = #split_r{i = I, module= Module, size= TSize, key=TKey},
+            reverse_loop(Owner,Acc0)
+        end)
+    end),
+
+  #split_l{ hash = FinalHash0, key = SplitKey0 } =
+    receive
+      {started, Reverse}->
+        do_split(Reverse, Module, Source, Target, SourceRef, TargetRef, InitAcc );
+      {'$end_of_table', Reverse}->
+        ?LOGWARNING("~p is empty, skip split",[Source]),
+        throw('$end_of_table')
+    end,
 
   FinalHash = crypto:hash_final( FinalHash0 ),
   SplitKey = Module:decode_key(SplitKey0),
@@ -494,54 +498,62 @@ split( Source, Target, Options0 )->
 
   {SplitKey,FinalHash}.
 
-do_split(Module, Source, Target, SourceRef, TargetRef, Acc0)->
+do_split(Reverse, Module, Source, Target, SourceRef, TargetRef, Acc0)->
 
   OnBatch =
-    fun(Batch, Size, #r_acc{hash = Hash,head = H} = Acc)->
+    fun(Batch, Size, #split_l{hash = Hash, total = Total} = Acc)->
 
       % Enter the reverse loop
       HKey = Module:get_key(hd(Batch)),
-      NextAcc =
-        try reverse_loop(Acc#r_acc{head = H + Size, h_key = HKey })
-        catch
-          _:stop-> throw({final,Acc#r_acc{ h_key = Module:get_key( lists:last(Batch) )}})
-        end,
+      receive
+        {key, TKey, Reverse} when TKey > HKey->
+          Reverse ! { next, self() },
 
-      ?LOGINFO("DEBUG: split ~p, target ~p, write batch size ~s, length ~s, head ~s, tail ~s, hkey ~p, tkey ~p",[
-        Source,
-        Target,
-        ?PRETTY_SIZE(Size),
-        ?PRETTY_COUNT(length(Batch)),
-        ?PRETTY_SIZE(H+Size),
-        ?PRETTY_SIZE(NextAcc#r_acc.tail),
-        Module:decode_key(HKey),
-        Module:decode_key(NextAcc#r_acc.t_key)
-      ]),
+          ?LOGINFO("DEBUG: split ~p, target ~p, write batch size ~s, length ~s, total size ~s, hkey ~p, tkey ~p",[
+            Source,
+            Target,
+            ?PRETTY_SIZE(Size),
+            ?PRETTY_COUNT(length(Batch)),
+            ?PRETTY_SIZE(Total+Size),
+            Module:decode_key(HKey),
+            Module:decode_key(TKey)
+          ]),
 
-      Module:write_batch(Batch, TargetRef),
-      Module:drop_batch(Batch, SourceRef),
+          Module:write_batch(Batch, TargetRef),
+          Module:drop_batch(Batch, SourceRef),
 
-      NextAcc#r_acc{ hash = crypto:hash_update(Hash, term_to_binary( Batch ))}
+          Acc#split_l{ hash = crypto:hash_update(Hash, term_to_binary( Batch )), total = Total + Size};
+        {key, _TKey, Reverse}->
+          %% THIS IS THE MEDIAN!
+          Reverse ! {stop, self() },
+          throw({final,Acc#split_l{ key = Module:get_key( lists:last(Batch) )}});
+        {'$end_of_table', Reverse}->
+          % The segment is smaller than the batch size?
+          throw({final,Acc#split_l{ key = Module:get_key( lists:last(Batch) )}})
+      end
     end,
 
   % Run split
   do_copy(SourceRef, Module, OnBatch, Acc0).
 
-%% THIS IS THE MEDIAN!
-reverse_loop(#r_acc{h_key = HKey, t_key = TKey}) when HKey >= TKey->
-  throw(stop);
-
-reverse_loop(#r_acc{i=I, module = Module, head = H,tail = T,t_key = TKey} = Acc) when T < H->
- case Module:prev(I,TKey) of
-   {K,Size} ->
-     reverse_loop(Acc#r_acc{tail = T + Size, t_key = K});
-   '$end_of_table' ->
-     % Can we reach here?
-     throw(stop)
- end;
-% We reached the head size
-reverse_loop(Acc)->
-  Acc.
+reverse_loop(Owner, #split_r{i=I, module = Module, size = Size0, key = Key} = Acc)
+  when Size0 < ?BATCH_SIZE->
+  case Module:prev(I, Key) of
+    {K, Size} ->
+      reverse_loop(Owner, Acc#split_r{size = Size0 + Size, key = K});
+    '$end_of_table' ->
+       % Can we reach here?
+       Owner ! {'$end_of_table', self()}
+  end;
+% Batch size reached
+reverse_loop(Owner, #split_r{key = Key} = Acc)->
+  Owner ! {key, Key, self()},
+  receive
+    { next, Owner }->
+      reverse_loop(Owner, Acc#split_r{size = 0});
+    {stop, Owner }->
+      ok
+  end.
 
 get_size( Table )->
 
