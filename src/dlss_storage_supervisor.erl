@@ -579,10 +579,7 @@ merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], So
   end;
 merge_level([], Source, _Params, _Node )->
   % There is no more locally hosted segments to merge to, final commit.
-  % Final commit must do to the master for the last segment
-  Last = lists:last( dlss_storage:get_children(Source) ),
-
-  merge_commit_final(Source, Last, master_node(Last)).
+  merge_commit_final(Source).
 
 %%------------------------------------------------------------
 %%  TRANSFORMATION COMMIT
@@ -676,8 +673,22 @@ merge_commit_child(Segment, Master)->
 %%------------------------------------------------------------
 %%  Merge final commit
 %%------------------------------------------------------------
+merge_commit_final( Source )->
+  case dlss_storage:get_children(Source) of
+    {error, not_found} ->
+      % If the segment does not exists the master has committed the merge already
+      ok;
+    Children ->
+      % Final commit must do to the master for the last segment
+      Last = lists:last( Children),
+      merge_commit_final(Source, master_node(Last))
+  end.
+merge_commit_final(Source, undefined)->
+  ?LOGWARNING("~p merge can not not be committed the master is unavailable",[Source]);
+
 %-----------------Master commit--------------------------------
-merge_commit_final(Source, Segment, Master) when Master =:= node()->
+merge_commit_final(Source, Master) when Master =:= node()->
+  ?LOGINFO("DEBUG: ~p children: ~p",[Source,dlss_storage:get_children(Source) ]),
   case confirm_children( dlss_storage:get_children(Source) ) of
     [] ->
       % All children are ready
@@ -688,10 +699,10 @@ merge_commit_final(Source, Segment, Master) when Master =:= node()->
       ?LOGDEBUG("~p merging is not finished yet, waiting for ~p",[Source, NotConfirmed]),
       timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
       % Update the master
-      merge_commit_final(Source, Segment, master_node( Segment ))
+      merge_commit_final( Source )
   end;
 %-----------------Slave commit--------------------------------
-merge_commit_final(Source, _Segment, Master)->
+merge_commit_final(Source, Master)->
   % It's a job for the master. May be I'm even not engaged
   ?LOGDEBUG("~p merge commit wait for master ~p",[Source,Master]).
 

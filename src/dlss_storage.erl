@@ -244,7 +244,7 @@ add(Name,Type,Options)->
 
 remove(Name)->
   ?LOGWARNING("removing storage ~p",[Name]),
-  case dlss:transaction(fun()->
+  case dlss:sync_transaction(fun()->
     % Set a lock on the schema
     dlss_backend:lock({table,dlss_schema},write),
 
@@ -350,7 +350,7 @@ split_segment( Storage, Segment )->
   end,
 
   %% Level down all segments to +1
-  case dlss:transaction(fun()->
+  case dlss:sync_transaction(fun()->
 
     %% Locking an old Root table
     dlss_backend:lock({table,dlss_schema},write),
@@ -401,7 +401,7 @@ new_root_segment( Storage ) ->
   end,
 
   %% Level down all segments to +1
-  case dlss:transaction(fun()->
+  case dlss:sync_transaction(fun()->
 
     %% Locking the schema
     dlss_backend:lock({table,dlss_schema},write),
@@ -438,7 +438,7 @@ split_commit( Segment, SplitKey )->
 split_commit( Sgm, #sgm{lvl = Level }=Prn, SplitKey )->
 
   % Set a version for a segment in the schema
-  case dlss:transaction(fun()->
+  case dlss:sync_transaction(fun()->
 
     % Set a lock on the segment
     Segment = dlss_segment:read( dlss_schema, Sgm, write ),
@@ -513,7 +513,7 @@ merge_segment( Segment, [] )->
   % The next segment has to take '_' as the first key
   NextSgm = next_sibling( Sgm ),
 
-  case dlss:transaction(fun()->
+  case dlss:sync_transaction(fun()->
     % Set a lock on the segment
     Segment = dlss_segment:read( dlss_schema, Sgm, write ),
 
@@ -542,7 +542,7 @@ merge_segment( Segment, Children )->
   % The segment has children to merge with, move it to the floating level
   { ok, Sgm = #sgm{ lvl = Level } } = segment_by_name( Segment ),
 
-  case dlss:transaction(fun()->
+  case dlss:sync_transaction(fun()->
 
     % Set a lock on the segment
     Segment = dlss_segment:read( dlss_schema, Sgm, write ),
@@ -576,7 +576,7 @@ merge_commit( Segment )->
   NextSgm = next_sibling( Sgm ),
 
   % Set a version for a segment in the schema
-  case dlss:transaction(fun()->
+  case dlss:sync_transaction(fun()->
 
     % Remove the merged segment
     ok = dlss_segment:delete(dlss_schema, Sgm , write ),
@@ -606,7 +606,7 @@ merge_commit( Segment )->
 set_segment_version( Segment, Node, Version )->
 
   % Set a version for a segment in the schema
-  case dlss:transaction(fun()->
+  case dlss:sync_transaction(fun()->
     % Set a lock on the segment
     Sgm = #sgm{copies = Copies} = lock_segment(Segment, write),
 
@@ -634,7 +634,7 @@ set_segment_version( Segment, Node, Version )->
 %%--------------------------------------------------------------------------------
 add_segment_copy( Segment , Node )->
 
-  case dlss:transaction(fun()->
+  case dlss:sync_transaction(fun()->
     % Set a lock on the segment
     Sgm = #sgm{copies = Copies} = lock_segment(Segment, write),
 
@@ -656,7 +656,7 @@ add_segment_copy( Segment , Node )->
 
 remove_segment_copy( Segment , Node )->
 
-  case dlss:transaction(fun()->
+  case dlss:sync_transaction(fun()->
     % Set a lock on the segment
     Sgm = #sgm{copies = Copies} = lock_segment(Segment, write),
 
@@ -677,7 +677,7 @@ remove_segment_copy( Segment , Node )->
   end.
 
 remove_all_segments_from( Node )->
-  case dlss:transaction(fun()->
+  case dlss:sync_transaction(fun()->
 
     % Set lock on schema
     dlss_backend:lock({table,dlss_schema},write),
@@ -1188,7 +1188,7 @@ new_segment_name(Storage)->
   list_to_atom(Name).
 
 get_unique_id(Storage)->
-  case dlss:transaction(fun()->
+  case dlss:sync_transaction(fun()->
     I =
       case dlss_segment:read( dlss_schema, { id, Storage }, write ) of
         ID when is_integer(ID) -> ID + 1;
