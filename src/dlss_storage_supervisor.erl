@@ -742,7 +742,7 @@ not_confirmed(Dump, Copies0)->
   Confirmed =
     [N|| {N,D} <- Copies, D=:=Dump],
 
-  (All -- Confirmed) -- dlss:get_ready_nodes().
+  All -- (Confirmed -- dlss:get_ready_nodes()).
 
 %%============================================================================
 %% This is the entry point for all rebalancing transformations
