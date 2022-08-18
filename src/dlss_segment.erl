@@ -693,8 +693,14 @@ unsubscribe( Segment )->
   end.
 
 do_unsubscribe(Segment, ClientPID)->
-  Segment ! {unsubscribe, ClientPID},
-  ok.
+  case whereis( Segment ) of
+    PID when is_pid( PID )->
+      unlink( PID ),
+      Segment ! {unsubscribe, ClientPID},
+      ok;
+    _->
+      ok
+  end.
 
 wait_loop( Sup )->
   process_flag(trap_exit,true),
