@@ -1238,9 +1238,7 @@ segment_transaction(Segment, Lock, Fun, Timeout)->
       {ok,_}->
         Owner ! {locked, self()},
         receive
-          {unlock, Owner}->
-            unlink(Owner),
-            ok
+          {unlock, Owner}-> ok
         end;
       {error,Error} -> Owner ! {error,self(),Error}
     end
