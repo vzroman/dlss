@@ -487,10 +487,8 @@ do_transformation(split, Segment )->
 
     % Update the version of the parent segment in the schema
     ParentInitHash =
-      case ParentDump of
-        #dump{ hash = Hash0 } -> Hash0;
-        _-> <<>>
-      end,
+      case ParentDump of #dump{ hash = Hash0 } -> Hash0;_-> <<>> end,
+
     ParentHash0 = crypto:hash_update(crypto:hash_init(sha256),ParentInitHash),
     NewParentHash = crypto:hash_update(ParentHash0, FinalHash),
     FinalParentHash = crypto:hash_final( NewParentHash ),
@@ -642,22 +640,24 @@ split_commit(Segment, SplitKey, Master)->
 %%  Merge child commit
 %%------------------------------------------------------------
 %-----------------Master commit--------------------------------
-merge_commit_child(Segment, Master) when Master =:= node()->
-  {ok, #{copies:=Copies}} = dlss_storage:segment_params( Segment ),
-  Dump =
-    #dump{version = Version, hash = Hash} = maps:get( Master, Copies ),
-
-  case not_confirmed( Dump, Copies ) of
-    [] ->
-      % All are ready
-      ?LOGINFO("~p merge committed, version ~p, hash ~s",[ Segment, Version, ?PRETTY_HASH(Hash) ]);
-    Nodes->
-      % There are still nodes that are not confirmed the hash yet
-      ?LOGDEBUG("~p merging is not finished yet, waiting for ~p",[Segment, Nodes]),
-      timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
-      % Update the master
-      merge_commit_child(Segment, master_node( Segment ))
-  end;
+merge_commit_child(_Segment, Master) when Master =:= node()->
+  % I'm the master I do only the final commit
+  ok;
+%%  {ok, #{copies:=Copies}} = dlss_storage:segment_params( Segment ),
+%%  Dump =
+%%    #dump{version = Version, hash = Hash} = maps:get( Master, Copies ),
+%%
+%%  case not_confirmed( Dump, Copies ) of
+%%    [] ->
+%%      % All are ready
+%%      ?LOGINFO("~p merge committed, version ~p, hash ~s",[ Segment, Version, ?PRETTY_HASH(Hash) ]);
+%%    Nodes->
+%%      % There are still nodes that are not confirmed the hash yet
+%%      ?LOGDEBUG("~p merging is not finished yet, waiting for ~p",[Segment, Nodes]),
+%%      timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
+%%      % Update the master
+%%      merge_commit_child(Segment, master_node( Segment ))
+%%  end;
 
 %--------------------Slave commit-----------------------------------
 merge_commit_child(Segment, Master)->
@@ -693,27 +693,48 @@ merge_commit_child(Segment, Master)->
 %%------------------------------------------------------------
 %-----------------Master commit--------------------------------
 merge_commit_final(Source, Segment, Master) when Master =:= node()->
-
-  {ok, #{copies:=Copies}} = dlss_storage:segment_params( Segment ),
-  Dump = maps:get( Master, Copies ),
-
-  case not_confirmed( Dump, Copies ) of
+  case confirm_children( dlss_storage:get_children(Source) ) of
     [] ->
-      % All are ready
+      % All children are ready
       ?LOGINFO("~p merge final commit",[ Source ]),
       dlss_storage:merge_commit( Source );
-    Nodes->
+    NotConfirmed->
       % There are still nodes that are not confirmed the hash yet
-      ?LOGDEBUG("~p merging is not finished yet, waiting for ~p",[Source, Nodes]),
+      ?LOGDEBUG("~p merging is not finished yet, waiting for ~p",[Source, NotConfirmed]),
       timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
       % Update the master
       merge_commit_final(Source, Segment, master_node( Segment ))
   end;
-
 %-----------------Slave commit--------------------------------
 merge_commit_final(Source, _Segment, Master)->
   % It's a job for the master. May be I'm even not engaged
   ?LOGDEBUG("~p merge commit wait for master ~p",[Source,Master]).
+
+confirm_children([Segment|Rest])->
+  {ok, #{copies:=Copies, version:=SegmentVersion}} = dlss_storage:segment_params( Segment ),
+  case master_node( Segment ) of
+    undefined ->
+      ?LOGWARNING("~p is not available, wait for ~p",[Segment, [N || {N,_} <- maps:to_list(Copies)]]),
+      % The segment is not available, wait for all holding nodes
+      [Segment | confirm_children( Rest ) ];
+    Master ->
+      case maps:get( Master, Copies ) of
+        MasterDump = #dump{ version = SegmentVersion }->
+          % Master has updated his version, check for slaves
+          case not_confirmed( MasterDump, Copies ) of
+            [] ->
+              % All copies are confirmed
+              confirm_children( Rest );
+            Nodes->
+              ?LOGINFO("~p merge is not finished, wait for ~p",[Segment,Nodes]),
+              [Segment| confirm_children( Rest )]
+          end;
+        _->
+          % Master has not updated his version yet
+          ?LOGINFO("~p merge is not finished, wait for master ~p",[Segment,Master]),
+          [Segment| confirm_children( Rest )]
+      end
+  end.
 
 not_confirmed(Dump, Copies0)->
 
@@ -905,7 +926,7 @@ master_node( Segment )->
 
   case SegmentLiveNodes -- (SegmentLiveNodes -- ReadyNodes) of
     [ Master | _ ]->
-      % The master is the node with the least name
+      % The master is the node with the smallest name
       Master;
     _-> undefined
   end.
