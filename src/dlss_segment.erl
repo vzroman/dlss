@@ -66,7 +66,10 @@
 %%	Subscriptions API
 %%=================================================================
 -export([
-  start_link/1
+  start_link/1,
+  wait_loop/1,
+  subscribe/1, do_subscribe/2,
+  unsubscribe/1, do_unsubscribe/2
 ]).
 
 -define(MAX_SIZE(Type),
@@ -428,19 +431,25 @@ dirty_read(Segment,Key)->
 
 %-------------WRITE----------------------------------------------
 write(Segment,Key,Value)->
+  dlss_backend:on_commit(fun()-> Segment ! {write,{Key,Value}} end),
   write(Segment,Key,Value, _Lock = none).
 write(Segment,Key,Value,Lock)->
+  dlss_backend:on_commit(fun()-> Segment ! {write,{Key,Value}} end),
   mnesia:write(Segment,#kv{key = Key,value = Value}, Lock).
 
 dirty_write(Segment,Key,Value)->
+  Segment ! {write,{Key,Value}},
   mnesia:dirty_write(Segment,#kv{key = Key,value = Value}).
 
 %-------------DELETE----------------------------------------------
 delete(Segment,Key)->
+  dlss_backend:on_commit(fun()-> Segment ! {delete,Key} end),
   delete(Segment,Key,_Lock=none).
 delete(Segment,Key,Lock)->
+  dlss_backend:on_commit(fun()-> Segment ! {delete,Key} end),
   mnesia:delete(Segment,Key,Lock).
 dirty_delete(Segment,Key)->
+  Segment ! {delete,Key},
   mnesia:dirty_delete(Segment,Key).
 
 %%=================================================================
@@ -629,10 +638,88 @@ table_attributes(#{
 %%	Subscriptions API
 %%=================================================================
 start_link( Segment )->
-  ?LOGINFO("~p register service process ~p",[Segment, self()]),
-  register(Segment, self()),
+  case whereis( Segment ) of
+    PID when is_pid( PID )->
+      {error, {already_started, PID}};
+    _ ->
 
-  wait_loop(#{}).
+      Worker = spawn_link(?MODULE, fun wait_loop/2,[self()]),
+      true = register( Segment, Worker),
+      ?LOGINFO("~p register service process ~p",[Segment, self()]),
+      {ok, Worker}
+  end.
 
-wait_loop(Subscriptions)->
+subscribe( Segment )->
+  Node = mnesia:table_info( Segment, where_to_write ),
+  if
+    Node =:= nowhere -> {error, unavailable};
+    Node =:= node()->
+      do_subscribe(Segment, self());
+    true->
+      case rpc:call(Node, ?MODULE, do_subscribe, [ Segment, self() ]) of
+        {badrpc, Error} -> {error, Error};
+        Result -> Result
+      end
+  end.
+
+do_subscribe(Segment, ClientPID)->
+  case whereis( Segment ) of
+    PID when is_pid( PID )->
+      PID ! {subscribe, ClientPID},
+      receive
+        {ok,PID}-> ok
+      after
+        60000->
+          PID ! {unsubscribe, ClientPID},
+          {error, timeout}
+      end;
+      _->
+        {error, not_registered}
+  end.
+
+unsubscribe( Segment )->
+  Node = mnesia:table_info( Segment, where_to_write ),
+  if
+    Node =:= nowhere -> ok;
+    Node =:= node()->
+      do_unsubscribe(Segment, self());
+    true->
+      case rpc:call(Node, ?MODULE, do_unsubscribe, [ Segment, self() ]) of
+        {badrpc, Error} -> {error, Error};
+        Result -> Result
+      end
+  end.
+
+do_unsubscribe(Segment, ClientPID)->
+  Segment ! {unsubscribe, ClientPID},
+  ok.
+
+wait_loop( Sup )->
+  process_flag(trap_exit,true),
+  wait_loop([], Sup).
+
+wait_loop(Subs, Sup)->
+  receive
+    {write,Rec}->
+      [ PID ! {write, Rec} || PID <- Subs ],
+      wait_loop( Subs, Sup );
+    {delete, K}->
+      [ PID ! {delete, K} || PID <- Subs ],
+      wait_loop( Subs, Sup );
+    {subscribe, PID}->
+      PID ! {ok, self()},
+      wait_loop( [PID | Subs -- [PID]], Sup);
+    {unsubscribe, PID}->
+      wait_loop( Subs -- [PID], Sup);
+    {'EXIT',PID, Reason} when PID =/= Sup->
+      ?LOGDEBUG("~p subcriber ~p died, reason ~p, remove subscription",[ hd(registered()), PID, Reason ]),
+      wait_loop( Subs -- [PID], Sup);
+    {'EXIT',Sup, Reason} when Reason =:= normal; Reason=:=shutdown->
+      ?LOGINFO("~p stop service process, reason ~p",[hd(registered()), Reason]);
+    {'EXIT',Sup, Reason}->
+      ?LOGERROR("~p exit, reason ~p",[hd(registered()), Reason ]);
+    Unexpected->
+      ?LOGDEBUG("~p got unexpected message ~p",[hd(registered()), Unexpected]),
+      wait_loop( Subs, Sup )
+  end.
 

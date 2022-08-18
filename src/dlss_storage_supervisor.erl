@@ -450,7 +450,10 @@ pending_transformation( Storage, Node )->
               % The version for the node is already updated
               {wait, Segment, split};
             #{ copies := #{ Node := _ } }->
-              {split, Segment}
+              {split, Segment};
+            _ ->
+              % I'm not engaged. I can do my own work
+              undefined
           end;
         merge ->
           {merge, Segment}

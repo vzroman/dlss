@@ -33,6 +33,7 @@
   get_nodes/0,
   get_active_nodes/0,
   transaction/1,sync_transaction/1,
+  on_commit/1,
   lock/2,
   purge_stale_segments/0
 ]).
@@ -92,19 +93,33 @@ get_active_nodes()->
   mnesia:system_info(running_db_nodes).
 
 transaction(Fun)->
+  put({?MODULE,on_commit},[]),
   % We use the mnesia engine to deliver the true distributed ACID transactions
   case mnesia:transaction(Fun) of
-    {atomic,FunResult}->{ok,FunResult};
+    {atomic,FunResult}->
+      [catch F() || F<- erase({?MODULE,on_commit})],
+      {ok,FunResult};
     {aborted,{Reason,_Stack}}->{error,Reason};
     {aborted,Reason}->{error,Reason}
   end.
 
 % Sync transaction wait all changes are applied
 sync_transaction(Fun)->
+  put({?MODULE,on_commit},[]),
   case mnesia:sync_transaction(Fun) of
-    {atomic,FunResult}->{ok,FunResult};
+    {atomic,FunResult}->
+      [ catch F() || F <- erase({?MODULE,on_commit})],
+      {ok,FunResult};
     {aborted,{Reason,_Stack}}->{error,Reason};
     {aborted,Reason}->{error,Reason}
+  end.
+
+on_commit(Fun) when is_function(Fun,0)->
+  case get({?MODULE,on_commit}) of
+    FunList when is_list( FunList )->
+      put({?MODULE,on_commit}, FunList ++ [Fun]);
+    _->
+      ?ERROR(no_transaction)
   end.
 
 lock( Item, Lock )->
