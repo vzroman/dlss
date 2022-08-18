@@ -688,8 +688,7 @@ merge_commit_final(Source, undefined)->
 
 %-----------------Master commit--------------------------------
 merge_commit_final(Source, Master) when Master =:= node()->
-  ?LOGINFO("DEBUG: ~p children: ~p",[Source,dlss_storage:get_children(Source) ]),
-  case confirm_children( dlss_storage:get_children(Source) ) of
+  case confirm_children( dlss_storage:get_children(Source), Source ) of
     [] ->
       % All children are ready
       ?LOGINFO("~p merge final commit",[ Source ]),
@@ -706,13 +705,13 @@ merge_commit_final(Source, Master)->
   % It's a job for the master. May be I'm even not engaged
   ?LOGDEBUG("~p merge commit wait for master ~p",[Source,Master]).
 
-confirm_children([Segment|Rest])->
+confirm_children([Segment|Rest], Source)->
   {ok, #{copies:=Copies, version:=SegmentVersion}} = dlss_storage:segment_params( Segment ),
   case master_node( Segment ) of
     undefined ->
-      ?LOGWARNING("~p is not available, wait for ~p",[Segment, [N || {N,_} <- maps:to_list(Copies)]]),
+      ?LOGWARNING("~p merge to ~p can not be finished, ~p is not available",[Source, Segment, Segment ]),
       % The segment is not available, wait for all holding nodes
-      [Segment | confirm_children( Rest ) ];
+      [Segment | confirm_children( Rest, Source ) ];
     Master ->
       case maps:get( Master, Copies ) of
         MasterDump = #dump{ version = SegmentVersion }->
@@ -720,18 +719,18 @@ confirm_children([Segment|Rest])->
           case not_confirmed( MasterDump, Copies ) of
             [] ->
               % All copies are confirmed
-              confirm_children( Rest );
+              confirm_children( Rest, Source );
             Nodes->
-              ?LOGINFO("~p merge is not finished, wait for ~p",[Segment,Nodes]),
-              [Segment| confirm_children( Rest )]
+              ?LOGINFO("~p merge to ~p is not finished, wait for ~p",[Source,Segment,Nodes]),
+              [Segment| confirm_children( Rest, Source )]
           end;
         _->
           % Master has not updated his version yet
           ?LOGINFO("~p merge is not finished, wait for master ~p",[Segment,Master]),
-          [Segment| confirm_children( Rest )]
+          [Segment| confirm_children( Rest, Source )]
       end
   end;
-confirm_children([])->
+confirm_children([],_Source)->
   [].
 
 not_confirmed(Dump, Copies0)->
@@ -739,10 +738,13 @@ not_confirmed(Dump, Copies0)->
   Copies = maps:to_list(Copies0),
 
   All = [N|| {N,_} <- Copies],
+
+  Ready = All -- (All -- dlss:get_ready_nodes()),
+
   Confirmed =
     [N|| {N,D} <- Copies, D=:=Dump],
 
-  All -- (Confirmed -- dlss:get_ready_nodes()).
+  Ready -- Confirmed.
 
 %%============================================================================
 %% This is the entry point for all rebalancing transformations
