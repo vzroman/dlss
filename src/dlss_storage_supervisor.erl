@@ -621,7 +621,7 @@ split_commit(Segment, SplitKey, Master)->
     not is_number(MasterVersion); MyVersion > MasterVersion ->
 
       % There are still nodes that are not confirmed the hash yet
-      ?LOGDEBUG("~p splitting is not finished yet, waiting for master ~p",[Segment, Master]),
+      ?LOGINFO("~p splitting is not finished yet, waiting for master ~p",[Segment, Master]),
       timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
       % Update the master
       split_commit(Segment, SplitKey, master_node( Segment ));
@@ -695,7 +695,7 @@ merge_commit_final(Source, Master) when Master =:= node()->
       dlss_storage:merge_commit( Source );
     NotConfirmed->
       % There are still nodes that are not confirmed the hash yet
-      ?LOGDEBUG("~p merging is not finished yet, waiting for ~p",[Source, NotConfirmed]),
+      ?LOGINFO("~p merging is not finished yet, waiting for ~p",[Source, NotConfirmed]),
       timer:sleep( ?ENV(storage_supervisor_cycle, ?DEFAULT_SCAN_CYCLE) ),
       % Update the master
       merge_commit_final( Source )
