@@ -80,6 +80,10 @@ init_target(Target, #{
   #target{ ref = ?REF(Target), sync = Sync }.
 
 init_copy(Target, Props)->
+  % Remove mount point if it's rolled back during the previous copy attempt
+  MP = mnesia_eleveldb:data_mountpoint( Target ),
+  os:cmd("rm -rf " ++ MP),
+
   Alias = mnesia_eleveldb:default_alias(),
   case mnesia_eleveldb:create_table(Alias, Target, Props) of
     ok->
