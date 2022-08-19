@@ -461,7 +461,7 @@ roll_live_updates(K, Live, #target{name = Target, module = Module} = TargetRef, 
   when K=/='$end_of_table', K =< TailKey->
 
   [{_,Action}] = ets:lookup(Live, K),
-  ?LOGINFO("DEBUG: ~p roll live update key ~p, action ~p",[Target, Module:decode_key(K), Action]),
+  ?LOGINFO("DEBUG: ~p roll live update key ~p, tail key ~p, action ~p",[Target, Module:decode_key(K), Module:decode_key(TailKey), Action]),
   Module:write_batch([Action],TargetRef),
   ets:delete(Live, K),
   roll_live_updates(ets:next(Live,K), Live, TargetRef, TailKey);
@@ -476,7 +476,7 @@ give_away_live_updates(Live, #target{ name = Target } = TargetRef)->
       Owner ! {ready,self()},
       receive
         {start, Owner}->
-          ?LOGINFO("DEBUG: ~p take live updates"),
+          ?LOGINFO("DEBUG: ~p take live updates",[Target]),
           wait_table_ready(TargetRef, dlss_segment:where_to_write( Target ))
       end
     end),
