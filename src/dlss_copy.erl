@@ -219,7 +219,7 @@ remote_copy_attempt( Source, Target, Module, #{
   FinalHash =
     try remote_copy_loop(Worker, TargetRef, #{hash => InitHash, live =>Live})
     catch
-      _:Error->
+      _:Error:Stack->
         drop_live_copy(Source, Live ),
         rollback_target( TargetRef ),
         case Error of
@@ -230,7 +230,7 @@ remote_copy_attempt( Source, Target, Module, #{
           Other->
             ?LOGERROR("~p copying from ~p, unexpected error: ~p ",[Source,ReadNode,Other])
         end,
-        throw(Error)
+        throw({Error,Stack})
     after
       exit(Worker,shutdown)
     end,
