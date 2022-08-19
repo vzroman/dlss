@@ -251,16 +251,15 @@ prepare_live_copy( Source )->
       case dlss_subscription:subscribe( Source ) of
         ok->
           % Success
-          ?LOGINFO("subscribed on ~p",[Source]);
+          ?LOGINFO("subscribed on ~p",[Source]),
+          % Prepare the storage for live updates anyway to avoid excessive check during the copying
+          ets:new(live,[private,ordered_set]);
         {error,Error}->
           throw({subscribe_error,Error})
       end;
     true->
-      ignore
-  end,
-
-  % Prepare the storage for live updates anyway to avoid excessive check during the copying
-  ets:new(live,[private,ordered_set]).
+      false
+  end.
 
 finish_live_copy(Source, Live, TargetRef)->
 
@@ -380,23 +379,6 @@ remote_copy_loop(Worker, #target{module = Module, name = Target} =TargetRef, #{
   live := Live
 }=Acc)->
   receive
-    {subscription, Target, Update}->
-      {K, Action} = Module:live_action( Update ),
-      case Acc of
-        #{ tail_key := TailKey } when  K =< TailKey->
-          % The live update key is in the copy keys range already we can safely put it to he copy
-          ?LOGINFO("DEBUG: ~p live update key ~p, action ~p, write to the copy",[Target,Module:decode_key(K), Action]),
-          Module:write_batch([Action],TargetRef);
-        _->
-          % Tail key either not defined yet or greater than the last batch tail key.
-          % We can't write the action to the target because the next batch may not contain the update
-          % and so will overwrite the live update.
-          % Stockpile the action until the copy reaches the action key and then roll it over
-          ?LOGINFO("DEBUG: ~p live update key ~p, action ~p, stockpile update",[Target,Module:decode_key(K), Action]),
-          true = ets:insert(Live,{K,Action})
-      end,
-      remote_copy_loop(Worker, TargetRef, Acc);
-
     {write_batch, Worker, ZipBatch, ZipSize, WorkerHash }->
 
       ?LOGINFO("~p: batch received, size ~s, hash ~s",[Target,?PRETTY_SIZE(ZipSize),?PRETTY_HASH(WorkerHash)]),
@@ -429,7 +411,13 @@ remote_copy_loop(Worker, #target{module = Module, name = Target} =TargetRef, #{
           end || BatchBin <- BatchList ],
 
       % Roll over stockpiled live updates
-      roll_live_updates(ets:first(Live), Live, TargetRef, TailKey),
+      if
+        Live =/= false->
+          ?LOGINFO("~p roll live updates...",[Target]),
+          roll_live_updates( Live, TargetRef, TailKey);
+        true ->
+          ignore
+      end,
 
       remote_copy_loop(Worker, TargetRef, Acc#{hash => Hash, tail_key => TailKey});
     {finish,Worker,WorkerFinalHash}->
@@ -452,78 +440,122 @@ remote_copy_loop(Worker, #target{module = Module, name = Target} =TargetRef, #{
       throw({exit,Reason})
   end.
 
-roll_live_updates(K, Live, #target{name = Target, module = Module} = TargetRef, TailKey)
-  when K=/='$end_of_table', K =< TailKey->
+%%===========================================================================
+%% LIVE COPY
+%%===========================================================================
+roll_live_updates( Live, #target{ module = Module, name = Target } = TargetRef,  TailKey )->
 
-  [{_,Action}] = ets:lookup(Live, K),
-  ?LOGINFO("DEBUG: ~p roll live update key ~p, tail key ~p, action ~p",[Target, Module:decode_key(K), Module:decode_key(TailKey), Action]),
-  Module:write_batch([Action],TargetRef),
-  ets:delete(Live, K),
-  roll_live_updates(ets:next(Live,K), Live, TargetRef, TailKey);
-roll_live_updates(_K, _Live, _TargetRef, _TailKey)->
-  ok.
+  % First we flush subscriptions and roll them over already stockpiled actions,
+  % Then we take only those actions that are in the copy keys range already
+  % because the next batch may not contain the update yet
+  % and so will overwrite came live update.
+  % Timeout 0 because we must to receive the next remote batch as soon as possible
+  Updates = flush_subscriptions( Target, _Timeout = 0 ),
+  ?LOGINFO("DEBUG: ~p live updates count ~p",[Target,length(Updates)]),
 
-give_away_live_updates(Live, #target{ name = Target } = TargetRef)->
-  Owner = self(),
-  Worker =
-    spawn_link(fun()->
-      ok = dlss_subscription:subscribe( Target ),
-      Owner ! {ready,self()},
-      receive
-        {start, Owner}->
-          ?LOGINFO("DEBUG: ~p take live updates",[Target]),
-          Logger = spawn_link(fun()->not_ready(Target) end),
-          wait_table_ready(TargetRef, Logger, dlss_segment:where_to_write( Target ))
-      end
-    end),
+  % Convert the updates into the actions
+  Actions =
+    [ Module:live_action(U) || U <- Updates ],
 
-  receive {ready,Worker}->ok end,
+  % Put them into the live ets to sort them and also overwrite old updates to avoid excessive
+  % writes to the copy
+  true = ets:insert(Live, Actions),
 
-  % From now the Worker receives updates
-  dlss_subscription:unsubscribe( Target ),
+  % Take out the actions that are in the copy range already
+  Head = take_head(ets:first(Live), Live, TailKey),
+  ?LOGINFO("DEBUG: ~p actions to add to the copy ~p",[Target,length(Head)]),
 
-  ?LOGINFO("DEBUG: ~p roll tail live updates",[Target]),
-  roll_tail_updates(ets:first(Live), Live, TargetRef),
+  Module:write_batch(Head, TargetRef).
 
-  % Flush tail subscriptions
-  flush_subscriptions(TargetRef),
-
-  Worker ! {start, Owner}.
-
-roll_tail_updates('$end_of_table', _Live, _TargetRef)->
-  ok;
-roll_tail_updates(K, Live, #target{name = Target, module = Module} = TargetRef) ->
-
-  [{_,Action}] = ets:lookup(Live, K),
-  ?LOGINFO("DEBUG: ~p roll tail update key ~p, action ~p",[Target, Module:decode_key(K), Action]),
-  Module:write_batch([Action],TargetRef),
-
-  roll_tail_updates(ets:next(Live,K), Live, TargetRef).
-
-flush_subscriptions(#target{name = Target, module = Module}=TargetRef)->
+flush_subscriptions(Target, Timeout)->
   receive
     {subscription, Target, Update}->
-      {K, Action} = Module:live_action( Update ),
-      ?LOGINFO("DEBUG: ~p flush subscription key ~p, action ~p",[ Target, Module:decode_key(K), Action]),
-      Module:write_batch([Action],TargetRef),
-      flush_subscriptions(TargetRef);
-    Other->
-      ?LOGINFO("DEBUG: other ~p",[Other])
+      [Update | flush_subscriptions( Target, Timeout )]
   after
-    60000->ok
+    Timeout->[]
   end.
 
-wait_table_ready(#target{name = Target} = TargetRef, Logger, Node) when Node =/= node()->
-  % It's not ready yet
-  flush_subscriptions(TargetRef),
+take_head(K, Live, TailKey ) when K =/= '$end_of_table', K =< TailKey->
+  [{_,Action}] = ets:take(Live, K),
+  [Action| take_head(ets:next(Live,K), Live, TailKey)];
+take_head(_K, _Live, _TailKey)->
+  [].
+
+%---------------------------------------------------------------------
+% The remote copy has finished, but there can be live updates
+% in the queue that we must not lose. We cannot wait for them
+% because the copier (storage server) have to add the table
+% to the mnesia schema. Until it does it the updates will
+% not go to the local copy. Therefore we start another process
+% write tail updates to the copy
+%---------------------------------------------------------------------
+give_away_live_updates(Live, #target{ name = Target } = TargetRef)->
+
+  Giver = self(),
+  Taker =
+    spawn_link(fun()->
+      ok = dlss_subscription:subscribe( Target ),
+      Giver ! {ready, self() },
+
+      ?LOGINFO("~p take live updates over ~p",[Target,self()]),
+      Logger = spawn_link(fun()->not_ready(Target) end),
+      wait_table_ready(TargetRef, Logger, dlss_segment:where_to_write( Target ))
+
+    end),
+
+  ?LOGINFO("~p give away live updates from ~p to ~p",[Target, self(), Taker]),
+
+  receive {ready,Taker}->ok end,
+
+  % From now the Taker receives updates I can unsubscribe, and wait
+  % for my tail updates
+  dlss_subscription:unsubscribe( Target ),
+
+  ?LOGINFO("~p: roll tail live updates",[Target]),
+  roll_tail_updates( Live, TargetRef).
+
+roll_tail_updates( Live, #target{ module = Module, name = Target } = TargetRef )->
+
+  % Timeout because I have already unsubscribed and it's a finite process
+  Updates = flush_subscriptions( Target, ?FLUSH_TAIL_TIMEOUT ),
+  ?LOGINFO("DEBUG: ~p tail updates count ~p",[Target,length(Updates)]),
+
+  % Convert the updates into the actions
+  Actions =
+    [ Module:live_action(U) || U <- Updates ],
+
+  % Put them into the live ets to sort them and also overwrite old updates to avoid excessive
+  % writes to the copy
+  true = ets:insert(Live, Actions),
+
+  Tail = ets:tab2list( Live ),
+
+  Module:write_batch(Tail, TargetRef).
+
+
+wait_table_ready(#target{name = Target, module = Module} = TargetRef, Logger, Node) when Node =/= node()->
+  % The copy is not ready yet
+  Updates = flush_subscriptions( Target, ?FLUSH_TAIL_TIMEOUT ),
+
+  Actions =
+    [ Module:live_action(U) || U <- Updates ],
+
+  Module:write_batch(Actions, TargetRef),
 
   wait_table_ready(TargetRef, Logger, dlss_segment:where_to_write(Target) );
 
-wait_table_ready(#target{name = Target} = TargetRef, Logger, Node) when Node=:=node()->
+wait_table_ready(#target{name = Target, module = Module} = TargetRef, Logger, Node) when Node=:=node()->
   ?LOGINFO("DEBUG: ~p copy is ready, flush tail subscriptions",[Target]),
 
   dlss_subscription:unsubscribe( Target ),
-  flush_subscriptions( TargetRef ),
+
+  Updates = flush_subscriptions( Target, ?FLUSH_TAIL_TIMEOUT ),
+
+  Actions =
+    [ Module:live_action(U) || U <- Updates ],
+
+  Module:write_batch(Actions, TargetRef),
+
   exit(Logger, shutdown),
 
   ?LOGINFO("~p live copy is ready",[Target]).
