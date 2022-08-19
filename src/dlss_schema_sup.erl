@@ -59,24 +59,6 @@ init([]) ->
     modules=>[dlss_storage_sup]
   },
 
-  SegmentSupervisor=#{
-    id=>dlss_segment_sup,
-    start=>{dlss_segment_sup,start_supervisor,[]},
-    restart=>permanent,
-    shutdown=>infinity,
-    type=>supervisor,
-    modules=>[dlss_segment_sup]
-  },
-
-  SegmentSupervisorServer=#{
-    id=>dlss_segment_sup_srv,
-    start=>{dlss_segment_sup,start_server,[]},
-    restart=>permanent,
-    shutdown=>infinity,
-    type=>worker,
-    modules=>[dlss_segment_sup]
-  },
-
   Supervisor=#{
     strategy=>one_for_one,
     intensity=>?ENV(max_restarts, ?DEFAULT_MAX_RESTARTS),
@@ -85,9 +67,7 @@ init([]) ->
 
   {ok, {Supervisor, [
     StorageSupervisor,
-    StorageSupervisorServer,
-    SegmentSupervisor,
-    SegmentSupervisorServer
+    StorageSupervisorServer
   ]}}.
 
 

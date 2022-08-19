@@ -423,25 +423,25 @@ dirty_read(Segment,Key)->
 
 %-------------WRITE----------------------------------------------
 write(Segment,Key,Value)->
-  dlss_backend:on_commit(fun()-> Segment ! {write,{Key,Value}} end),
+  dlss_backend:on_commit(fun()-> dlss_subscription:notify(Segment,{write,{Key,Value}}) end),
   write(Segment,Key,Value, _Lock = none).
 write(Segment,Key,Value,Lock)->
-  dlss_backend:on_commit(fun()-> Segment ! {write,{Key,Value}} end),
+  dlss_backend:on_commit(fun()-> dlss_subscription:notify(Segment,{write,{Key,Value}}) end),
   mnesia:write(Segment,#kv{key = Key,value = Value}, Lock).
 
 dirty_write(Segment,Key,Value)->
-  Segment ! {write,{Key,Value}},
+  dlss_subscription:notify(Segment,{write,{Key,Value}}),
   mnesia:dirty_write(Segment,#kv{key = Key,value = Value}).
 
 %-------------DELETE----------------------------------------------
 delete(Segment,Key)->
-  dlss_backend:on_commit(fun()-> Segment ! {delete,Key} end),
+  dlss_backend:on_commit(fun()-> dlss_subscription:notify(Segment,{delete,Key}) end),
   delete(Segment,Key,_Lock=none).
 delete(Segment,Key,Lock)->
-  dlss_backend:on_commit(fun()-> Segment ! {delete,Key} end),
+  dlss_backend:on_commit(fun()-> dlss_subscription:notify(Segment,{delete,Key}) end),
   mnesia:delete(Segment,Key,Lock).
 dirty_delete(Segment,Key)->
-  Segment ! {delete,Key},
+  dlss_subscription:notify(Segment,{delete,Key}),
   mnesia:dirty_delete(Segment,Key).
 
 %%=================================================================
