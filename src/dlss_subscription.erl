@@ -93,13 +93,12 @@ subscribe( Segment )->
 subscribe(Segment, PID)->
   case whereis( ?MODULE ) of
     Server when is_pid( Server )->
-      Server ! {subscribe, Segment, PID},
+      Server ! {subscribe, Segment, _ReplyTo = self() , PID},
       receive
         {ok, Server} -> ok;
         {error,Server,Error}-> {error, Error}
       after
         ?SUBSCRIBE_TIMEOUT->
-          Server ! {unsubscribe, Segment, PID},
           {error, timeout}
       end;
     _->
@@ -146,11 +145,11 @@ notify( Segment, Action )->
 %%---------------------------------------------------------------------
 wait_loop(Sup, Subs)->
   receive
-    {subscribe, Segment, PID}->
+    {subscribe, Segment, ReplyTo, PID}->
       case do_subscribe( Segment, PID ) of
         ok ->
           ?LOGINFO("DEBUG: ~p subscribed on ~p",[PID,Segment]),
-          PID ! {ok, self()},
+          ReplyTo ! {ok, self()},
           case Subs of
             #{ PID := Segments }->
               wait_loop(Sup, Subs#{PID => [Segment|Segments]});
