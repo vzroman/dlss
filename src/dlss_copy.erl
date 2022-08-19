@@ -463,7 +463,7 @@ roll_live_updates(K, Live, #target{name = Target, module = Module} = TargetRef, 
   [{_,Action}] = ets:lookup(Live, K),
   ?LOGINFO("DEBUG: ~p roll live update key ~p, action ~p",[Target, Module:decode_key(K), Action]),
   Module:write_batch([Action],TargetRef),
-
+  ets:delete(Live, K),
   roll_live_updates(ets:next(Live,K), Live, TargetRef, TailKey);
 roll_live_updates(_K, _Live, _TargetRef, _TailKey)->
   ok.
