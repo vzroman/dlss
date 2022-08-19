@@ -508,7 +508,7 @@ flush_subscriptions(#target{name = Target, module = Module}=TargetRef)->
       Module:write_batch([Action],TargetRef),
       flush_subscriptions(TargetRef)
   after
-    0->ok
+    1000->ok
   end.
 
 wait_table_ready(#target{name = Target} = TargetRef, Logger, Node) when Node =/= node()->
@@ -518,7 +518,7 @@ wait_table_ready(#target{name = Target} = TargetRef, Logger, Node) when Node =/=
   wait_table_ready(TargetRef, Logger, dlss_segment:where_to_write(Target) );
 
 wait_table_ready(#target{name = Target} = TargetRef, Logger, Node) when Node=:=node()->
-  ?LOGINFO("DEBUG: ~p copy is ready, flush tail subscriptions"),
+  ?LOGINFO("DEBUG: ~p copy is ready, flush tail subscriptions",[Target]),
 
   dlss_subscription:unsubscribe( Target ),
   flush_subscriptions( TargetRef ),
