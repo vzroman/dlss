@@ -417,7 +417,7 @@ set_segment_read_only(Segment)->
     ok->
       ?LOGINFO("~p set read_only mode",[ Segment ]);
     {error, lock_timeout}->
-      ?LOGINFO("~p lock timeout, skip set read_only mode");
+      ?LOGINFO("~p lock timeout, skip set read_only mode",[Segment]);
     {error,Error}->
       ?LOGERROR("~p unable to set read_only mode, error ~p",[ Segment, Error ])
   end.
