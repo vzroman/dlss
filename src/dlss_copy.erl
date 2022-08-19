@@ -235,7 +235,7 @@ remote_copy_attempt( Source, Target, Module, #{
       exit(Worker,shutdown)
     end,
 
-  finish_live_copy( Source, Live, TargetRef ),
+  finish_live_copy( Live, TargetRef ),
 
   commit_target( TargetRef ),
 
@@ -419,29 +419,17 @@ prepare_live_copy( Source )->
       false
   end.
 
-finish_live_copy(Source, Live, TargetRef)->
-
-  AccessMode = dlss_segment:get_access_mode(Source),
-  if
-    AccessMode =:= read_write->
-      % Give away live updates to another process until the mnesia is ready
-      give_away_live_updates(Live, TargetRef);
-    true->
-      ignore
-  end,
-
+finish_live_copy(false = _Live, _TargetRef)->
+  ok;
+finish_live_copy( Live, TargetRef)->
+% Give away live updates to another process until the mnesia is ready
+  give_away_live_updates(Live, TargetRef),
   ets:delete( Live ).
 
+drop_live_copy(_Source, false =_Live)->
+  ok;
 drop_live_copy(Source, Live)->
-
-  AccessMode = dlss_segment:get_access_mode(Source),
-  if
-    AccessMode =:= read_write->
-      dlss_subscription:unsubscribe( Source );
-    true->
-      ignore
-  end,
-
+  dlss_subscription:unsubscribe( Source ),
   ets:delete( Live ).
 
 roll_live_updates( Live, #target{ module = Module, name = Target } = TargetRef,  TailKey )->

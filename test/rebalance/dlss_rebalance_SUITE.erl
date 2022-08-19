@@ -121,9 +121,13 @@ disk_rebalance(_Config)->
   dlss:add_storage(s1,disc).
   P=dlss_copy:debug(s1,10*200000000).
 
-  dlss:dirty_write(s1,{x,1,0},head).
+
   dlss:dirty_write(s1,{x,200000000/2,0},middle).
-  dlss:dirty_write(s1,{x,200000001*2,0},tail).
+
+  dlss:dirty_write(s1,{x,2,0},head).
+  dlss:dirty_write(s1,{x,12,0},test).
+dlss:dirty_write(s1,{x,13,0},test2).
+  dlss:dirty_write(s1,{x,200000002*2,0},tail).
 
   dlss:dirty_write(s1,{test2},{x2}).
 
