@@ -472,8 +472,8 @@ give_away_live_updates(Live, #target{ name = Target } = TargetRef)->
       receive
         {start, Owner}->
           ?LOGINFO("DEBUG: ~p take live updates",[Target]),
-          spawn_link(fun()->not_ready(Target) end),
-          wait_table_ready(TargetRef, dlss_segment:where_to_write( Target ))
+          Logger = spawn_link(fun()->not_ready(Target) end),
+          wait_table_ready(TargetRef, Logger, dlss_segment:where_to_write( Target ))
       end
     end),
 
@@ -511,17 +511,18 @@ flush_subscriptions(#target{name = Target, module = Module}=TargetRef)->
     0->ok
   end.
 
-wait_table_ready(#target{name = Target} = TargetRef, Node) when Node =/= node()->
+wait_table_ready(#target{name = Target} = TargetRef, Logger, Node) when Node =/= node()->
   % It's not ready yet
   flush_subscriptions(TargetRef),
 
-  wait_table_ready(TargetRef, dlss_segment:where_to_write(Target) );
+  wait_table_ready(TargetRef, Logger, dlss_segment:where_to_write(Target) );
 
-wait_table_ready(#target{name = Target} = TargetRef, Node) when Node=:=node()->
+wait_table_ready(#target{name = Target} = TargetRef, Logger, Node) when Node=:=node()->
   ?LOGINFO("DEBUG: ~p copy is ready, flush tail subscriptions"),
 
   dlss_subscription:unsubscribe( Target ),
   flush_subscriptions( TargetRef ),
+  exit(Logger, shutdown),
 
   ?LOGINFO("~p live copy is ready",[Target]).
 
