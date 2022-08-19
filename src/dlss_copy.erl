@@ -388,13 +388,10 @@ remote_copy_loop(Worker, #target{module = Module, name = Target} =TargetRef, #{
     {subscription, Target, Update}->
       {K, Action} = Module:live_action( Update ),
       case Acc of
-        #{ tail_key := TailKey } when TailKey =< K->
+        #{ tail_key := TailKey } when  K =< TailKey->
           % The live update key is in the copy keys range already we can safely put it to he copy
           ?LOGINFO("DEBUG: ~p live update key ~p, action ~p, write to the copy",[Target,Module:decode_key(K), Action]),
           Module:write_batch([Action],TargetRef);
-        #{tail_key := TailKey}->
-          ?LOGINFO("DEBUG: remove this clause. live key ~p, tail key ~p, stockpile",[Module:decode_key(K),Module:decode_key(TailKey)]),
-          true = ets:insert(Live,{K,Action});
         _->
           % Tail key either not defined yet or greater than the last batch tail key.
           % We can't write the action to the target because the next batch may not contain the update
