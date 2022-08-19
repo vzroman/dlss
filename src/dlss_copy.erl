@@ -536,7 +536,7 @@ roll_tail_updates( Live, #target{ module = Module, name = Target } = TargetRef )
 
 wait_table_ready(#target{name = Target, module = Module} = TargetRef, Logger, Node) when Node =/= node()->
   % The copy is not ready yet
-  Updates = flush_subscriptions( Target, 0 =_Timeout ),
+  Updates = flush_subscriptions( Target, _Timeout = 0 ),
 
   Actions =
     [ Module:live_action(U) || U <- Updates ],
