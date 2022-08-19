@@ -58,6 +58,8 @@
 -define(ATTACH_TIMEOUT,600000). %10 min.
 -define(CYCLE, 1000).
 -define(SEGMENT_REMOVE_DELAY, 5 * 60000). % 5 minutes
+-define(TRANSACTION,{?MODULE,transaction}).
+-record(transaction,{on_commit,parent}).
 
 -record(state,{
   to_delete
@@ -92,34 +94,47 @@ get_active_nodes()->
   mnesia:system_info(running_db_nodes).
 
 transaction(Fun)->
-  put({?MODULE,on_commit},[]),
-  % We use the mnesia engine to deliver the true distributed ACID transactions
-  case mnesia:transaction(Fun) of
-    {atomic,FunResult}->
-      [catch F() || F<- erase({?MODULE,on_commit})],
-      {ok,FunResult};
-    {aborted,{Reason,_Stack}}->{error,Reason};
-    {aborted,Reason}->{error,Reason}
-  end.
+  wrap_transaction(Fun,transaction).
 
 % Sync transaction wait all changes are applied
 sync_transaction(Fun)->
-  put({?MODULE,on_commit},[]),
-  case mnesia:sync_transaction(Fun) of
-    {atomic,FunResult}->
-      [ catch F() || F <- erase({?MODULE,on_commit})],
-      {ok,FunResult};
+  wrap_transaction(Fun,sync_transaction).
+
+wrap_transaction(Fun,Type)->
+  case get(?TRANSACTION) of
+    #transaction{on_commit = ParentOnCommits} = Parent->
+      % Child transaction
+      put(?TRANSACTION, #transaction{on_commit = [], parent = Parent}),
+      Result =run_transaction(Fun,Type),
+      #transaction{on_commit = OnCommits} = get(?TRANSACTION),
+      put(?TRANSACTION,Parent#transaction{ on_commit = ParentOnCommits ++ OnCommits }),
+      Result;
+    _->
+      % Root transaction
+      put(?TRANSACTION,#transaction{on_commit = []}),
+      Result = run_transaction(Fun, Type),
+      #transaction{on_commit = OnCommits} = erase(?TRANSACTION),
+      [catch F() || F<- OnCommits],
+      Result
+
+  end.
+run_transaction(Fun,TType)->
+  % We use the mnesia engine to deliver the true distributed ACID transactions
+  case mnesia:TType(Fun) of
+    {atomic,FunResult}->{ok,FunResult};
     {aborted,{Reason,_Stack}}->{error,Reason};
     {aborted,Reason}->{error,Reason}
   end.
 
 on_commit(Fun) when is_function(Fun,0)->
-  case get({?MODULE,on_commit}) of
-    FunList when is_list( FunList )->
-      put({?MODULE,on_commit}, FunList ++ [Fun]);
+  case get(?TRANSACTION) of
+    #transaction{ on_commit = OnCommits } = T->
+      put(?TRANSACTION,T#transaction{on_commit = OnCommits ++[Fun] });
     _->
       ?ERROR(no_transaction)
-  end.
+  end;
+on_commit(_Other)->
+  ?ERROR(invalid_on_commit_args).
 
 lock( Item, Lock )->
   mnesia:lock( Item, Lock ).
