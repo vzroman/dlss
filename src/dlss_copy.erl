@@ -497,7 +497,7 @@ give_away_live_updates(Live, #target{ name = Target } = TargetRef)->
 
       ?LOGINFO("~p take live updates over ~p",[Target,self()]),
       Logger = spawn_link(fun()->not_ready(Target) end),
-      wait_table_ready(TargetRef, Logger, dlss_segment:where_to_write( Target ))
+      wait_table_ready(TargetRef, Logger, dlss_segment:where_to_write( Target ), dlss_segment:get_access_mode(Target))
 
     end),
 
@@ -534,7 +534,24 @@ roll_tail_updates( Live, #target{ module = Module, name = Target } = TargetRef )
   Module:write_batch(Tail, TargetRef).
 
 
-wait_table_ready(#target{name = Target, module = Module} = TargetRef, Logger, Node) when Node =/= node()->
+
+wait_table_ready(#target{name = Target, module = Module} = TargetRef, Logger, Node, Access)
+  when Node=:=node(); Access =:= read_only->
+  ?LOGINFO("DEBUG: ~p copy is ready, flush tail subscriptions",[Target]),
+
+  dlss_subscription:unsubscribe( Target ),
+
+  Updates = flush_subscriptions( Target, ?FLUSH_TAIL_TIMEOUT ),
+
+  Actions =
+    [ Module:live_action(U) || U <- Updates ],
+
+  Module:write_batch(Actions, TargetRef),
+
+  exit(Logger, shutdown),
+
+  ?LOGINFO("~p live copy is ready",[Target]);
+wait_table_ready(#target{name = Target, module = Module} = TargetRef, Logger, _Node, _Access)->
   % The copy is not ready yet
   Updates = flush_subscriptions( Target, _Timeout = 0 ),
 
@@ -549,23 +566,7 @@ wait_table_ready(#target{name = Target, module = Module} = TargetRef, Logger, No
   Module:write_batch(Actions, TargetRef),
   timer:sleep(3000),
 
-  wait_table_ready(TargetRef, Logger, dlss_segment:where_to_write(Target) );
-
-wait_table_ready(#target{name = Target, module = Module} = TargetRef, Logger, Node) when Node=:=node()->
-  ?LOGINFO("DEBUG: ~p copy is ready, flush tail subscriptions",[Target]),
-
-  dlss_subscription:unsubscribe( Target ),
-
-  Updates = flush_subscriptions( Target, ?FLUSH_TAIL_TIMEOUT ),
-
-  Actions =
-    [ Module:live_action(U) || U <- Updates ],
-
-  Module:write_batch(Actions, TargetRef),
-
-  exit(Logger, shutdown),
-
-  ?LOGINFO("~p live copy is ready",[Target]).
+  wait_table_ready(TargetRef, Logger, dlss_segment:where_to_write(Target), dlss_segment:get_access_mode(Target) ).
 
 not_ready(Target)->
   ?LOGINFO("~p live copy is not ready yet",[Target]),

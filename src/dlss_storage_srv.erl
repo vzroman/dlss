@@ -413,7 +413,7 @@ set_segment_read_only(Segment)->
     % WARNING! We need the pause to allow mnesia to settle down it's schema
     timer:sleep(5000),
     dlss_segment:set_access_mode(Segment, read_only)
-  end, 1000) of
+  end, 5000) of
     ok->
       ?LOGINFO("~p set read_only mode",[ Segment ]);
     {error, lock_timeout}->
