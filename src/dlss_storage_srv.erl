@@ -230,11 +230,12 @@ sync_segment_copies( Segment, Node, Trace)->
   end.
 
 add_segment_copy(Segment, Node) ->
-  ?LOGINFO("~p add local copy",[ Segment ]),
+  ?LOGINFO("~p add local copy, lock...",[ Segment ]),
 
   % We do add the copy in the locked mode to be sure that the segment is not transformed
   % during the copying
   case dlss_storage:segment_transaction(Segment, write, fun()->
+    ?LOGINFO("~p locked for transformations",[ Segment ]),
     Master = master_node( Segment ),
     case dlss_segment:add_node( Segment, Node ) of
       ok->
@@ -468,11 +469,14 @@ do_transformation(split, Segment )->
 
 
   InitHash = <<>>,
-  ?LOGINFO("~p splitting: init size ~s, child ~p init size ~s",[
-    Parent, ?PRETTY_SIZE(dlss_segment:get_size(Parent)), Segment, ?PRETTY_SIZE(dlss_segment:get_size(Segment))
-  ]),
 
+  ?LOGINFO("~p split lock...",[Parent]),
   case dlss_storage:segment_transaction(Segment, read, fun()->
+
+    ?LOGINFO("~p splitting: init size ~s, child ~p init size ~s",[
+      Parent, ?PRETTY_SIZE(dlss_segment:get_size(Parent)), Segment, ?PRETTY_SIZE(dlss_segment:get_size(Segment))
+    ]),
+
     {SplitKey,FinalHash} = dlss_copy:split(Parent, Segment,#{ hash => InitHash }),
     ?LOGINFO("~p split finish: split key ~p, final size ~s, child ~p final size ~s, hash ~s, commit...",[
       Parent,SplitKey,?PRETTY_SIZE(dlss_segment:get_size(Parent)),Segment,?PRETTY_SIZE(dlss_segment:get_size(Segment)), ?PRETTY_HASH(FinalHash)
@@ -543,12 +547,14 @@ merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], So
           #dump{hash = _H}->_H;
           _-><<>>
         end,
-      ?LOGINFO("~p merge to ~p, range ~p : ~p, init size ~s, init hash ~s",[
-        Source, S, FromKey, EndKey, ?PRETTY_SIZE(dlss_segment:get_size(S)), ?PRETTY_HASH(InitHash)
-      ]),
 
       % Merge 1 segment at a time
+      ?LOGINFO("~p merge to ~p, lock...",[ Source, S]),
       case dlss_storage:segment_transaction(S,read,fun()->
+        ?LOGINFO("~p merge to ~p, range ~p : ~p, init size ~s, init hash ~s",[
+          Source, S, FromKey, EndKey, ?PRETTY_SIZE(dlss_segment:get_size(S)), ?PRETTY_HASH(InitHash)
+        ]),
+
         FinalHash = dlss_copy:copy(Source,S,#{ hash => InitHash, start_key =>StartKey, end_key => EndKey}),
         ?LOGINFO("~p merged to ~p, range ~p, to ~p, final size ~s, new version ~p, new hash ~s, commit...",[
           Source, S, FromKey, EndKey, ?PRETTY_SIZE(dlss_segment:get_size(S)), Version, ?PRETTY_HASH(FinalHash)
