@@ -72,16 +72,23 @@ init(Sup)->
 %%=================================================================
 
 subscribe( Segment )->
-  Node = dlss_segment:where_to_write( Segment ),
-  if
-    Node =:= nowhere -> {error, unavailable};
-    Node =:= node()->
-      subscribe(Segment, self());
-    true->
-      case rpc:call(Node, ?MODULE, subscribe, [ Segment, self() ]) of
+
+  Self = self(),
+  % We need to subscribe to all nodes, every node can do updates
+  Nodes = dlss:get_ready_nodes(),
+
+  Results =
+    [{N,
+      case rpc:call(N, ?MODULE, subscribe, [ Segment, Self ]) of
         {badrpc, Error} -> {error, Error};
         Result -> Result
-      end
+      end} || N <- Nodes ],
+  case [{N,E} || {N,{error,E}} <- Results ] of
+    []-> ok;
+    Errors->
+      % All or no one
+      unsubscribe( Segment ),
+      {error, Errors}
   end.
 
 subscribe(Segment, PID)->
@@ -102,16 +109,19 @@ subscribe(Segment, PID)->
 
 
 unsubscribe( Segment )->
-  Node = dlss_segment:where_to_write( Segment ),
-  if
-    Node =:= nowhere -> ok;
-    Node =:= node()->
-      unsubscribe(Segment, self());
-    true->
-      case rpc:call(Node, ?MODULE, unsubscribe, [ Segment, self() ]) of
-        {badrpc, Error} -> {error, Error};
-        Result -> Result
-      end
+  Self = self(),
+  [ rpc:call(N, ?MODULE, unsubscribe, [ Segment, Self ]) || N <- dlss:get_ready_nodes()],
+  drop_notifications( Segment ),
+  ok.
+
+drop_notifications(Segment)->
+  receive
+    {subscription, Segment, _Action}->
+      drop_notifications(Segment)
+  after
+    100->
+      % Ok, we tried
+      ok
   end.
 
 unsubscribe( Segment, PID )->

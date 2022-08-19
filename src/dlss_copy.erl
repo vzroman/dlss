@@ -175,9 +175,19 @@ local_copy( Source, Target, Module, #{
 
   FinalHash.
 
-remote_copy( Source, Target, Module, #{
-  hash := InitHash0,
-  attempts := Attempts
+
+remote_copy(Source, Target, Module, #{attempts := Attempts } = Options ) when Attempts > 0->
+  try remote_copy_attempt( Source, Target, Module, Options )
+  catch
+    _:Error->
+      ?LOGERROR("~p copy attempt failed, left attempts ~p",[ Source, Attempts - 1]),
+      remote_copy( Source, Target, Module, Options#{ attempts => Attempts - 1, error => Error})
+  end;
+remote_copy(_Source, _Target, _Module, #{error := Error })->
+  throw( Error ).
+
+remote_copy_attempt( Source, Target, Module, #{
+  hash := InitHash0
 } = Options )->
 
   ReadNode = get_read_node( Source ),
@@ -210,23 +220,17 @@ remote_copy( Source, Target, Module, #{
     try remote_copy_loop(Worker, TargetRef, #{hash => InitHash, live =>Live})
     catch
       _:Error->
-        ets:delete( Live ),
+        drop_live_copy(Source, Live ),
         rollback_target( TargetRef ),
         case Error of
           invalid_hash->
-            ?LOGERROR("~p invalid remote hash from ~p, left attempts ~p",[Source,ReadNode,Attempts-1]);
+            ?LOGERROR("~p invalid remote hash from ~p",[Source,ReadNode]);
           {interrupted,Reason}->
-            ?LOGERROR("~p copying from ~p interrupted, reason ~p, left attempts ~p",[Source,ReadNode,Reason,Attempts-1]);
+            ?LOGERROR("~p copying from ~p interrupted, reason ~p",[Source,ReadNode,Reason]);
           Other->
-            ?LOGERROR("unexpected error on copying ~p from ~p, error ~p",[Source,ReadNode,Other]),
-            throw(Other)
+            ?LOGERROR("~p copying from ~p, unexpected error: ~p ",[Source,ReadNode,Other])
         end,
-        if
-          Attempts > 0->
-            remote_copy( Source, Target, Module, Options#{ attempts => Attempts -1});
-          true->
-            throw( Error )
-        end
+        throw(Error)
     after
       exit(Worker,shutdown)
     end,
@@ -243,13 +247,13 @@ prepare_live_copy( Source )->
   AccessMode = dlss_segment:get_access_mode( Source ),
   if
     AccessMode =:= read_write->
-      ?LOGINFO("LIVE COPY! ~p",[Source]),
-      case dlss_segment_srv:subscribe( Source ) of
+      ?LOGINFO("LIVE COPY! ~p, subscribe...",[Source]),
+      case dlss_subscription:subscribe( Source ) of
         ok->
-          % Unsubscribe normally done
-          ?LOGINFO("DEBUG: subscribed on ~p",[Source]);
-        {error,SubscribeError}->
-          throw({unable_to_subscribe,Source,SubscribeError})
+          % Success
+          ?LOGINFO("subscribed on ~p",[Source]);
+        {error,Error}->
+          throw({subscribe_error,Error})
       end;
     true->
       ignore
@@ -270,6 +274,22 @@ finish_live_copy(Source, Live, TargetRef)->
   end,
 
   ets:delete( Live ).
+
+drop_live_copy(Source, Live)->
+
+  AccessMode = dlss_segment:get_access_mode(Source),
+  if
+    AccessMode =:= read_write->
+      dlss_subscription:unsubscribe( Source );
+    true->
+      ignore
+  end,
+
+  ets:delete( Live ).
+
+
+
+
 
 
 remote_copy_request(Owner, Source, Module, Options, #{
@@ -452,7 +472,7 @@ give_away_live_updates(Live, #target{ name = Target } = TargetRef)->
   Owner = self(),
   Worker =
     spawn_link(fun()->
-      ok = dlss_segment_srv:subscribe( Target ),
+      ok = dlss_subscription:subscribe( Target ),
       Owner ! {ready,self()},
       receive
         {start, Owner}->
@@ -462,7 +482,7 @@ give_away_live_updates(Live, #target{ name = Target } = TargetRef)->
     end),
 
   % From now the Worker receives updates
-  dlss_segment_srv:unsubscribe( Target ),
+  dlss_subscription:unsubscribe( Target ),
 
   ?LOGINFO("DEBUG: ~p roll tail live updates",[Target]),
   roll_tail_updates(ets:first(Live), Live, TargetRef),
@@ -503,7 +523,7 @@ wait_table_ready(#target{name = Target} = TargetRef, Node) when Node =/= node()-
 wait_table_ready(#target{name = Target} = TargetRef, Node) when Node=:=node()->
   ?LOGINFO("DEBUG: ~p copy is ready, flush tail subscriptions"),
 
-  dlss_segment_srv:unsubscribe( Target ),
+  dlss_subscription:unsubscribe( Target ),
   flush_subscriptions( TargetRef ),
 
   ?LOGINFO("~p live copy is ready").
