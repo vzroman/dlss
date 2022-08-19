@@ -518,7 +518,7 @@ add_node(Segment,Node)->
   if
     Node =:= node()->
       case try dlss_copy:copy(Segment,Segment)
-      catch _:E->{error,E} end of
+      catch _:E:S->{error,{E,S}} end of
         Hash when is_binary( Hash )->
           add_node(Segment, Node, mnesia:table_info(Segment, access_mode));
         Error -> Error
