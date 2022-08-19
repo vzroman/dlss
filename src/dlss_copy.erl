@@ -481,6 +481,8 @@ give_away_live_updates(Live, #target{ name = Target } = TargetRef)->
       end
     end),
 
+  receive {ready,Worker}->ok end,
+
   % From now the Worker receives updates
   dlss_subscription:unsubscribe( Target ),
 
@@ -526,7 +528,7 @@ wait_table_ready(#target{name = Target} = TargetRef, Node) when Node=:=node()->
   dlss_subscription:unsubscribe( Target ),
   flush_subscriptions( TargetRef ),
 
-  ?LOGINFO("~p live copy is ready").
+  ?LOGINFO("~p live copy is ready",[Target]).
 
 do_copy(SourceRef, Module, OnBatch, InAcc)->
 
