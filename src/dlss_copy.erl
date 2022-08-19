@@ -316,13 +316,15 @@ send_batch(#{
   owner := Owner
 })->
 
-  ?LOGINFO("send batch: source ~p, target ~p, zip size ~s, length ~p",[
+  BatchHash = crypto:hash_final(Hash),
+  ?LOGINFO("send batch: source ~p, target ~p, zip size ~s, length ~p, hash ~s",[
     Source,
     Target,
     ?PRETTY_SIZE(ZipSize),
-    length(ZipBatch)
+    length(ZipBatch),
+    ?PRETTY_HASH(BatchHash)
   ]),
-  Owner ! {write_batch, self(), ZipBatch, ZipSize, crypto:hash_final(Hash) }.
+  Owner ! {write_batch, self(), ZipBatch, ZipSize, BatchHash }.
 
 unzip_batch( [Zip|Rest], {Acc0,Hash0})->
   Batch = zlib:unzip( Zip ),
