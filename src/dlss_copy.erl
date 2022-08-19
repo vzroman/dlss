@@ -243,49 +243,6 @@ remote_copy_attempt( Source, Target, Module, #{
 
   FinalHash.
 
-prepare_live_copy( Source )->
-  AccessMode = dlss_segment:get_access_mode( Source ),
-  if
-    AccessMode =:= read_write->
-      ?LOGINFO("LIVE COPY! ~p, subscribe...",[Source]),
-      case dlss_subscription:subscribe( Source ) of
-        ok->
-          % Success
-          ?LOGINFO("subscribed on ~p",[Source]),
-          % Prepare the storage for live updates anyway to avoid excessive check during the copying
-          ets:new(live,[private,ordered_set]);
-        {error,Error}->
-          throw({subscribe_error,Error})
-      end;
-    true->
-      false
-  end.
-
-finish_live_copy(Source, Live, TargetRef)->
-
-  AccessMode = dlss_segment:get_access_mode(Source),
-  if
-    AccessMode =:= read_write->
-      % Give away live updates to another process until the mnesia is ready
-      give_away_live_updates(Live, TargetRef);
-    true->
-      ignore
-  end,
-
-  ets:delete( Live ).
-
-drop_live_copy(Source, Live)->
-
-  AccessMode = dlss_segment:get_access_mode(Source),
-  if
-    AccessMode =:= read_write->
-      dlss_subscription:unsubscribe( Source );
-    true->
-      ignore
-  end,
-
-  ets:delete( Live ).
-
 remote_copy_request(Owner, Source, Module, Options, #{
   hash := InitHash0
 } = InitState0)->
@@ -443,6 +400,49 @@ remote_copy_loop(Worker, #target{module = Module, name = Target} =TargetRef, #{
 %%===========================================================================
 %% LIVE COPY
 %%===========================================================================
+prepare_live_copy( Source )->
+  AccessMode = dlss_segment:get_access_mode( Source ),
+  if
+    AccessMode =:= read_write->
+      ?LOGINFO("LIVE COPY! ~p, subscribe...",[Source]),
+      case dlss_subscription:subscribe( Source ) of
+        ok->
+          % Success
+          ?LOGINFO("subscribed on ~p",[Source]),
+          % Prepare the storage for live updates anyway to avoid excessive check during the copying
+          ets:new(live,[private,ordered_set]);
+        {error,Error}->
+          throw({subscribe_error,Error})
+      end;
+    true->
+      false
+  end.
+
+finish_live_copy(Source, Live, TargetRef)->
+
+  AccessMode = dlss_segment:get_access_mode(Source),
+  if
+    AccessMode =:= read_write->
+      % Give away live updates to another process until the mnesia is ready
+      give_away_live_updates(Live, TargetRef);
+    true->
+      ignore
+  end,
+
+  ets:delete( Live ).
+
+drop_live_copy(Source, Live)->
+
+  AccessMode = dlss_segment:get_access_mode(Source),
+  if
+    AccessMode =:= read_write->
+      dlss_subscription:unsubscribe( Source );
+    true->
+      ignore
+  end,
+
+  ets:delete( Live ).
+
 roll_live_updates( Live, #target{ module = Module, name = Target } = TargetRef,  TailKey )->
 
   % First we flush subscriptions and roll them over already stockpiled actions,
@@ -463,7 +463,7 @@ roll_live_updates( Live, #target{ module = Module, name = Target } = TargetRef, 
 
   % Take out the actions that are in the copy range already
   Head = take_head(ets:first(Live), Live, TailKey),
-  ?LOGINFO("DEBUG: ~p actions to add to the copy ~p",[Target,length(Head)]),
+  ?LOGINFO("DEBUG: ~p actions to add to the copy ~p, stockpiled ~p",[Target,length(Head),ets:info(Live,size)]),
 
   Module:write_batch(Head, TargetRef).
 
