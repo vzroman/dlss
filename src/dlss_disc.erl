@@ -102,6 +102,8 @@ dump_source( _SourceRef )->
   timer:sleep( 10000 ),
   ok.
 dump_target( #target{name = Target, trick = true} )->
+  ?LOGINFO("DEBUG: close ~p",[Target]),
+  timer:sleep(1000),
   mnesia_eleveldb:sync_close_table(mnesia_eleveldb:default_alias(), Target);
 dump_target( _TargetRef )->
   ok.

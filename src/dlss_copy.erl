@@ -404,7 +404,8 @@ prepare_live_copy( Source )->
   AccessMode = dlss_segment:get_access_mode( Source ),
   if
     AccessMode =:= read_write->
-      ?LOGINFO("LIVE COPY! ~p, subscribe...",[Source]),
+      ?LOGINFO("---------------------LIVE COPY----------------------------"),
+      ?LOGINFO("~p subscribe....",[Source]),
       case dlss_subscription:subscribe( Source ) of
         ok->
           % Success
