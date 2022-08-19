@@ -547,6 +547,7 @@ wait_table_ready(#target{name = Target, module = Module} = TargetRef, Logger, No
   ]),
 
   Module:write_batch(Actions, TargetRef),
+  timer:sleep(3000),
 
   wait_table_ready(TargetRef, Logger, dlss_segment:where_to_write(Target) );
 
