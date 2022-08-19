@@ -297,12 +297,8 @@ init([ Storage ])->
   }}.
 
 handle_call(Request, From, State) ->
-  ?LOGWARNING("unexpected request from ~p, request ~p",[From,Request]),
+  ?LOGWARNING("storage serbvr got unexpected call request from ~p, request ~p",[From,Request]),
   {noreply, State}.
-
-handle_cast({stop,From},State)->
-  From!{stopped,self()},
-  {stop, normal, State};
 
 handle_cast(rebalance, #state{storage = Storage} = State)->
   ?LOGINFO("~p storage trigger rebalance procedure",[Storage]),
@@ -316,7 +312,7 @@ handle_cast(verify_hash, #state{storage = Storage} = State)->
   {noreply, State};
 
 handle_cast(Request,State)->
-  ?LOGWARNING("unexpected request ~p",[Request]),
+  ?LOGWARNING("storage server got unexpected  cast request ~p",[Request]),
   {noreply,State}.
 
 %%============================================================================
@@ -338,7 +334,15 @@ handle_info(loop,#state{
         State
     end,
 
-  {noreply, State1}.
+  {noreply, State1};
+
+handle_info({subscription,_,_},State)->
+  % Late tail subscription updates during active copying
+  {noreply, State};
+handle_info(Unexpected,State)->
+  ?LOGWARNING("storage server got unexpected  info message ~p",[Unexpected]),
+  {noreply, State}.
+
 
 
 terminate(Reason,#state{storage = Storage})->

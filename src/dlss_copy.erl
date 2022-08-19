@@ -287,11 +287,6 @@ drop_live_copy(Source, Live)->
 
   ets:delete( Live ).
 
-
-
-
-
-
 remote_copy_request(Owner, Source, Module, Options, #{
   hash := InitHash0
 } = InitState0)->
@@ -477,6 +472,7 @@ give_away_live_updates(Live, #target{ name = Target } = TargetRef)->
       receive
         {start, Owner}->
           ?LOGINFO("DEBUG: ~p take live updates",[Target]),
+          spawn_link(fun()->not_ready(Target) end),
           wait_table_ready(TargetRef, dlss_segment:where_to_write( Target ))
       end
     end),
@@ -516,7 +512,6 @@ flush_subscriptions(#target{name = Target, module = Module}=TargetRef)->
   end.
 
 wait_table_ready(#target{name = Target} = TargetRef, Node) when Node =/= node()->
-  ?LOGINFO("DEBUG: ~p is not ready yet",[Target]),
   % It's not ready yet
   flush_subscriptions(TargetRef),
 
@@ -529,6 +524,11 @@ wait_table_ready(#target{name = Target} = TargetRef, Node) when Node=:=node()->
   flush_subscriptions( TargetRef ),
 
   ?LOGINFO("~p live copy is ready",[Target]).
+
+not_ready(Target)->
+  ?LOGINFO("~p live copy is not ready yet",[Target]),
+  timer:sleep(5000),
+  not_ready( Target ).
 
 do_copy(SourceRef, Module, OnBatch, InAcc)->
 
