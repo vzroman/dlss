@@ -179,8 +179,8 @@ local_copy( Source, Target, Module, #{
 remote_copy(Source, Target, Module, #{attempts := Attempts } = Options ) when Attempts > 0->
   try remote_copy_attempt( Source, Target, Module, Options )
   catch
-    _:Error->
-      ?LOGERROR("~p copy attempt failed, left attempts ~p",[ Source, Attempts - 1]),
+    _:Error:Stack->
+      ?LOGERROR("~p copy attempt failed, error ~p, stack ~p, left attempts ~p",[ Source, Error, Stack, Attempts - 1]),
       remote_copy( Source, Target, Module, Options#{ attempts => Attempts - 1, error => Error})
   end;
 remote_copy(_Source, _Target, _Module, #{error := Error })->
