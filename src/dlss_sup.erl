@@ -32,6 +32,15 @@ start_link() ->
 
 init([]) ->
 
+  Subscriptions = #{
+    id=>dlss_subscription,
+    start=>{dlss_subscription,start_link,[]},
+    restart=>permanent,
+    shutdown=>?ENV(stop_timeout, ?DEFAULT_STOP_TIMEOUT),
+    type=>worker,
+    modules=>[dlss_subscription]
+  },
+
   Backend=#{
     id=>dlss_backend,
     start=>{dlss_backend,start_link,[]},
@@ -57,6 +66,7 @@ init([]) ->
   },
 
   {ok, {Supervisor, [
+    Subscriptions,
     Backend,
     SchemaSupervisor
   ]}}.

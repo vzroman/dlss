@@ -52,7 +52,6 @@ start_link() ->
       {ok, spawn_link(fun()-> init(Sup) end)}
   end.
 
-
 init(Sup)->
 
   register(?MODULE, self()),
