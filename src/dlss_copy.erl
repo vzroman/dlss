@@ -506,9 +506,11 @@ flush_subscriptions(#target{name = Target, module = Module}=TargetRef)->
       {K, Action} = Module:live_action( Update ),
       ?LOGINFO("DEBUG: ~p flush subscription key ~p, action ~p",[ Target, Module:decode_key(K), Action]),
       Module:write_batch([Action],TargetRef),
-      flush_subscriptions(TargetRef)
+      flush_subscriptions(TargetRef);
+    Other->
+      ?LOGINFO("DEBUG: other ~p",[Other])
   after
-    1000->ok
+    60000->ok
   end.
 
 wait_table_ready(#target{name = Target} = TargetRef, Logger, Node) when Node =/= node()->
