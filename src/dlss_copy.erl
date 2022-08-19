@@ -372,7 +372,7 @@ remote_copy_loop(Worker, #target{module = Module, name = Target} =TargetRef, #{
       % Roll over stockpiled live updates
       if
         Live =/= false->
-          ?LOGINFO("~p roll live updates...",[Target]),
+          ?LOGINFO("~p roll over live updates...",[Target]),
           roll_live_updates( Live, TargetRef, TailKey);
         true ->
           ignore
@@ -442,7 +442,10 @@ roll_live_updates( Live, #target{ module = Module, name = Target } = TargetRef, 
   % and so will overwrite came live update.
   % Timeout 0 because we must to receive the next remote batch as soon as possible
   Updates = flush_subscriptions( Target, _Timeout = 0 ),
-  ?LOGINFO("DEBUG: ~p live updates count ~p",[Target,length(Updates)]),
+  ?LOGINFO("~p live updates count ~p",[
+    Target,
+    ?PRETTY_COUNT(length(Updates))
+  ]),
 
   % Convert the updates into the actions
   Actions =
@@ -454,7 +457,11 @@ roll_live_updates( Live, #target{ module = Module, name = Target } = TargetRef, 
 
   % Take out the actions that are in the copy range already
   Head = take_head(ets:first(Live), Live, TailKey),
-  ?LOGINFO("DEBUG: ~p actions to add to the copy ~p, stockpiled ~p",[Target,length(Head),ets:info(Live,size)]),
+  ?LOGINFO("~p actions to add to the copy ~p, stockpiled ~p",[
+    Target,
+    ?PRETTY_COUNT(length(Head)),
+    ?PRETTY_COUNT(ets:info(Live,size))
+  ]),
 
   Module:write_batch(Head, TargetRef).
 
@@ -509,7 +516,10 @@ roll_tail_updates( Live, #target{ module = Module, name = Target } = TargetRef )
 
   % Timeout because I have already unsubscribed and it's a finite process
   Updates = flush_subscriptions( Target, ?FLUSH_TAIL_TIMEOUT ),
-  ?LOGINFO("DEBUG: ~p tail updates count ~p",[Target,length(Updates)]),
+  ?LOGINFO("~p tail updates count ~p",[
+    Target,
+    ?PRETTY_COUNT(length(Updates))
+  ]),
 
   % Convert the updates into the actions
   Actions =
@@ -526,10 +536,15 @@ roll_tail_updates( Live, #target{ module = Module, name = Target } = TargetRef )
 
 wait_table_ready(#target{name = Target, module = Module} = TargetRef, Logger, Node) when Node =/= node()->
   % The copy is not ready yet
-  Updates = flush_subscriptions( Target, ?FLUSH_TAIL_TIMEOUT ),
+  Updates = flush_subscriptions( Target, 0 =_Timeout ),
 
   Actions =
     [ Module:live_action(U) || U <- Updates ],
+
+  ?LOGINFO("~p write tail updates count ~p",[
+    Target,
+    ?PRETTY_COUNT(length(Actions))
+  ]),
 
   Module:write_batch(Actions, TargetRef),
 
