@@ -58,10 +58,10 @@
   get_size/1,
   get_access_mode/1,
   set_access_mode/2,
-  where_to_read/1,
-  where_to_write/1,
   get_active_nodes/1,
-  in_read_write_mode/2
+
+  read_node/1,
+  module_node/1
 ]).
 
 -define(MAX_SIZE(Type),
@@ -71,28 +71,96 @@
   end).
 
 %%=================================================================
+%%	Decisions engine
+%%=================================================================
+% Writes are still to the mnesia
+
+
+-define(RAND(Ns),
+  case Ns -- dlss_node:get_ready_nodes() of
+    [] -> undefined;
+    _@Ready->
+      _@N = erlang:phash2(make_ref(),length(Ready)),
+      lists:nth(_@N+1, _@Ready)
+  end).
+
+-define(UNAVAILABLE,
+  if
+    ?FUNCTION_NAME=:=dirty_read;?FUNCTION_NAME=:=read->not_found;
+    ?FUNCTION_NAME=:=select;?FUNCTION_NAME=:=dirty_select;?FUNCTION_NAME=:=dirty_scan->[];
+    true->'$end_of_table'
+  end).
+
+-define(RPC(N,M,A),
+  case rpc:call(N,M,?FUNCTION_NAME,A) of
+    {badrpc,_} ->?UNAVAILABLE(F);
+    _@OK -> _@OK
+  end).
+
+-define(READY(Ns),Ns -- (Ns --dlss_node:get_ready_nodes())).
+
+-define(NODE(Ns),
+  case lists:member(node(), ?READY(Ns)) of
+    true -> node();
+    _-> ?RAND( Nodes )
+  end).
+
+-define(M(T),
+  if
+    T=:=ram->dlss_ram;
+    T=:=ramdisc->dlss_ramdisc;
+    true->dlss_disc
+  end
+).
+
+-define(MODULE_NODE(S),
+  begin
+    { _@T, _@Ns } = type_nodes( S ),
+    { ?M(_@T), ?NODE(_@Ns) }
+  end).
+
+-define(CALL(S,A),
+  case ?MODULE_NODE(S) of
+    {_@M,_@N} when _@N=:=node()->apply(_@M,?FUNCTION_NAME,[S|A]);
+    {_@M,_@N} when _@N=/=undefined ->  ?RPC(_@N,_@M,[S|A])
+    {_,_}->?UNAVAILABLE;
+  end).
+
+% TODO. Optimize me!
+type_nodes( Segment )->
+  Nodes=[{T,mnesia:table_info(Segment,CT)}||{CT,T}<-[
+    {disc_copies,ramdisc},
+    {ram_copies,ram},
+    {leveldb_copies,disc}
+  ]],
+  case [{T,N}||{T,N}<-Nodes,N=/=[]] of
+    [Result]->Result;
+    _->throw(invalid_storage_type)
+  end.
+
+%%=================================================================
 %%	STORAGE SEGMENT API
 %%=================================================================
 %-------------ITERATOR----------------------------------------------
 first(Segment)->
   mnesia:first(Segment).
 dirty_first(Segment)->
-  mnesia:dirty_first(Segment).
+  ?CALL(Segment,[]).
 
 last(Segment)->
   mnesia:last(Segment).
 dirty_last(Segment)->
-  mnesia:dirty_last(Segment).
+  ?CALL(Segment,[]).
 
 next(Segment,Key)->
   mnesia:next(Segment,Key).
 dirty_next(Segment,Key)->
-  mnesia:dirty_next(Segment,Key).
+  ?CALL(Segment,[Key]).
 
 prev(Segment,Key)->
   mnesia:prev(Segment,Key).
 dirty_prev(Segment,Key)->
-  mnesia:dirty_prev(Segment,Key).
+  ?CALL(Segment,[Key]).
 
 %-------------INTERVAL SCAN----------------------------------------------
 dirty_scan(Segment,From,To)->
@@ -100,7 +168,7 @@ dirty_scan(Segment,From,To)->
 dirty_scan(Segment,From,To,Limit)->
   Node = where_to_read( Segment ),
   if
-    Node =:= nowhere ->[];
+    Node =:= unavailable ->[];
     Node =:= node()->
       do_dirty_scan(Segment,From,To,Limit);
     true->
@@ -416,7 +484,7 @@ read( Segment, Key, Lock)->
     _->not_found
   end.
 dirty_read(Segment,Key)->
-  case mnesia:dirty_read(Segment,Key) of
+  case ?CALL(Segment,[Key]) of
     [#kv{value = Value}]->Value;
     _->not_found
   end.
@@ -577,7 +645,7 @@ in_read_write_mode(Segment,Fun)->
   end.
 %----------Calculate the size (bytes) occupied by the segment-------
 get_size(Segment)->
-  dlss_copy:get_size( Segment ).
+  ?CALL(Segment,[]).
 
 get_access_mode( Segment )->
   mnesia:table_info( Segment, access_mode ).
@@ -589,14 +657,12 @@ set_access_mode( Segment , Mode )->
     {aborted,Reason}->{error,Reason}
   end.
 
-where_to_read( Segment )->
-  mnesia:table_info( Segment, where_to_read ).
+read_node( Segment )->
+  {_T,Node} = ?MODULE_NODE(Segment),
+  Node.
 
-where_to_write( Segment )->
-  case mnesia:table_info( Segment, where_to_write ) of
-    [Node|_]-> Node;
-    Other -> Other
-  end.
+module_node( Segment )->
+  ?MODULE_NODE( Segment ).
 
 get_active_nodes( Segment )->
   mnesia:table_info(Segment, active_replicas).
@@ -604,17 +670,6 @@ get_active_nodes( Segment )->
 %%============================================================================
 %%	Internal helpers
 %%============================================================================
-get_nodes(Segment)->
-  Nodes=[{T,mnesia:table_info(Segment,CT)}||{CT,T}<-[
-    {disc_copies,ramdisc},
-    {ram_copies,ram},
-    {leveldb_copies,disc}
-  ]],
-  case [{T,N}||{T,N}<-Nodes,N=/=[]] of
-    [Result]->Result;
-    _->throw(invalid_storage_type)
-  end.
-
 table_attributes(#{
   type:=Type,
   nodes:=Nodes,

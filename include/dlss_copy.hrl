@@ -23,6 +23,20 @@
 -define(REMOTE_BATCH_SIZE, 4194304). % 4 MB
 -define(FLUSH_TAIL_TIMEOUT,1000).
 
+-define(DEFAULT_OPTIONS,#{
+  start_key =>undefined,
+  end_key => undefined,
+  hash => <<>>,
+  sync => false,
+  attempts => 3
+}).
+-define(OPTIONS(O),maps:merge(?DEFAULT_OPTIONS,O)).
+
+% Log formats
+-define(LOG_LOCAL(Source,Target),io_lib:format("local copy: ~p:~p",[Source,Target])).
+-define(LOG_SEND(Source,Node,Target),io_lib:format("remote copy: source ~p target ~p:~p",[Source,Node,Target])).
+-define(LOG_RECEIVE(Node,Source,Target),io_lib:format("remote copy: source ~p:~p target ~p",[Node,Source,Target])).
+
 % Copy properties
 -define(PROPS,[
   type,
