@@ -197,12 +197,9 @@ remote_copy_attempt( Source, Target, Module, #{
   InitState = #{
     receiver => Receiver,
     receive_node => node(),
-    send_node => SendNode,
     source => Source,
     target => Target,
-    hash => InitHash0,
-    size => 0,
-    batch => []
+    hash => InitHash0
   },
 
   Sender = spawn_link(SendNode, ?MODULE, remote_copy_request,[Source,Module,Options,InitState]),
@@ -219,7 +216,7 @@ remote_copy_attempt( Source, Target, Module, #{
 
   %-------Enter the copy loop----------------------
   FinalHash =
-    try receive_copy_loop(Sender, TargetRef, #{hash => InitHash, live =>Live})
+    try receive_copy_loop(Sender, TargetRef, #{hash => InitHash, live =>Live, send_node => SendNode })
     catch
       _:Error:Stack->
         drop_live_copy(Source, Live ),
@@ -284,7 +281,9 @@ send_copy_loop(Source, Module, Options, #{
 
   InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
   InitState = InitState0#{
-    hash => InitHash
+    hash => InitHash,
+    size => 0,
+    batch => []
   },
 
   TailState =
