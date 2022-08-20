@@ -190,13 +190,14 @@ remote_copy_attempt( Source, Target, Module, #{
   hash := InitHash0
 } = Options )->
 
-  ReadNode = get_read_node( Source ),
+  SendNode = get_read_node( Source ),
   TargetRef = init_target( Target, Source, Module, Options ),
 
   Receiver = self(),
   InitState = #{
     receiver => Receiver,
     receive_node => node(),
+    send_node => SendNode,
     source => Source,
     target => Target,
     hash => InitHash0,
@@ -204,32 +205,32 @@ remote_copy_attempt( Source, Target, Module, #{
     batch => []
   },
 
-  Sender = spawn_link(ReadNode, ?MODULE, remote_copy_request,[Source,Module,Options,InitState]),
+  Sender = spawn_link(SendNode, ?MODULE, remote_copy_request,[Source,Module,Options,InitState]),
 
   InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
 
   % The remote sender needs a confirmation of the previous batch before it sends the next one
   Sender ! {confirmed, self()},
 
-  ?LOGINFO("~p: copy from ~p, module ~p, options ~p",[Source, ReadNode, Module, Options]),
+  ?LOGINFO("~p: copy from ~p, module ~p, options ~p",[Source, SendNode, Module, Options]),
 
   % Check if it's a live copy
   Live = prepare_live_copy( Source ),
 
   %-------Enter the copy loop----------------------
   FinalHash =
-    try remote_copy_loop(Sender, TargetRef, #{hash => InitHash, live =>Live})
+    try receive_copy_loop(Sender, TargetRef, #{hash => InitHash, live =>Live})
     catch
       _:Error:Stack->
         drop_live_copy(Source, Live ),
         rollback_target( TargetRef ),
         case Error of
           invalid_hash->
-            ?LOGERROR("~p invalid remote hash from ~p",[Source,ReadNode]);
+            ?LOGERROR("~p invalid remote hash from ~p",[Source,SendNode]);
           {interrupted,Reason}->
-            ?LOGERROR("~p copying from ~p interrupted, reason ~p",[Source,ReadNode,Reason]);
+            ?LOGERROR("~p copying from ~p interrupted, reason ~p",[Source,SendNode,Reason]);
           Other->
-            ?LOGERROR("~p copying from ~p, unexpected error: ~p ",[Source,ReadNode,Other])
+            ?LOGERROR("~p copying from ~p, unexpected error: ~p ",[Source,SendNode,Other])
         end,
         throw({Error,Stack})
     after
@@ -255,7 +256,7 @@ remote_copy_request(Source, Module, Options, #{
   Result =
     set_lock(Source, write, Receiver,fun()->
       ?LOGINFO("~p locked, start copying to ~p",[Source,Node]),
-      try send_local_copy(Source, Module, Options, InitState)
+      try send_copy_loop(Source, Module, Options, InitState)
       catch
         _:Error:Stack->
           ?LOGERROR("~p copy to ~p error ~p, stack ~p",[Source,Node,Error,Stack]),
@@ -275,7 +276,7 @@ set_lock(Segment, Lock, Receiver, Transaction)->
       Result
   end.
 
-send_local_copy(Source, Module, Options, #{
+send_copy_loop(Source, Module, Options, #{
   hash := InitHash0,
   receive_node := Node
 } = InitState0)->
@@ -366,21 +367,32 @@ unzip_batch( [Zip|Rest], {Acc0,Hash0})->
 unzip_batch([], Acc)->
   Acc.
 
-remote_copy_loop(Sender, #target{module = Module, name = Target} =TargetRef, #{
+receive_copy_loop(Sender, #target{module = Module, name = Target} =TargetRef, #{
   hash := Hash0,
-  live := Live
+  live := Live,
+  send_node := SendNode
 }=Acc)->
   receive
     {write_batch, Sender, ZipBatch, ZipSize, SenderHash }->
 
-      ?LOGINFO("~p: batch received, size ~s, hash ~s",[Target,?PRETTY_SIZE(ZipSize),?PRETTY_HASH(SenderHash)]),
+      ?LOGINFO("~p: batch received from ~p, size ~s, hash ~s",[
+        Target,
+        SendNode,
+        ?PRETTY_SIZE(ZipSize),
+        ?PRETTY_HASH(SenderHash)
+      ]),
       {BatchList,Hash} = unzip_batch( lists:reverse(ZipBatch), {[],Hash0}),
 
       % Check hash
       case crypto:hash_final(Hash) of
         SenderHash -> Sender ! {confirmed, self()};
         LocalHash->
-          ?LOGERROR("~p: invalid remote hash ~s, local hash ~s",[Target,?PRETTY_HASH(SenderHash), ?PRETTY_HASH(LocalHash)]),
+          ?LOGERROR("~p: invalid sender ~p hash ~s, local hash ~s",[
+            Target,
+            SendNode,
+            ?PRETTY_HASH(SenderHash),
+            ?PRETTY_HASH(LocalHash)
+          ]),
           Sender ! {invalid_hash, self()},
           throw(invalid_hash)
       end,
@@ -411,22 +423,28 @@ remote_copy_loop(Sender, #target{module = Module, name = Target} =TargetRef, #{
           ignore
       end,
 
-      remote_copy_loop(Sender, TargetRef, Acc#{hash => Hash, tail_key => TailKey});
+      receive_copy_loop(Sender, TargetRef, Acc#{hash => Hash, tail_key => TailKey});
+    {lock_timeout, Sender}->
+      ?LOGINFO("~p sender ~p was unable to set lock, segment is under transformation, wait...."),
+      receive_copy_loop(Sender, TargetRef, Acc);
     {finish,Sender,{ok,SenderFinalHash}}->
-
       % Finish
-      ?LOGINFO("~p: remote worker finished, final hash ~s",[Target, ?PRETTY_HASH(WorkerFinalHash)]),
+      ?LOGINFO("~p: sender ~p finished, final hash ~s",[Target,SendNode, ?PRETTY_HASH(SenderFinalHash)]),
       case crypto:hash_final(Hash0) of
-        WorkerFinalHash ->
-          WorkerFinalHash;
+        SenderFinalHash ->
+          SenderFinalHash;
         LocalFinalHash->
-          ?LOGERROR("~p: invalid remote final hash ~s, local final hash ~s",[
+          ?LOGERROR("~p: invalid sender ~p final hash ~s, local final hash ~s",[
             Target,
-            ?PRETTY_HASH(WorkerFinalHash),
+            SendNode,
+            ?PRETTY_HASH(SenderFinalHash),
             ?PRETTY_HASH(LocalFinalHash)
           ]),
           throw(invalid_hash)
       end;
+    {finish,Sender,{error,SenderError}}->
+      ?LOGERROR("~p sender ~p error ~p",[Target,SendNode,SenderError]),
+      throw({interrupted,SenderError});
     {'EXIT',Sender,Reason}->
       throw({interrupted,Reason});
     {'EXIT',_Other,Reason}->
