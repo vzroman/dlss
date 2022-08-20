@@ -119,7 +119,10 @@ disk_rebalance(_Config)->
   Count0 = 20000000,
   GB = 200000000.
   dlss:add_storage(s1,disc).
+  dlss:add_node('dlss@node.2').
   P=dlss_copy:debug(s1,10*200000000).
+
+mnesia:table_info( dlss_s1_1, where_to_write ).
 
 
   dlss:dirty_write(s1,{x,200000000/2,0},middle).

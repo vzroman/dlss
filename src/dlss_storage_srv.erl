@@ -388,13 +388,18 @@ set_read_only_mode(Storage, Node)->
       #{ local := true }->
         % Local only storage types are not synchronized between nodes
         ok;
-      _->
+      #{nodes := Nodes}->
         case master_node( S ) of
           Node->
             % The node is the master for the segment
             case dlss_segment:get_access_mode(S) of
               read_write ->
-                set_segment_read_only( S );
+                case Nodes -- (Nodes -- dlss:get_ready_nodes()) of
+                  []->
+                    set_segment_read_only( S );
+                  NotReadyNodes->
+                    ?LOGINFO("~p copies at ~p are not available, skip set read only mode",[S,NotReadyNodes])
+                end;
               _ ->
                 ignore
             end;
