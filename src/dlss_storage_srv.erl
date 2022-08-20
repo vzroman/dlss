@@ -384,30 +384,27 @@ loop( #state{ storage =  Storage} = State )->
 set_read_only_mode(Storage, Node)->
   Root = dlss_storage:root_segment(Storage),
 
-  [ case dlss_segment:get_info( S ) of
-      #{ local := true }->
-        % Local only storage types are not synchronized between nodes
-        ok;
-      #{nodes := Nodes}->
-        case master_node( S ) of
-          Node->
-            % The node is the master for the segment
-            case dlss_segment:get_access_mode(S) of
-              read_write ->
-                case Nodes -- (Nodes -- dlss:get_ready_nodes()) of
-                  []->
-                    set_segment_read_only( S );
-                  NotReadyNodes->
-                    ?LOGINFO("~p copies at ~p are not available, skip set read only mode",[S,NotReadyNodes])
-                end;
-              _ ->
-                ignore
-            end;
-          _->
-            % The node is not the master of the segment
-            ignore
-        end
-    end || S <- dlss_storage:get_segments(Storage), S =/= Root ],
+  [begin
+     #{nodes := Nodes} = dlss_segment:get_info( S ),
+     case master_node( S ) of
+       Node->
+         % The node is the master for the segment
+         case dlss_segment:get_access_mode(S) of
+           read_write ->
+             case Nodes -- dlss:get_ready_nodes() of
+               []->
+                 set_segment_read_only( S );
+               NotReadyNodes->
+                 ?LOGINFO("~p copies at ~p are not available, skip set read only mode",[S,NotReadyNodes])
+             end;
+           _ ->
+             ignore
+         end;
+       _->
+         % The node is not the master of the segment
+         ignore
+     end
+   end || S <- dlss_storage:get_segments(Storage), S =/= Root],
   ok.
 
 set_segment_read_only(Segment)->
@@ -436,7 +433,10 @@ pending_transformation( Storage, Node )->
         {ok, P } = dlss_storage:segment_params(S),
         { S, P }
       end || S <- dlss_storage:get_segments(Storage) ],
-  case [ {S, P} || {S, #{level:=L} = P}<-Segments, is_float(L) ] of
+  case [ {S, P} || {S, #{level:=L} = P}<-Segments,
+    is_float(L), % Segment is queued for transformation
+    read_only =:= dlss_segment:get_access_mode(S)
+  ] of
     [{ Segment, #{level := Level} = Params } | _ ]->
       % The segment is under transformation
       case which_operation( Level ) of
