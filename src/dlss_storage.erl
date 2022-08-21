@@ -181,8 +181,8 @@ segment_params(Name)->
           { K } -> K;
           _-> '$start_of_table'
         end,
-      { ok, #{ storage => Str, level => Lvl, key => StartKey, version=>Version, copies => Copies } };
-    Error -> Error
+      #{ storage => Str, level => Lvl, key => StartKey, version=>Version, copies => Copies };
+    {error,Error} -> throw( Error )
   end.
 
 %---------Create/remove a storage----------------------------------------

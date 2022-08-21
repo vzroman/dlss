@@ -48,20 +48,25 @@
 %%	SERVICE API
 %%=================================================================
 -export([
+
   create/2,
   remove/1,
+
+  add_copy/1,
+  remove_copy/1,
+
+  merge/3,
+  split/1,
+
   get_info/1,
   get_local_segments/0,
-  is_empty/1,
-  add_node/2,
-  remove_node/2,
+
   get_size/1,
-  get_access_mode/1,
-  set_access_mode/2,
+  access_mode/1,access_mode/2,
   get_active_nodes/1,
 
   read_node/1,
-  module_node/1
+  ready_nodes/1
 ]).
 
 -define(MAX_SIZE(Type),
@@ -515,14 +520,13 @@ dirty_delete(Segment,Key)->
 %%=================================================================
 %%	Service API
 %%=================================================================
-create(Name,#{nodes := Nodes0} = Params0)->
+create(Name,#{nodes := Nodes} = Params0)->
   % The segment can be created only on ready nodes. The nodes that are
   % not active now will add it later by storage supervisor
-  ReadyNodes = dlss:get_ready_nodes(),
-  Nodes = ordsets:intersection(ordsets:from_list(Nodes0), ordsets:from_list(ReadyNodes)),
+  ReadyNodes = ?READY( Nodes ),
 
   if
-    length(Nodes) > 0 ->
+    length(ReadyNodes) > 0 ->
       Params = Params0#{
         nodes => Nodes
       },
@@ -538,11 +542,11 @@ create(Name,#{nodes := Nodes0} = Params0)->
         {aborted, Reason } -> {error, Reason}
       end;
     true ->
-      { error, none_of_the_nodes_is_ready }
+      { error, nodes_not_ready }
   end.
 
 remove(Name)->
-  case set_access_mode( Name, read_write ) of
+  case access_mode( Name, read_write ) of
     ok ->
       case mnesia:delete_table(Name) of
         {atomic,ok}->ok;
@@ -569,13 +573,8 @@ get_local_segments()->
       _ -> false
     end].
 
-is_empty(Segment)->
-  case dirty_first(Segment) of
-    '$end_of_table'->true;
-    _->false
-  end.
 
-add_node(Segment,Node)->
+add_copy( Segment )->
 
   case get_info(Segment) of
     #{local:=true}-> throw(local_only);
@@ -597,6 +596,10 @@ add_node(Segment,Node)->
         _ -> add_node(Segment, Node, mnesia:table_info(Segment, access_mode))
       end
   end.
+
+copy_is_ready( Segment )->
+  ok.
+
 add_node(Segment, Node, read_only)->
   in_read_write_mode(Segment, fun()->
     add_node(Segment, Node, read_write )
@@ -614,18 +617,18 @@ add_node(Segment,Node, _AccessMode)->
     {aborted,Reason}->{error,Reason}
   end.
 
-remove_node(Segment,Node)->
-  remove_node(Segment, Node, mnesia:table_info(Segment, access_mode)).
-remove_node(Segment, Node, read_only)->
+remove_copy(Segment)->
+  remove_copy(Segment, mnesia:table_info(Segment, access_mode)).
+remove_copy(Segment, read_only)->
   in_read_write_mode(Segment, fun()->
-    remove_node(Segment, Node, read_write )
+    remove_copy(Segment, read_write )
   end);
-remove_node(Segment, Node, _AccessMode)->
+remove_copy(Segment, _AccessMode)->
   case get_active_nodes( Segment ) of
-    [ Node ]->
+    [ _OnlyCopy ]->
       {error, only_copy};
     _ ->
-      case mnesia:del_table_copy(Segment,Node) of
+      case mnesia:del_table_copy(Segment,node()) of
         {atomic,ok}->ok;
         {aborted,Reason}->{error,Reason}
       end
@@ -647,10 +650,10 @@ in_read_write_mode(Segment,Fun)->
 get_size(Segment)->
   ?CALL(Segment,[]).
 
-get_access_mode( Segment )->
+access_mode( Segment )->
   mnesia:table_info( Segment, access_mode ).
 
-set_access_mode( Segment , Mode )->
+access_mode( Segment , Mode )->
   case mnesia:change_table_access_mode(Segment, Mode) of
     {atomic,ok} -> ok;
     {aborted,{already_exists,Segment,Mode}}->ok;
@@ -661,11 +664,8 @@ read_node( Segment )->
   {_T,Node} = ?MODULE_NODE(Segment),
   Node.
 
-module_node( Segment )->
-  ?MODULE_NODE( Segment ).
-
-get_active_nodes( Segment )->
-  mnesia:table_info(Segment, active_replicas).
+ready_nodes( Segment )->
+  ok.
 
 %%============================================================================
 %%	Internal helpers

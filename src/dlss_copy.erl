@@ -42,41 +42,12 @@
   debug/2
 ]).
 
--record(acc,{acc, source_ref, batch, size, on_batch }).
-
--record(r_copy,{
-  send_node,
-  source,
-  target,
-  module,
-  options,
-  attempts,
-  error
-}).
-
--record(r_args,{
-  sender,
-  target_ref,
-  live,
-  hash,
-  tail_key,
-  log
-}).
-
--record(s_args,{
-  receiver,
-  source_ref,
-  hash,
-  log,
-  size,
-  batch
-}).
 
 -record(split_l,{module, key, hash, total_size}).
 -record(split_r,{i, module, size, key}).
 
 %%-----------------------------------------------------------------
-%%  Utilities
+%%  Internals
 %%-----------------------------------------------------------------
 init_props( Source )->
   All =
@@ -131,6 +102,80 @@ rollback_target(#target{trick = true, module = Module,name = Target, guard = Gua
 rollback_target(_T)->
   ok.
 
+-record(acc,{acc, source_ref, batch, size, on_batch }).
+fold(#source{module = Module} = SourceRef, OnBatch, InAcc)->
+
+  Acc0 = #acc{
+    source_ref = SourceRef,
+    batch = [],
+    acc = InAcc,
+    size = 0,
+    on_batch = OnBatch
+  },
+
+  case try Module:fold(SourceRef, fun iterator/2, Acc0)
+  catch
+   _:{stop,Stop}-> Stop;
+   _:{final,Final}->{final,Final}
+  end of
+    #acc{batch = [], acc = FinalAcc}-> FinalAcc;
+    #acc{batch = Tail, size = Size, acc = TailAcc, on_batch = OnBatch}->
+      OnBatch(Tail, Size, TailAcc);
+    {final,FinalAcc}-> FinalAcc
+  end.
+%----------------------WITH STOP KEY-----------------------------
+iterator({K,V},#acc{
+  source_ref = #source{module = Module, stop = Stop},
+  batch = Batch,
+  size = Size0
+} = Acc)
+  when Size0 < ?BATCH_SIZE, Stop =/= undefined, K < Stop->
+
+  {Action,Size} = Module:action({K,V}),
+  Acc#acc{batch = [Action|Batch], size = Size0 + Size};
+
+% Batch is ready
+iterator({K,V},#acc{
+  source_ref = #source{module = Module, stop = Stop},
+  batch = Batch,
+  on_batch = OnBatch,
+  acc = InAcc0,
+  size = Size0
+} = Acc)
+  when Stop =/= undefined, K < Stop->
+
+  {Action,Size} = Module:action({K,V}),
+
+  Acc#acc{batch = [Action], acc = OnBatch(Batch, Size0, InAcc0), size = Size};
+
+% stop key reached
+iterator(_Rec,#acc{source_ref = #source{stop = Stop}} = Acc)
+  when Stop =/= undefined->
+  throw({stop, Acc});
+
+%----------------------NO STOP KEY-----------------------------
+iterator({K,V},#acc{
+  source_ref = #source{module = Module},
+  batch = Batch,
+  size = Size0
+} = Acc)
+  when Size0 < ?BATCH_SIZE->
+
+  {Action,Size} = Module:action({K,V}),
+  Acc#acc{batch = [Action|Batch], size = Size0 + Size};
+
+% Batch is ready
+iterator({K,V},#acc{
+  source_ref = #source{module = Module},
+  batch = Batch,
+  on_batch = OnBatch,
+  size = Size0,
+  acc = InAcc0
+} = Acc) ->
+
+  {Action,Size} = Module:action({K,V}),
+  Acc#acc{batch = [Action], acc =OnBatch(Batch, Size0, InAcc0), size = Size}.
+
 %%=================================================================
 %%	API
 %%=================================================================
@@ -148,6 +193,9 @@ copy( Source, Target, Options0 )->
       remote_copy(Source, Target, Module, Options )
   end.
 
+%---------------------------------------------------------------------
+% LOCAL COPY
+%---------------------------------------------------------------------
 local_copy( Source, Target, Module, #{
   hash := InitHash0
 } = Options)->
@@ -170,7 +218,7 @@ local_copy( Source, Target, Module, #{
 
   InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
 
-  FinalHash0 = do_copy(SourceRef, OnBatch, InitHash ),
+  FinalHash0 = fold(SourceRef, OnBatch, InitHash ),
   FinalHash = crypto:hash_final( FinalHash0 ),
 
   commit_target( TargetRef ),
@@ -180,6 +228,14 @@ local_copy( Source, Target, Module, #{
     ?PRETTY_HASH(FinalHash)]),
 
   FinalHash.
+
+%---------------------------------------------------------------------
+% REMOTE COPY
+%---------------------------------------------------------------------
+%                               Types
+-record(r_copy,{ send_node, source, target, module, options, attempts, error }).
+-record(r_acc,{ sender, target_ref, live, hash, tail_key, log }).
+-record(s_acc,{ receiver, source_ref, hash, log, size, batch}).
 
 remote_copy(Source, Target, Module, #{attempts:=Attempts} = Options )->
   remote_copy(#r_copy{
@@ -212,7 +268,7 @@ remote_copy(#r_copy{
 
   TargetRef = init_target( Target, Source, Module, Options ),
   % Check if it's a live copy
-  Live = prepare_live_copy( Source ),
+  Live = prepare_live_copy( Source, Log ),
 
   InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
 
@@ -229,7 +285,7 @@ remote_copy(#r_copy{
   Sender ! {confirmed, self()},
 
   FinalHash=
-    try receive_copy_loop(#r_args{
+    try receive_loop(#r_acc{
       sender = Sender,
       target_ref = TargetRef,
       live = Live,
@@ -259,145 +315,13 @@ remote_copy(#r_copy{source = Source, target = Target,error = {Error,Stack}})->
   ]),
   throw( Error ).
 
-remote_copy_request(#{
-  receiver := Receiver,
-  source := Source,
-  log := Log,
-  options => #{ hash:= InitHash0}= Options
-})->
-
-  ?LOGINFO("~p remote copy request options ~p", [
-    Log, Options
-  ]),
-
-  % set the guard
-  spawn_link(fun()->
-    process_flag(trap_exit,true),
-    receive
-      {'EXIT',_,Reason} when Reason=:=normal; Reason =:= shutdown->
-        ok;
-      {'EXIT',_,Reason}->
-        ?LOGERROR("~p interrupted, reason ~p",[Log,Reason])
-    end
-  end),
-
-  ?LOGINFO("~p set source lock...",[Log]),
-
-  Result =
-    set_lock(Source, write, Log, Receiver, fun()->
-      ?LOGINFO("~p source locked, start copying",[Log]),
-      {Module,_} = dlss_segment:module_node( Source ),
-
-      SourceRef = init_source( Source, Module, Options ),
-      InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
-
-      InitState = #s_args{
-        receiver = Receiver,
-        source_ref = SourceRef,
-        hash = InitHash,
-        log = Log,
-        size = 0,
-        batch = []
-      },
-
-      TailState = #s_args{ batch = TailBatch, hash = TailHash }=
-        try do_copy(SourceRef, fun remote_batch/3, InitState )
-        catch
-          _:Error:Stack->
-            ?LOGERROR("~p error ~p, stack ~p",[Log,Error,Stack]),
-            {error,Error}
-        end,
-
-      % Send the tail batch if exists
-      case TailBatch of [] -> ok; _->send_batch( TailState ) end,
-
-      FinalHash = crypto:hash_final( TailHash ),
-      {ok, FinalHash}
-
-    end),
-
-  ?LOGINFO("~p copy finished, result ~p",[Log,Result]),
-  Receiver ! {finish, self(), Result}.
-
-set_lock(Source, Lock, Log, Receiver, Transaction)->
-  case dlss_storage:segment_transaction(Source, Lock, Transaction, 5000) of
-    {error, lock_timeout}->
-      ?LOGINFO("~p unable to set lock source is under transformation wait...",[Log]),
-      Receiver ! {lock_timeout, self()},
-      set_lock(Source, Lock, Log, Receiver, Transaction);
-    Result->
-      Result
-  end.
-
-% Zip and stockpile local batches until they reach ?REMOTE_BATCH_SIZE
-remote_batch(Batch0, Size, #s_args{
-  size = TotalZipSize0,
-  batch = ZipBatch,
-  hash = Hash0,
-  log = Log
-} = State) when TotalZipSize0 < ?REMOTE_BATCH_SIZE->
-
-  Batch = term_to_binary( Batch0 ),
-  Hash = crypto:hash_update(Hash0, Batch),
-  Zip = zlib:zip( Batch ),
-
-  ZipSize = size(Zip),
-  TotalZipSize = TotalZipSize0 + ZipSize,
-
-  ?LOGINFO("~p add zip: size ~s, zip size ~p, total zip size ~p",[
-    Log, ?PRETTY_SIZE(Size), ?PRETTY_SIZE(ZipSize), ?PRETTY_SIZE(TotalZipSize)
-  ]),
-
-  State#{
-    size => TotalZipSize,
-    batch => [Zip|ZipBatch],
-    hash => Hash
-  };
-
-% The batch is ready, send it
-remote_batch(Batch0, Size, #s_args{
-  receiver = Receiver
-}=State)->
-  % First we have to receive a confirmation of the previous batch
-  receive
-    {confirmed, Receiver}->
-      send_batch( State ),
-      remote_batch(Batch0, Size,State#s_args{ batch = [], size = 0 });
-    {invalid_hash,Receiver}->
-      throw(invalid_hash)
-  end.
-
-send_batch(#s_args{
-  size = ZipSize,
-  batch = ZipBatch,
-  hash = Hash,
-  receiver = Receiver,
-  log = Log
-})->
-
-  BatchHash = crypto:hash_final(Hash),
-  ?LOGINFO("~p send batch: zip size ~s, length ~p, hash ~s",[
-    Log,
-    ?PRETTY_SIZE(ZipSize),
-    length(ZipBatch),
-    ?PRETTY_HASH(BatchHash)
-  ]),
-  Receiver ! {write_batch, self(), ZipBatch, ZipSize, BatchHash }.
-
-unzip_batch( [Zip|Rest], {Acc0,Hash0})->
-  Batch = zlib:unzip( Zip ),
-  Hash = crypto:hash_update(Hash0, Batch),
-  unzip_batch(Rest ,{[Batch|Acc0], Hash});
-unzip_batch([], Acc)->
-  Acc.
-
-receive_copy_loop(#r_args{
+%----------------------Receiver---------------------------------------
+receive_loop(#r_acc{
   sender = Sender,
   target_ref = #target{module = Module} = TargetRef,
   hash = Hash0,
-  live = Live,
   log = Log
-} =Acc )->
+} = Acc0 )->
   receive
     {write_batch, Sender, ZipBatch, ZipSize, SenderHash }->
 
@@ -438,25 +362,23 @@ receive_copy_loop(#r_args{
             BTailKey
           end || BatchBin <- BatchList ],
 
-      % Roll over stockpiled live updates
-      if
-        Live =/= false->
-          ?LOGINFO("~p roll over live updates...",[Log]),
-          roll_live_updates( Live, TargetRef, TailKey, Log);
-        true ->
-          ignore
-      end,
-      receive_copy_loop(Acc#r_args{hash = Hash, tail_key = TailKey});
+      Acc = Acc0#r_acc{hash = Hash, tail_key = TailKey},
+
+      % Roll over stockpiled live updates (if it's a live copy)
+      roll_live_updates( Acc ),
+
+      receive_loop( Acc0#r_acc{hash = Hash, tail_key = TailKey});
 
     {lock_timeout, Sender}->
       ?LOGINFO("~p sender is unable to set lock, source is under transformation, wait...."),
-      receive_copy_loop(Acc);
-    {finish,Sender,{ok,SenderFinalHash}}->
+      receive_loop( Acc0 );
+    {finish, Sender, {ok,SenderFinalHash} }->
       % Finish
       ?LOGINFO("~p sender finished, final hash ~s",[Log, ?PRETTY_HASH(SenderFinalHash)]),
       case crypto:hash_final(Hash0) of
         SenderFinalHash ->
-          SenderFinalHash;
+          % Everything is fine!
+          Acc0;
         LocalFinalHash->
           ?LOGERROR("~p invalid sender final hash ~s, local final hash ~s",[
             Log,
@@ -474,14 +396,148 @@ receive_copy_loop(#r_args{
       throw({exit,Reason})
   end.
 
+unzip_batch( [Zip|Rest], {Acc0,Hash0})->
+  Batch = zlib:unzip( Zip ),
+  Hash = crypto:hash_update(Hash0, Batch),
+  unzip_batch(Rest ,{[Batch|Acc0], Hash});
+unzip_batch([], Acc)->
+  Acc.
+
+%----------------------Sender---------------------------------------
+remote_copy_request(#{
+  receiver := Receiver,
+  source := Source,
+  log := Log,
+  options => #{ hash:= InitHash0}= Options
+})->
+
+  ?LOGINFO("~p request options ~p", [
+    Log, Options
+  ]),
+
+  % set the guard
+  spawn_link(fun()->
+    process_flag(trap_exit,true),
+    receive
+      {'EXIT',_,Reason} when Reason=:=normal; Reason =:= shutdown->
+        ok;
+      {'EXIT',_,Reason}->
+        ?LOGERROR("~p interrupted, reason ~p",[Log,Reason])
+    end
+  end),
+
+  ?LOGINFO("~p set source lock...",[Log]),
+
+  Result =
+    set_lock(Source, write, Log, Receiver, fun()->
+      ?LOGINFO("~p source locked, start copying",[Log]),
+      {Module,_} = dlss_segment:module_node( Source ),
+
+      SourceRef = init_source( Source, Module, Options ),
+      InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
+
+      InitState = #s_acc{
+        receiver = Receiver,
+        source_ref = SourceRef,
+        hash = InitHash,
+        log = Log,
+        size = 0,
+        batch = []
+      },
+
+      TailState = #s_acc{ batch = TailBatch, hash = TailHash }=
+        try fold(SourceRef, fun remote_batch/3, InitState )
+        catch
+          _:Error:Stack->
+            ?LOGERROR("~p error ~p, stack ~p",[Log,Error,Stack]),
+            {error,Error}
+        end,
+
+      % Send the tail batch if exists
+      case TailBatch of [] -> ok; _->send_batch( TailState ) end,
+
+      FinalHash = crypto:hash_final( TailHash ),
+      {ok, FinalHash}
+
+    end),
+
+  ?LOGINFO("~p finished, result ~p",[Log,Result]),
+  Receiver ! {finish, self(), Result}.
+
+set_lock(Source, Lock, Log, Receiver, Transaction)->
+  case dlss_storage:segment_transaction(Source, Lock, Transaction, 5000) of
+    {error, lock_timeout}->
+      ?LOGINFO("~p unable to set lock the source is under transformation wait...",[Log]),
+      Receiver ! {lock_timeout, self()},
+      set_lock(Source, Lock, Log, Receiver, Transaction);
+    Result->
+      Result
+  end.
+
+% Zip and stockpile local batches until they reach ?REMOTE_BATCH_SIZE
+remote_batch(Batch0, Size, #s_acc{
+  size = TotalZipSize0,
+  batch = ZipBatch,
+  hash = Hash0,
+  log = Log
+} = State) when TotalZipSize0 < ?REMOTE_BATCH_SIZE->
+
+  Batch = term_to_binary( Batch0 ),
+  Hash = crypto:hash_update(Hash0, Batch),
+  Zip = zlib:zip( Batch ),
+
+  ZipSize = size(Zip),
+  TotalZipSize = TotalZipSize0 + ZipSize,
+
+  ?LOGINFO("~p add zip: size ~s, zip size ~p, total zip size ~p",[
+    Log, ?PRETTY_SIZE(Size), ?PRETTY_SIZE(ZipSize), ?PRETTY_SIZE(TotalZipSize)
+  ]),
+
+  State#{
+    size => TotalZipSize,
+    batch => [Zip|ZipBatch],
+    hash => Hash
+  };
+
+% The batch is ready, send it
+remote_batch(Batch0, Size, #s_acc{
+  receiver = Receiver
+}=State)->
+  % First we have to receive a confirmation of the previous batch
+  receive
+    {confirmed, Receiver}->
+      send_batch( State ),
+      remote_batch(Batch0, Size,State#s_acc{ batch = [], size = 0 });
+    {invalid_hash,Receiver}->
+      throw(invalid_hash)
+  end.
+
+send_batch(#s_acc{
+  size = ZipSize,
+  batch = ZipBatch,
+  hash = Hash,
+  receiver = Receiver,
+  log = Log
+})->
+
+  BatchHash = crypto:hash_final(Hash),
+  ?LOGINFO("~p send batch: zip size ~s, length ~p, hash ~s",[
+    Log,
+    ?PRETTY_SIZE(ZipSize),
+    length(ZipBatch),
+    ?PRETTY_HASH(BatchHash)
+  ]),
+  Receiver ! {write_batch, self(), ZipBatch, ZipSize, BatchHash }.
+
+
 %%===========================================================================
 %% LIVE COPY
 %%===========================================================================
-prepare_live_copy( Source )->
-  AccessMode = dlss_segment:get_access_mode( Source ),
+prepare_live_copy( Source, Log )->
+  AccessMode = dlss_segment:access_mode( Source ),
   if
     AccessMode =:= read_write->
-      ?LOGINFO("---------------------LIVE COPY----------------------------"),
+      ?LOGINFO("--------------------~s LIVE COPY----------------------------",[string:uppercase(Log)]),
       ?LOGINFO("~p subscribe....",[Source]),
       case dlss_subscription:subscribe( Source ) of
         ok->
@@ -509,7 +565,14 @@ drop_live_copy(Source, Live)->
   dlss_subscription:unsubscribe( Source ),
   ets:delete( Live ).
 
-roll_live_updates( Live, #target{ module = Module, name = Target } = TargetRef,  TailKey, Log )->
+roll_live_updates(#r_acc{ live = false })->
+  ok;
+roll_live_updates(#r_acc{
+  target_ref = #target{ module = Module, name = Target } = TargetRef,
+  live = Live,
+  tail_key = TailKey,
+  log = Log
+})->
 
   % First we flush subscriptions and roll them over already stockpiled actions,
   % Then we take only those actions that are in the copy keys range already
@@ -570,9 +633,8 @@ give_away_live_updates(Live, #target{ name = Target } = TargetRef, Log)->
       ok = dlss_subscription:subscribe( Target ),
       Giver ! {ready, self() },
 
-      ?LOGINFO("~p take live updates over ~p",[Log,self()]),
-      Logger = spawn_link(fun()->not_ready(Log) end),
-      wait_table_ready(TargetRef, Logger, Log, dlss_segment:read_node( Target ))
+      ?LOGINFO("~p live updates has taken ~p",[Log,self()]),
+      wait_ready(TargetRef, Log, dlss_segment:read_node( Target ))
 
     end),
 
@@ -584,7 +646,7 @@ give_away_live_updates(Live, #target{ name = Target } = TargetRef, Log)->
   % for my tail updates
   dlss_subscription:unsubscribe( Target ),
 
-  ?LOGINFO("~p: roll tail live updates",[Log]),
+  ?LOGINFO("~p: roll over tail live updates",[Log]),
   roll_tail_updates( Live, TargetRef, Log).
 
 roll_tail_updates( Live, #target{ module = Module, name = Target } = TargetRef, Log )->
@@ -608,11 +670,9 @@ roll_tail_updates( Live, #target{ module = Module, name = Target } = TargetRef, 
 
   Module:write_batch(Tail, TargetRef).
 
-
-
-wait_table_ready(#target{name = Target, module = Module} = TargetRef, Logger, Log, Node)
+wait_ready(#target{name = Target, module = Module} = TargetRef, Log, Node)
   when Node=:=node()->
-  ?LOGINFO("~p copy is ready, flush tail subscriptions",[Log]),
+  ?LOGINFO("~p copy attached to the schema, flush tail subscriptions",[Log]),
 
   dlss_subscription:unsubscribe( Target ),
 
@@ -623,10 +683,9 @@ wait_table_ready(#target{name = Target, module = Module} = TargetRef, Logger, Lo
 
   Module:write_batch(Actions, TargetRef),
 
-  exit(Logger, shutdown),
-
   ?LOGINFO("~p live copy is ready",[Log]);
-wait_table_ready(#target{name = Target, module = Module} = TargetRef, Logger, Log, _Node)->
+
+wait_ready(#target{name = Target, module = Module} = TargetRef, Log, _Node)->
   % The copy is not ready yet
   Updates = flush_subscriptions( Target, _Timeout = 0 ),
 
@@ -639,87 +698,11 @@ wait_table_ready(#target{name = Target, module = Module} = TargetRef, Logger, Lo
   ]),
 
   Module:write_batch(Actions, TargetRef),
-  timer:sleep(3000),
 
-  wait_table_ready(TargetRef, Logger, dlss_segment:where_to_write(Target), dlss_segment:get_access_mode(Target) ).
+  ?LOGINFO("~p live copy is not attached yet"),
+  timer:sleep(?CHECK_LIVE_READY_TIMER),
 
-not_ready(Log)->
-  ?LOGINFO("~p live copy is not ready yet",[Log]),
-  timer:sleep(5000),
-  not_ready( Log ).
-
-do_copy(#source{module = Module} = SourceRef, OnBatch, InAcc)->
-
-  Acc0 = #acc{
-    source_ref = SourceRef,
-    batch = [],
-    acc = InAcc,
-    size = 0,
-    on_batch = OnBatch
-  },
-
-  case try Module:fold(SourceRef, fun iterator/2, Acc0)
-  catch
-    _:{stop,Stop}-> Stop;
-    _:{final,Final}->{final,Final}
-  end of
-    #acc{batch = [], acc = FinalAcc}-> FinalAcc;
-    #acc{batch = Tail, size = Size, acc = TailAcc, on_batch = OnBatch}->
-      OnBatch(Tail, Size, TailAcc);
-    {final,FinalAcc}-> FinalAcc
-  end.
-%----------------------WITH STOP KEY-----------------------------
-iterator({K,V},#acc{
-  source_ref = #source{module = Module, stop = Stop},
-  batch = Batch,
-  size = Size0
-} = Acc)
-  when Size0 < ?BATCH_SIZE, Stop =/= undefined, K < Stop->
-
-  {Action,Size} = Module:action({K,V}),
-  Acc#acc{batch = [Action|Batch], size = Size0 + Size};
-
-% Batch is ready
-iterator({K,V},#acc{
-  source_ref = #source{module = Module, stop = Stop},
-  batch = Batch,
-  on_batch = OnBatch,
-  acc = InAcc0,
-  size = Size0
-} = Acc)
-  when Stop =/= undefined, K < Stop->
-
-  {Action,Size} = Module:action({K,V}),
-
-  Acc#acc{batch = [Action], acc = OnBatch(Batch, Size0, InAcc0), size = Size};
-
-% stop key reached
-iterator(_Rec,#acc{source_ref = #source{stop = Stop}} = Acc)
-  when Stop =/= undefined->
-  throw({stop, Acc});
-
-%----------------------NO STOP KEY-----------------------------
-iterator({K,V},#acc{
-  source_ref = #source{module = Module},
-  batch = Batch,
-  size = Size0
-} = Acc)
-  when Size0 < ?BATCH_SIZE->
-
-  {Action,Size} = Module:action({K,V}),
-  Acc#acc{batch = [Action|Batch], size = Size0 + Size};
-
-% Batch is ready
-iterator({K,V},#acc{
-  source_ref = #source{module = Module},
-  batch = Batch,
-  on_batch = OnBatch,
-  size = Size0,
-  acc = InAcc0
-} = Acc) ->
-
-  {Action,Size} = Module:action({K,V}),
-  Acc#acc{batch = [Action], acc =OnBatch(Batch, Size0, InAcc0), size = Size}.
+  wait_ready(TargetRef, Log, dlss_segment:read_node( Target )).
 
 %------------------SPLIT---------------------------------------
 % Splits are always local

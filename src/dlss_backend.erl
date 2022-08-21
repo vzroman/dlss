@@ -554,7 +554,7 @@ add_local_only_segments()->
       #{local:=true,nodes:=Nodes}->
         case lists:member(node(),Nodes) of
           false->
-            case dlss_segment:add_node(S,node()) of
+            case dlss_segment:add_copy(S) of
               ok->ok;
               {error,Error}->
                 ?LOGERROR("unable to copy local only segment ~p, error ~p",[S,Error]),
@@ -677,7 +677,7 @@ purge_stale_segments( ToDelete ) ->
     % Get schema info in the locked mode
     lock({table,dlss_schema},read),
 
-    [{T,dlss_storage:segment_params( T )} || T <- MnesiaTables]
+    [{T,dlss:get_segment_params( T )} || T <- MnesiaTables]
   end) of
     {ok, Segments} ->
       lists:foldl(fun({T, Params}, Acc)->

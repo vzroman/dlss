@@ -21,7 +21,9 @@
 
 -define(BATCH_SIZE, 31457280). % 30 MB Default eleveldb buffer size
 -define(REMOTE_BATCH_SIZE, 4194304). % 4 MB
+
 -define(FLUSH_TAIL_TIMEOUT,1000).
+-define(CHECK_LIVE_READY_TIMER, 5000).
 
 -define(DEFAULT_OPTIONS,#{
   start_key =>undefined,

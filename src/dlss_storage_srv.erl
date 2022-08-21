@@ -123,46 +123,47 @@ do_verify_hash( Storages )->
   do_verify_hash([R || R <- Results, R=/=ok]).
 
 verify_hash(Force)->
-  Node = node(),
   Trace = fun(Text,Args)->?LOGINFO(Text,Args) end,
-  [ verify_storage_hash(S, Node, Force, Trace) || S <- dlss:get_storages()].
+  [ verify_storage_hash(S, Force, Trace) || S <- dlss:get_storages()].
 
-verify_storage_hash(Storage, Node, Force, Trace )->
+verify_storage_hash(Storage, Force, Trace )->
   Trace("~p verify storage hash: force ~p",[Storage, Force]),
-  [ verify_segment_hash(S, Node, Force, Trace) || S <- dlss_storage:get_node_segments(Node, Storage) ],
+  [ verify_segment_hash(S, Force, Trace) || S <- dlss_storage:get_node_segments(node(), Storage) ],
   ok.
 
-verify_segment_hash(Segment, Node, Force, Trace )->
+verify_segment_hash(Segment, Force, Trace )->
   Trace("~p verify segment hash: force ~p",[Segment, Force]),
   case dlss_segment:get_info(Segment) of
     #{ local := true } ->
       Trace("~p is local only segment, skip hash verification",[ Segment ]),
       ok;
     #{ nodes := Nodes }->
-      case lists:member( Node, Nodes ) of
+      case lists:member( node(), Nodes ) of
         false -> Trace("~p has no local copy, skip hash verification",[ Segment ]);
         _->
           case master_node( Segment ) of
-            Node -> Trace("~p is the master node for ~p, skip hash verification",[Node,Segment]);
-            undefined -> ?LOGWARNING("master node for ~p is not ready, skip hash verification",[Segment]);
+            Node when Node =:= node()->
+              Trace("~p is the master node for ~p, skip hash verification",[Node,Segment]);
+            undefined ->
+              ?LOGWARNING("master node for ~p is not ready, skip hash verification",[Segment]);
             Master ->
-              AccessMode = dlss_segment:get_access_mode( Segment ),
+              AccessMode = dlss_segment:access_mode( Segment ),
               if
                 Force =:= true , AccessMode =/= read_only ->
                   ?LOGWARNING("~p is not read only yet, it might have more actual data on other nodes",[Segment]),
-                  drop_segment_copy(Segment, Node);
+                  drop_segment_copy( Segment );
                 true ->
-                  do_verify_segment_hash(Segment, Master, Node, Force, Trace)
+                  do_verify_segment_hash(Segment, Master, Force, Trace)
               end
           end
       end
   end.
 
-do_verify_segment_hash(Segment, Master, Node, Force, Trace)->
+do_verify_segment_hash(Segment, Master, Force, Trace)->
   Trace("~p verify hash: master ~p, force ~p",[ Segment, Master, Force ]),
 
-  {ok, #{copies:= Copies} } = dlss_storage:segment_params( Segment ),
-
+  #{copies:= Copies} = dlss_storage:segment_params( Segment ),
+  Node = node(),
   case Copies of
     #{Master:=Dump, Node:= Dump}->
       Trace("~p has the same verison with ~p: version ~p",[Segment, Master, dump_version(Dump)]);
@@ -184,52 +185,51 @@ do_verify_segment_hash(Segment, Master, Node, Force, Trace)->
           ?LOGWARNING("~p has not updated it's version of ~p yet, skip hash verification",[Master, Segment]);
         true->
           % We just drop the local copy as it will copied again during the synchronization
-          drop_segment_copy(Segment, Node)
+          drop_segment_copy(Segment)
       end;
     #{ Master:=_ }->
-      ?LOGWARNING("~p doesn't have a copy of ~p, skip hash verification",[Node, Segment]);
+      ?LOGWARNING("~p no local copy, skip hash verification",[ Segment ]);
     #{Node:=_}->
       ?LOGWARNING("master ~p doesn't have a copy of ~p, skip hash verification",[Master, Segment]);
     _->
-      ?LOGWARNING("neigther ~p nor ~p has a copy of ~p, skip hash verification",[Master, Node, Segment])
+      throw(internal_error)
   end.
 
 %%============================================================================
 %% Obtain/Remove copies of segments of a Storage to the Node
 %%============================================================================
 sync_copies()->
-  Node = node(),
   Trace = fun(Text,Args)->?LOGINFO(Text,Args) end,
-  [ sync_copies(S, Node, Trace) || S <- dlss:get_storages()].
+  [ sync_copies(S, Trace) || S <- dlss:get_storages()].
 
-sync_copies( Storage, Node, Trace )->
+sync_copies( Storage, Trace )->
   Trace("~p synchronize storage",[Storage]),
-  [ sync_segment_copies(S, Node, Trace) || S <- dlss_storage:get_segments(Storage) ],
+  [ sync_segment_copies(S, Trace) || S <- dlss_storage:get_segments(Storage) ],
   ok.
 
-sync_segment_copies( Segment, Node, Trace)->
+sync_segment_copies( Segment, Trace)->
   case dlss_segment:get_info( Segment ) of
     #{ local := true }->
       Trace("~p is local only segment, skip synchronization",[ Segment ]);
     #{ nodes := Nodes }->
-      {ok, #{copies := Copies} } = dlss_storage:segment_params(Segment),
+      #{copies := Copies} = dlss_storage:segment_params(Segment),
 
-      case { maps:is_key( Node, Copies ), lists:member(Node,Nodes) } of
+      case { maps:is_key( node(), Copies ), lists:member(node(),Nodes) } of
         { true, false }->
           % The segment is in the schema but is not on the node yet
           case Nodes -- (Nodes -- dlss:get_ready_nodes()) of
             []-> ?LOGWARNING("~p does not have active copies on other nodes",[Segment]);
-            _-> add_segment_copy(Segment, Node)
+            _-> add_segment_copy(Segment)
           end;
         { false, true }->
           % The segment is to be removed from the node
-          drop_segment_copy(Segment, Node);
+          drop_segment_copy(Segment);
         _->
           Trace("~p is already synchronized with the schema",[Segment])
       end
   end.
 
-add_segment_copy(Segment, Node) ->
+add_segment_copy(Segment) ->
   ?LOGINFO("~p add local copy, lock...",[ Segment ]),
 
   % We do add the copy in the locked mode to be sure that the segment is not transformed
@@ -237,9 +237,9 @@ add_segment_copy(Segment, Node) ->
   case dlss_storage:segment_transaction(Segment, write, fun()->
     ?LOGINFO("~p locked for transformations",[ Segment ]),
     Master = master_node( Segment ),
-    case dlss_segment:add_node( Segment, Node ) of
+    case dlss_segment:add_copy( Segment ) of
       ok->
-        {ok, #{copies := Copies} } = dlss_storage:segment_params(Segment),
+        #{copies := Copies} = dlss_storage:segment_params(Segment),
         #{Master := Dump} = Copies,
         {ok,Dump};
       Error -> Error
@@ -249,18 +249,18 @@ add_segment_copy(Segment, Node) ->
 
       % The segment is copied successfully, set the version the same as the master has
       ?LOGINFO("~p successfully copied, version ~p",[ Segment, dump_version(Dump) ]),
-      ok = dlss_storage:set_segment_version( Segment, Node, Dump );
+      ok = dlss_storage:set_segment_version( Segment, node(), Dump );
     {error, Error}->
       ?LOGERROR("~p unable to add local copy, error ~p",[Segment,Error])
   end.
 
-drop_segment_copy(Segment, Node)->
+drop_segment_copy(Segment)->
   ?LOGWARNING("~p drop local copy",[ Segment ]),
 
   % We do remove the copy in the locked mode to be sure that the segment is not transformed
   % during the removing
   case dlss_storage:segment_transaction(Segment, write, fun()->
-    dlss_segment:remove_node(Segment, Node)
+    dlss_segment:remove_copy(Segment)
   end) of
     ok->
       ?LOGINFO("~p successfully removed",[ Segment ]),
@@ -309,7 +309,7 @@ handle_cast(rebalance, #state{storage = Storage} = State)->
 
 handle_cast(verify_hash, #state{storage = Storage} = State)->
   Trace = fun(Text,Args)->?LOGINFO(Text, Args) end,
-  verify_storage_hash(Storage, node(), _Force = true, Trace ),
+  verify_storage_hash(Storage, _Force = true, Trace ),
   {noreply, State};
 
 handle_cast(Request,State)->
@@ -355,41 +355,39 @@ code_change(_OldVsn, State, _Extra) ->
 
 loop( #state{ storage =  Storage} = State )->
 
-  Node = node(),
-
   Trace = fun(Text,Args)->?LOGDEBUG(Text, Args) end,
 
   % Check hash values of storage segments
-  verify_storage_hash(Storage, Node, _Force = false, Trace ),
+  verify_storage_hash(Storage, _Force = false, Trace ),
 
   % Synchronize actual copies configuration to the schema settings
-  sync_copies( Storage, Node, Trace),
+  sync_copies( Storage, Trace),
 
   % Set read_only mode for low-level segments
-  set_read_only_mode(Storage, Node),
+  set_read_only_mode(Storage),
 
   % Check for pending transformation
-  case pending_transformation(Storage, Node) of
+  case pending_transformation(Storage) of
     {Operation, Segment} ->
       do_transformation(Operation, Segment);
     _ ->
       % Check if a transformation required
-      check_limits( Storage, Node )
+      check_limits( Storage )
 
   end,
 
   State.
 
 
-set_read_only_mode(Storage, Node)->
+set_read_only_mode(Storage)->
   Root = dlss_storage:root_segment(Storage),
 
   [begin
      #{nodes := Nodes} = dlss_segment:get_info( S ),
      case master_node( S ) of
-       Node->
+       Master when Master =:= node()->
          % The node is the master for the segment
-         case dlss_segment:get_access_mode(S) of
+         case dlss_segment:access_mode(S) of
            read_write ->
              case Nodes -- dlss:get_ready_nodes() of
                []->
@@ -408,13 +406,12 @@ set_read_only_mode(Storage, Node)->
   ok.
 
 set_segment_read_only(Segment)->
-
   % If we set read_only while other nodes copy it
   % mnesia will crash down. So we do it in locked mode
   case dlss_storage:segment_transaction(Segment, write, fun()->
     % WARNING! We need the pause to allow mnesia to settle down it's schema
     timer:sleep(5000),
-    dlss_segment:set_access_mode(Segment, read_only)
+    dlss_segment:access_mode(Segment, read_only)
   end, 5000) of
     ok->
       ?LOGINFO("~p set read_only mode",[ Segment ]);
@@ -427,20 +424,20 @@ set_segment_read_only(Segment)->
 %%============================================================================
 %% The transformations
 %%============================================================================
-pending_transformation( Storage, Node )->
+pending_transformation( Storage )->
+
   Segments=
-    [ begin
-        {ok, P } = dlss_storage:segment_params(S),
-        { S, P }
-      end || S <- dlss_storage:get_segments(Storage) ],
+    [ { S, dlss_storage:segment_params(S) } || S <- dlss_storage:get_segments(Storage) ],
+
   case [ {S, P} || {S, #{level:=L} = P}<-Segments,
     is_float(L), % Segment is queued for transformation
-    read_only =:= dlss_segment:get_access_mode(S)
+    read_only =:= dlss_segment:access_mode(S)
   ] of
     [{ Segment, #{level := Level} = Params } | _ ]->
       % The segment is under transformation
       case which_operation( Level ) of
         split ->
+          Node = node(),
           case Params of
             #{ version:=Version, copies := #{ Node := #dump{version = Version}} }->
               % The version for the node is already updated
@@ -464,12 +461,12 @@ do_transformation(split, Segment )->
 
   Node = node(),
 
-  {ok, #{ version:=ChildVersion }} = dlss_storage:segment_params( Segment ),
+  #{ version:=ChildVersion } = dlss_storage:segment_params( Segment ),
 
   Parent = dlss_storage:parent_segment( Segment ),
-  {ok, #{
+  #{
     version:=ParentVersion,
-    copies := #{ Node := ParentDump }}
+    copies := #{ Node := ParentDump }
   } = dlss_storage:segment_params( Parent ),
 
 
@@ -509,15 +506,12 @@ do_transformation(split, Segment )->
 
 do_transformation(merge, Segment )->
 
-  {ok, Params} = dlss_storage:segment_params( Segment ),
+  Params = dlss_storage:segment_params( Segment ),
 
   #{ key := FromKey} = Params,
 
   Children =
-    [ begin
-        {ok,CParams} = dlss_storage:segment_params(C),
-        {C,CParams}
-      end || C <- dlss_storage:get_children( Segment )],
+    [ {C,dlss_storage:segment_params(C)} || C <- dlss_storage:get_children( Segment )],
 
   [{C0,P0}|Tail] = Children,
 
@@ -596,7 +590,7 @@ merge_level([], Source, _Params, _Node )->
 %-----------------Master commit--------------------------------
 split_commit(Segment, SplitKey, Master) when Master=:=node()->
 
-  {ok, #{copies:=Copies}} = dlss_storage:segment_params( Segment ),
+  #{copies:=Copies} = dlss_storage:segment_params( Segment ),
   Dump =
     #dump{version = Version, hash = Hash} = maps:get( Master, Copies ),
   case not_confirmed( Dump, Copies ) of
@@ -615,7 +609,7 @@ split_commit(Segment, SplitKey, Master) when Master=:=node()->
 %--------------------Slave commit-----------------------------------
 split_commit(Segment, SplitKey, Master)->
 
-  {ok, #{copies:=Copies}} = dlss_storage:segment_params( Segment ),
+  #{copies:=Copies} = dlss_storage:segment_params( Segment ),
   MasterDump =
     #dump{ version = MasterVersion, hash = MasterHash } = maps:get( Master, Copies ),
   MyDump =
@@ -650,7 +644,7 @@ merge_commit_child(_Segment, Master) when Master =:= node()->
 %--------------------Slave commit-----------------------------------
 merge_commit_child(Segment, Master)->
 
-  {ok, #{copies:=Copies}} = dlss_storage:segment_params( Segment ),
+  #{copies:=Copies} = dlss_storage:segment_params( Segment ),
   MasterDump =
     #dump{ version = MasterVersion, hash = MasterHash } = maps:get( Master, Copies ),
   MyDump =
@@ -712,7 +706,7 @@ merge_commit_final(Source, Master)->
   ?LOGDEBUG("~p merge commit wait for master ~p",[Source,Master]).
 
 confirm_children([Segment|Rest], Source)->
-  {ok, #{copies:=Copies, version:=SegmentVersion}} = dlss_storage:segment_params( Segment ),
+  #{copies:=Copies, version:=SegmentVersion} = dlss_storage:segment_params( Segment ),
   case master_node( Segment ) of
     undefined ->
       ?LOGWARNING("~p merge to ~p can not be finished, ~p is not available",[Source, Segment, Segment ]),
@@ -755,26 +749,23 @@ not_confirmed(Dump, Copies0)->
 %%============================================================================
 %% This is the entry point for all rebalancing transformations
 %%============================================================================
-check_limits( Storage, Node )->
+check_limits( Storage )->
   Segments =
-    [ begin
-        {ok, P} = dlss_storage:segment_params(S),
-        {S, P}
-      end || S <- dlss_storage:get_segments(Storage) ],
+    [ {S, dlss_storage:segment_params(S)} || S <- dlss_storage:get_segments(Storage) ],
 
   % Operations with lower level segments have the priority,
   % therefore reverse the results to start from the lowest level
   Levels = lists:reverse( group_by_levels(Segments) ),
 
   %-------------Step 1. Check per level limits---------------------------------
-  case check_level_limits( Levels, Node ) of
+  case check_level_limits( Levels ) of
     {Level, Segment} ->
       ?LOGINFO("level ~p has reached the limit, queue merge ~p",[Level, Segment]),
       dlss_storage:merge_segment( Segment ),
       merge;
     undefined ->
       %--------Step 2. Check segments size limits------------------------------
-      case check_size_limit( Levels, Node ) of
+      case check_size_limit( Levels ) of
         {Level, Segment}->
           Size = dlss_segment:get_size( Segment ),
           Limit = segment_level_limit(Storage, Level ),
@@ -799,10 +790,10 @@ group_by_levels( Segments )->
     end,#{},Segments),
   lists:usort([{L,lists:reverse(S)}||{L,S} <- maps:to_list(Levels)]).
 
-check_level_limits([{Level, Segments } | Rest], Node )->
+check_level_limits([{Level, Segments } | Rest] )->
   [{ Segment, _Params } | _ ] = Segments,
   case master_node( Segment ) of
-    Node->
+    Master when Master =:= node()->
       % The node is the master for the first segment, it controls the number
       % segments in the level
       Limit = level_count_limit( Level ),
@@ -813,39 +804,39 @@ check_level_limits([{Level, Segments } | Rest], Node )->
           {Level, Segment};
         true ->
           % The level is ok, check the next
-          check_level_limits( Rest, Node )
+          check_level_limits( Rest )
       end;
     _->
-      check_level_limits( Rest, Node )
+      check_level_limits( Rest )
   end;
-check_level_limits([], _Node)->
+check_level_limits([])->
   undefined.
 
-check_size_limit([{Level, Segments} | Rest], Node)->
-  case check_segment_size( Segments, Node ) of
+check_size_limit([{Level, Segments} | Rest])->
+  case check_segment_size( Segments ) of
     undefined->
-      check_size_limit( Rest, Node);
+      check_size_limit( Rest );
     Segment->
       % The level has an oversized segment
       {Level, Segment}
   end;
-check_size_limit([], _Node)->
+check_size_limit([])->
   undefined.
 
-check_segment_size([{ Segment, #{storage:=Storage, level:=Level }}| Rest], Node)->
+check_segment_size([{ Segment, #{storage:=Storage, level:=Level }}| Rest])->
   case master_node( Segment ) of
-    Node->
+    Master when Master=:=node() ->
       Size = dlss_segment:get_size( Segment ),
       Limit = segment_level_limit(Storage, Level ),
       if
         is_number(Limit), Size > Limit-> Segment;
         true ->
-          check_segment_size( Rest, Node )
+          check_segment_size( Rest )
       end;
     _->
-        check_segment_size( Rest, Node )
+        check_segment_size( Rest )
   end;
-check_segment_size([], _Node)->
+check_segment_size([])->
   undefined.
 
 
@@ -883,7 +874,7 @@ eval_segment_efficiency( Segment )->
       1;
     true ->
       Size = dlss_segment:get_size( Segment ),
-      {ok, #{ storage := Storage}} = dlss_storage:segment_params( Segment ),
+      #{ storage := Storage} = dlss_storage:segment_params( Segment ),
       Limit = segment_level_limit(Storage, 0),
 
       if
@@ -921,18 +912,14 @@ eval_segment_efficiency( Segment )->
 %%============================================================================
 master_node( Segment )->
 
-  {ok, #{copies:= Copies} } = dlss_storage:segment_params( Segment ),
+  #{copies:= Copies} = dlss_storage:segment_params( Segment ),
 
-  SegmentNodes = lists:usort([ N || { N, _Dump } <- maps:to_list( Copies ) ]),
-  LiveNodes = lists:usort( dlss_segment:get_active_nodes( Segment ) ),
+  SchemaNodes = [ N || { N, _Dump } <- maps:to_list( Copies ) ],
+  ReadyNodes = dlss_segment:ready_nodes( Segment ),
 
-  SegmentLiveNodes = ordsets:intersection( SegmentNodes, LiveNodes ),
-
-  ReadyNodes = dlss:get_ready_nodes(),
-
-  case SegmentLiveNodes -- (SegmentLiveNodes -- ReadyNodes) of
+  case lists:usort(SchemaNodes -- ( SchemaNodes -- ReadyNodes )) of
     [ Master | _ ]->
-      % The master is the node with the smallest name
+      % The master is a ready node with the smallest name
       Master;
     _-> undefined
   end.

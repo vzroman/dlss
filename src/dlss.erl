@@ -261,7 +261,8 @@ get_segment_info(Segment) ->
 %-----------------------------------------------------------------
 -spec get_segment_params(Segment :: atom()) -> SegmentInfo :: segment_info() | no_return().
 get_segment_params(Segment) ->
-  dlss_storage:segment_params(Segment).
+  try {ok, dlss_storage:segment_params(Segment)}
+  catch _:Error ->{error,Error} end.
 
 %-----------------------------------------------------------------
 %% @doc  Get segment size.
