@@ -42,10 +42,6 @@
   debug/2
 ]).
 
-
--record(split_l,{module, key, hash, total_size}).
--record(split_r,{i, module, size, key}).
-
 %%-----------------------------------------------------------------
 %%  Internals
 %%-----------------------------------------------------------------
@@ -427,51 +423,52 @@ remote_copy_request(#{
   end),
 
   ?LOGINFO("~p set source lock...",[Log]),
+  Unlock = set_lock( Source, Log, Receiver ),
 
-  Result =
-    set_lock(Source, write, Log, Receiver, fun()->
-      ?LOGINFO("~p source locked, start copying",[Log]),
-      {Module,_} = dlss_segment:module_node( Source ),
+  ?LOGINFO("~p source locked, start copying",[Log]),
+  {Module,_} = dlss_segment:module_node( Source ),
 
-      SourceRef = init_source( Source, Module, Options ),
-      InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
+  SourceRef = init_source( Source, Module, Options ),
+  InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
 
-      InitState = #s_acc{
-        receiver = Receiver,
-        source_ref = SourceRef,
-        hash = InitHash,
-        log = Log,
-        size = 0,
-        batch = []
-      },
+  InitState = #s_acc{
+    receiver = Receiver,
+    source_ref = SourceRef,
+    hash = InitHash,
+    log = Log,
+    size = 0,
+    batch = []
+  },
 
-      TailState = #s_acc{ batch = TailBatch, hash = TailHash }=
-        try fold(SourceRef, fun remote_batch/3, InitState )
-        catch
-          _:Error:Stack->
-            ?LOGERROR("~p error ~p, stack ~p",[Log,Error,Stack]),
-            {error,Error}
-        end,
+  TailState = #s_acc{ batch = TailBatch, hash = TailHash }=
+    try fold(SourceRef, fun remote_batch/3, InitState )
+    catch
+      _:Error:Stack->
+        ?LOGERROR("~p error ~p, stack ~p",[Log,Error,Stack]),
+        {error,Error}
+    end,
 
-      % Send the tail batch if exists
-      case TailBatch of [] -> ok; _->send_batch( TailState ) end,
+  % Release the source lock
+  Unlock(),
 
-      FinalHash = crypto:hash_final( TailHash ),
-      {ok, FinalHash}
+  % Send the tail batch if exists
+  case TailBatch of [] -> ok; _->send_batch( TailState ) end,
 
-    end),
+  FinalHash = crypto:hash_final( TailHash ),
+  {ok, FinalHash}
 
   ?LOGINFO("~p finished, result ~p",[Log,Result]),
   Receiver ! {finish, self(), Result}.
 
-set_lock(Source, Lock, Log, Receiver, Transaction)->
-  case dlss_storage:segment_transaction(Source, Lock, Transaction, 5000) of
-    {error, lock_timeout}->
+set_lock(Source, Log, Receiver)->
+  case dlss_storage:lock_segment(Source, _Lock = write, 5000) of
+    {ok,Unlock} -> Unlock;
+    {error,timeout}->
       ?LOGINFO("~p unable to set lock the source is under transformation wait...",[Log]),
       Receiver ! {lock_timeout, self()},
-      set_lock(Source, Lock, Log, Receiver, Transaction);
-    Result->
-      Result
+      set_lock(Source, Log, Receiver);
+    {error, Other}->
+      throw( Other )
   end.
 
 % Zip and stockpile local batches until they reach ?REMOTE_BATCH_SIZE
@@ -707,6 +704,10 @@ wait_ready(#target{name = Target, module = Module} = TargetRef, Log, _Node)->
 %------------------SPLIT---------------------------------------
 % Splits are always local
 %--------------------------------------------------------------
+%                 Types
+-record(split_l,{module, key, hash, total_size}).
+-record(split_r,{i, module, size, key}).
+
 split( Source, Target )->
   split( Source, Target, #{}).
 split( Source, Target, Options0 )->
@@ -804,7 +805,7 @@ do_split(Reverse, Module, Source, Target, SourceRef, TargetRef, Acc0)->
 
 reverse_loop(Owner, #split_r{i=I, module = Module, size = Size0, key = Key} = Acc)
   when Size0 < ?BATCH_SIZE->
-  case Module:prev(I, Key) of
+  case Module:reverse(I, Key) of
     {K, Size} ->
       reverse_loop(Owner, Acc#split_r{size = Size0 + Size, key = K});
     '$end_of_table' ->

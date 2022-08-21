@@ -1,5 +1,5 @@
 %%----------------------------------------------------------------
-%% Copyright (c) 2020 Faceplate
+%% Copyright (c) 2022 Faceplate
 %%
 %% This file is provided to you under the Apache License,
 %% Version 2.0 (the "License"); you may not use this file
@@ -19,29 +19,45 @@
 -module(dlss_segment).
 
 -include("dlss.hrl").
--include("dlss_eleveldb.hrl").
 
 %%=================================================================
-%%	STORAGE READ/WRITE API
+%%	READ/WRITE API
 %%=================================================================
 -export([
-  read/2,read/3,dirty_read/2,
-  write/3,write/4,dirty_write/3,
-  delete/2,delete/3,dirty_delete/2
+  read/3,dirty_read/2,
+  write/3,dirty_write/2,
+  delete/3,dirty_delete/2
 ]).
 
 %%=================================================================
-%%	STORAGE ITERATOR API
+%%	ITERATOR API
 %%=================================================================
 -export([
-  first/1,dirty_first/1,
-  last/1,dirty_last/1,
-  next/2,dirty_next/2,
-  prev/2,dirty_prev/2,
-  %----OPTIMIZED SCANNING------------------
-  select/2,dirty_select/2,
-  dirty_scan/3,dirty_scan/4,
-  do_dirty_scan/4
+  first/1,
+  last/1,
+  next/2,
+  prev/2
+]).
+
+%%=================================================================
+%%	SEARCH API
+%%=================================================================
+-export([
+  search/2
+]).
+
+%%=================================================================
+%%	INFO API
+%%=================================================================
+-export([
+  get_info/1,
+  get_local_segments/0,
+
+  get_size/1,
+  access_mode/1,access_mode/2,
+
+  read_node/1,
+  ready_nodes/1
 ]).
 
 %%=================================================================
@@ -55,117 +71,172 @@
   add_copy/1,
   remove_copy/1,
 
-  merge/3,
-  split/1,
+  subscribe/1,
 
-  get_info/1,
-  get_local_segments/0,
-
-  get_size/1,
-  access_mode/1,access_mode/2,
-  get_active_nodes/1,
-
-  read_node/1,
-  ready_nodes/1
+  split/3,
+  merge/5
 ]).
 
--define(MAX_SIZE(Type),
-  if
-    Type=:=leveldb_copies -> 1 bsl 128;
-    true-> (1 bsl 59) - 1 % Experimentally set that it's the max continuation limit for ets
-  end).
-
 %%=================================================================
-%%	Decisions engine
+%%	ENGINE
 %%=================================================================
-% Writes are still to the mnesia
+-define(SCHEMA,dlss_segment_schema).
 
-
--define(RAND(Ns),
-  case Ns -- dlss_node:get_ready_nodes() of
-    [] -> undefined;
-    _@Ready->
-      _@N = erlang:phash2(make_ref(),length(Ready)),
-      lists:nth(_@N+1, _@Ready)
+-define(UNDEFINED,undefined).
+-define(LOOKUP(K),
+  case ets:lookup(?SCHEMA,K) of
+    [{_,_@V}]->_@V;
+    _-> ?UNDEFINED
   end).
 
--define(UNAVAILABLE,
+-define(START_OF_TABLE,'$start_of_table').
+-define(END_OF_TABLE,'$start_of_table').
+
+-define(NOT_AVAILABLE,
   if
-    ?FUNCTION_NAME=:=dirty_read;?FUNCTION_NAME=:=read->not_found;
-    ?FUNCTION_NAME=:=select;?FUNCTION_NAME=:=dirty_select;?FUNCTION_NAME=:=dirty_scan->[];
-    true->'$end_of_table'
+    ?FUNCTION_NAME=:=dirty_write;?FUNCTION_NAME=:=write->
+      not_available;
+    ?FUNCTION_NAME=:=next;?FUNCTION_NAME=:=prev;?FUNCTION_NAME=:=first;?FUNCTION_NAME=:=last->
+      ?END_OF_TABLE;
+    true->[]
   end).
 
--define(RPC(N,M,A),
-  case rpc:call(N,M,?FUNCTION_NAME,A) of
-    {badrpc,_} ->?UNAVAILABLE(F);
-    _@OK -> _@OK
+-define(READY,
+  case ?LOOKUP(ready_nodes) of
+    ?UNDEFINED->[];
+    _@R->_@R
   end).
 
--define(READY(Ns),Ns -- (Ns --dlss_node:get_ready_nodes())).
+-define(NODES(S), ?READY(?LOOKUP({S,nodes}))).
 
--define(NODE(Ns),
-  case lists:member(node(), ?READY(Ns)) of
-    true -> node();
-    _-> ?RAND( Nodes )
+-define(READY(Ns),Ns -- (Ns -- ?READY)).
+
+-define(HAVE(S),
+  case ?LOOKUP({S,have}) of
+    ?UNDEFINED->false;
+    _->true
   end).
 
--define(M(T),
+-define(M(S),?LOOKUP({S,module})).
+-define(F,
   if
-    T=:=ram->dlss_ram;
-    T=:=ramdisc->dlss_ramdisc;
-    true->dlss_disc
+    ?FUNCTION_NAME=:=dirty_read->read;
+    ?FUNCTION_NAME=:=dirty_write->write;
+    ?FUNCTION_NAME=:=dirty_delete->delete;
+    true->?FUNCTION_NAME
   end
 ).
-
--define(MODULE_NODE(S),
-  begin
-    { _@T, _@Ns } = type_nodes( S ),
-    { ?M(_@T), ?NODE(_@Ns) }
+-define(A,
+  if
+    ?FUNCTION_NAME=:=read->2;
+    ?FUNCTION_NAME=:=write->2;
+    ?FUNCTION_NAME=:=delete->2;
+    true->?FUNCTION_ARITY
   end).
 
--define(CALL(S,A),
-  case ?MODULE_NODE(S) of
-    {_@M,_@N} when _@N=:=node()->apply(_@M,?FUNCTION_NAME,[S|A]);
-    {_@M,_@N} when _@N=/=undefined ->  ?RPC(_@N,_@M,[S|A])
-    {_,_}->?UNAVAILABLE;
+-define(LOCAL(M,F), fun(K)->M:F/?FUNCTION_ARITY).
+
+-define(RPC(N,M,F,T),
+  if
+    ?A=:=0->fun()->T(N,M,F,[]) end;
+    ?A=:=1->fun(A)->T(N,M,F,[A]) end;
+    ?A=:=2->fun(A1,A2)->T(N,M,F,[A1,A2]) end
   end).
 
-% TODO. Optimize me!
-type_nodes( Segment )->
-  Nodes=[{T,mnesia:table_info(Segment,CT)}||{CT,T}<-[
-    {disc_copies,ramdisc},
-    {ram_copies,ram},
-    {leveldb_copies,disc}
-  ]],
-  case [{T,N}||{T,N}<-Nodes,N=/=[]] of
-    [Result]->Result;
-    _->throw(invalid_storage_type)
+-define(RAND(Ns),
+  case Ns -- (Ns -- ?READY) of
+    [] -> undefined;
+    _@RNs->
+      _@N = erlang:phash2(make_ref(),length(_@RNs)),
+      lists:nth(_@N+1, _@RNs)
+  end).
+
+%------------entry points------------------------------------------
+-define(read(S),
+  case ?HAVE(S) of
+    true->?LOCAL(?M(S),?F(S));
+    _->?RPC(?READY(?NODES(S)),?M(S),?F,fun rpc_read/4)
+  end).
+
+-define(write(S),
+  case ?READY(?NODES(S)) of
+    [_@N] when _@N=:=node()->
+      ?LOCAL(?M(S),?F(S));
+    _@Ns when length(_@Ns) > 1->
+      if
+        ?FUNCTION_NAME=:=dirty_write->
+          ?RPC(_@Ns,?M(S),?F,fun rpc_any/4);
+        true->
+          ?RPC(_@Ns,?M(S),?F,fun rpc_all/4)
+      end
+  end).
+
+%%=================================================================
+%%	READ/WRITE API
+%%=================================================================
+dirty_read( Segment, Keys )->
+  [{K,V} ||#kv{key = K, value = V} <- (?read(Segment))(Keys) ].
+read( Segment, [K|Rest], Lock)->
+  % Transactions are still on mnesia
+  case mnesia:read(Segment,K,Lock) of
+    []->read(Segment,Rest,Lock);
+    [#kv{key = K, value = V}]->[{K,V}|read(Segment,Rest,Lock)]
   end.
 
+dirty_write(Segment,Keys)->
+  (?write(Segment))(Keys).
+write(Segment,Records,Lock)->
+  % Transactions are still on mnesia
+  [mnesia:write(Segment,#kv{key = K,value = V}, Lock) || {K,V} <- Records],
+  % Mnesia terminates on the transaction on write error,
+  % Batch either in or we won't be here
+  dlss_backend:on_commit(fun()->
+    [ dlss_subscription:notify(Segment,{write,{K,V}}) ||{K,V} <- Records],
+    ok
+  end),
+  ok.
+
+dirty_delete(Segment,Keys)->
+  (?write(Segment))(Keys).
+delete(Segment,Keys,Lock)->
+  [ mnesia:delete(Segment,K,Lock) || K <- Keys],
+  dlss_backend:on_commit(fun()->
+    [dlss_subscription:notify(Segment,{delete,K}) || K<-Keys],
+    ok
+  end),
+  ok.
+
 %%=================================================================
-%%	STORAGE SEGMENT API
+%%	ITERATOR
 %%=================================================================
-%-------------ITERATOR----------------------------------------------
 first(Segment)->
-  mnesia:first(Segment).
-dirty_first(Segment)->
-  ?CALL(Segment,[]).
+  (?read(Segment))().
 
 last(Segment)->
-  mnesia:last(Segment).
-dirty_last(Segment)->
-  ?CALL(Segment,[]).
+  (?read(Segment))().
 
 next(Segment,Key)->
-  mnesia:next(Segment,Key).
-dirty_next(Segment,Key)->
-  ?CALL(Segment,[Key]).
+  (?read(Segment))(Key).
 
 prev(Segment,Key)->
-  mnesia:prev(Segment,Key).
-dirty_prev(Segment,Key)->
-  ?CALL(Segment,[Key]).
+  (?read(Segment))(Key).
+
+%%=================================================================
+%%	SEARCH
+%%=================================================================
+search(Segment,Options0)->
+  Options = maps:map(
+    fun
+      (_K,?START_OF_TABLE)->?UNDEFINED;
+      (_K,?END_OF_TABLE)-> ?UNDEFINED;
+      (ms,MS)-> ets:match_spec_compile(MS)
+    end, Options0),
+
+  (?read(Segment))(maps:merge(#{
+    start = ?UNDEFINED,
+    stop := ?UNDEFINED,
+    ms := ?UNDEFINED
+  }, Options)).
 
 %-------------INTERVAL SCAN----------------------------------------------
 dirty_scan(Segment,From,To)->
@@ -480,42 +551,6 @@ select(Segment,MS)->
 dirty_select(Segment,MS)->
   mnesia:dirty_select(Segment,MS).
 
-%-------------READ----------------------------------------------
-read( Segment, Key )->
-  read( Segment, Key, _Lock = read).
-read( Segment, Key, Lock)->
-  case mnesia:read(Segment,Key,Lock) of
-    [#kv{value = Value}]->Value;
-    _->not_found
-  end.
-dirty_read(Segment,Key)->
-  case ?CALL(Segment,[Key]) of
-    [#kv{value = Value}]->Value;
-    _->not_found
-  end.
-
-%-------------WRITE----------------------------------------------
-write(Segment,Key,Value)->
-  dlss_backend:on_commit(fun()-> dlss_subscription:notify(Segment,{write,{Key,Value}}) end),
-  write(Segment,Key,Value, _Lock = none).
-write(Segment,Key,Value,Lock)->
-  dlss_backend:on_commit(fun()-> dlss_subscription:notify(Segment,{write,{Key,Value}}) end),
-  mnesia:write(Segment,#kv{key = Key,value = Value}, Lock).
-
-dirty_write(Segment,Key,Value)->
-  dlss_subscription:notify(Segment,{write,{Key,Value}}),
-  mnesia:dirty_write(Segment,#kv{key = Key,value = Value}).
-
-%-------------DELETE----------------------------------------------
-delete(Segment,Key)->
-  dlss_backend:on_commit(fun()-> dlss_subscription:notify(Segment,{delete,Key}) end),
-  delete(Segment,Key,_Lock=none).
-delete(Segment,Key,Lock)->
-  dlss_backend:on_commit(fun()-> dlss_subscription:notify(Segment,{delete,Key}) end),
-  mnesia:delete(Segment,Key,Lock).
-dirty_delete(Segment,Key)->
-  dlss_subscription:notify(Segment,{delete,Key}),
-  mnesia:dirty_delete(Segment,Key).
 
 %%=================================================================
 %%	Service API
@@ -531,7 +566,7 @@ create(Name,#{nodes := Nodes} = Params0)->
         nodes => Nodes
       },
 
-      Attributes = table_attributes(Params),
+      Attributes = mnesia_attributes(Params),
       case mnesia:create_table(Name,[
         {attributes,record_info(fields,kv)},
         {record_name,kv},
@@ -556,23 +591,41 @@ remove(Name)->
       SetModeError
   end.
 
-get_info(Segment)->
-  Local = mnesia:table_info(Segment,local_content),
-  { Type, Nodes }=get_nodes(Segment),
-  #{
-    type => Type,
-    local => Local,
-    nodes => Nodes
-  }.
+subscribe( Segment )->
 
-get_local_segments()->
-  [T || T <- mnesia:system_info( local_tables ),
-    case atom_to_binary(T, utf8) of
-      <<"dlss_schema">> -> false;
-      <<"dlss_",_/binary>> -> true;
-      _ -> false
-    end].
+  Self = self(),
+  % We need to subscribe to all nodes, every node can do updates
+  Nodes = dlss:get_ready_nodes(),
 
+  Results =
+    [{N,
+      case rpc:call(N, dlss_subscription, subscribe, [ Segment, Self ]) of
+        {badrpc, Error} -> {error, Error};
+        Result -> Result
+      end} || N <- Nodes ],
+  case [{N,E} || {N,{error,E}} <- Results ] of
+    []-> ok;
+    Errors->
+      % All or no one
+      unsubscribe( Segment ),
+      {error, Errors}
+  end.
+
+unsubscribe( Segment )->
+  Self = self(),
+  [ rpc:call(N, dlss_subscription, unsubscribe, [ Segment, Self ]) || N <- dlss:get_ready_nodes()],
+  drop_notifications( Segment ),
+  ok.
+
+drop_notifications(Segment)->
+  receive
+    {subscription, Segment, _Action}->
+      drop_notifications(Segment)
+  after
+    100->
+      % Ok, we tried
+      ok
+  end.
 
 add_copy( Segment )->
 
@@ -667,10 +720,27 @@ read_node( Segment )->
 ready_nodes( Segment )->
   ok.
 
+get_info(Segment)->
+  Local = mnesia:table_info(Segment,local_content),
+  { Type, Nodes }=get_nodes(Segment),
+  #{
+    type => Type,
+    local => Local,
+    nodes => Nodes
+  }.
+
+get_local_segments()->
+  [T || T <- mnesia:system_info( local_tables ),
+    case atom_to_binary(T, utf8) of
+      <<"dlss_schema">> -> false;
+      <<"dlss_",_/binary>> -> true;
+      _ -> false
+    end].
+
 %%============================================================================
 %%	Internal helpers
 %%============================================================================
-table_attributes(#{
+mnesia_attributes(#{
   type:=Type,
   nodes:=Nodes,
   local:=IsLocal

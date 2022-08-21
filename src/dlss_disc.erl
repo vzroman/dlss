@@ -26,9 +26,43 @@
 % The encoded @deleted@ value. Actually this is {[],[],'@deleted@'}
 % because mnesia_eleveldb uses this format
 -define(DELETED, <<131,104,3,106,106,100,0,9,64,100,101,108,101,116,101,100,64>>).
+-define(MAX_SEARCH_SIZE,1 bsl 128).
 
 %%=================================================================
-%%	API
+%%	READ/WRITE API
+%%=================================================================
+-export([
+  read/2,
+  write/2,
+  delete/2
+]).
+
+%%=================================================================
+%%	ITERATOR API
+%%=================================================================
+-export([
+  first/1,
+  last/1,
+  next/2,
+  prev/2
+]).
+
+%%=================================================================
+%%	SEARCH API
+%%=================================================================
+-export([
+  search/2
+]).
+
+%%=================================================================
+%%	INFO API
+%%=================================================================
+-export([
+  get_size/1
+]).
+
+%%=================================================================
+%%	COPY API
 %%=================================================================
 -export([
   init_source/2,
@@ -43,12 +77,74 @@
   write_batch/2,
   drop_batch/2,
   init_reverse/2,
-  prev/2,
+  reverse/2,
   get_key/1,
-  decode_key/1,
-  get_size/1
+  decode_key/1
 ]).
 
+%%=================================================================
+%%	READ/WRITE
+%%=================================================================
+read(Segment, Keys)->
+  ok.
+
+write(Segment,Records)->
+  ok.
+
+delete(Segment,Keys)->
+  ok.
+
+%%=================================================================
+%%	ITERATOR
+%%=================================================================
+first( Segment )->
+  ok.
+
+last( Segment )->
+  ok.
+
+next( Segment, K )->
+  ok.
+
+prev( Segment, K )->
+  ok.
+
+%%=================================================================
+%%	SEARCH
+%%=================================================================
+search(Segment,#{
+  start := Start,
+  stop := Stop,
+  ms := MS
+})->
+  ok.
+
+%%=================================================================
+%%	INFO
+%%=================================================================
+get_size( Table)->
+  get_size( Table, 10 ).
+get_size( Table, Attempts ) when Attempts > 0->
+  MP = mnesia_eleveldb:data_mountpoint( Table ),
+  S = list_to_binary(os:cmd("du -s --block-size=1 "++MP)),
+  case binary:split(S,<<"\t">>) of
+    [Size|_]->
+      try binary_to_integer( Size )
+      catch _:_->
+        % Sometimes du returns error when there are some file transformations
+        timer:sleep(200),
+        get_size( Table, Attempts - 1 )
+      end;
+    _ ->
+      timer:sleep(200),
+      get_size( Table, Attempts - 1 )
+  end;
+get_size( _Table, 0 )->
+  -1.
+
+%%=================================================================
+%%	COPY
+%%=================================================================
 init_source( Source, #{
   start_key := StartKey,
   end_key := EndKey
@@ -149,7 +245,7 @@ get_key({delete,K})->K.
 
 decode_key(K)->?DECODE_KEY(K).
 
-prev(I,_K)->
+reverse(I,_K)->
   case ?PREV(I) of
     {ok, K, V}->
       Size = size(K) + size(V),
@@ -160,26 +256,6 @@ prev(I,_K)->
     {error, iterator_closed}->
       throw(iterator_closed)
   end.
-
-get_size( Table)->
-  get_size( Table, 10 ).
-get_size( Table, Attempts ) when Attempts > 0->
-  MP = mnesia_eleveldb:data_mountpoint( Table ),
-  S = list_to_binary(os:cmd("du -s --block-size=1 "++MP)),
-  case binary:split(S,<<"\t">>) of
-    [Size|_]->
-      try binary_to_integer( Size )
-      catch _:_->
-        % Sometimes du returns error when there are some file transformations
-        timer:sleep(200),
-        get_size( Table, Attempts - 1 )
-      end;
-    _ ->
-      timer:sleep(200),
-      get_size( Table, Attempts - 1 )
-  end;
-get_size( _Table, 0 )->
-  -1.
 
 
 

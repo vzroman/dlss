@@ -30,8 +30,8 @@
 %% API
 %%=================================================================
 -export([
-  subscribe/1, subscribe/2,
-  unsubscribe/1, unsubscribe/2,
+  subscribe/2,
+  unsubscribe/2,
   notify/2
 ]).
 
@@ -70,26 +70,6 @@ init(Sup)->
 %%	Subscriptions API
 %%=================================================================
 
-subscribe( Segment )->
-
-  Self = self(),
-  % We need to subscribe to all nodes, every node can do updates
-  Nodes = dlss:get_ready_nodes(),
-
-  Results =
-    [{N,
-      case rpc:call(N, ?MODULE, subscribe, [ Segment, Self ]) of
-        {badrpc, Error} -> {error, Error};
-        Result -> Result
-      end} || N <- Nodes ],
-  case [{N,E} || {N,{error,E}} <- Results ] of
-    []-> ok;
-    Errors->
-      % All or no one
-      unsubscribe( Segment ),
-      {error, Errors}
-  end.
-
 subscribe(Segment, PID)->
   case whereis( ?MODULE ) of
     Server when is_pid( Server )->
@@ -103,23 +83,6 @@ subscribe(Segment, PID)->
       end;
     _->
       {error, not_available}
-  end.
-
-
-unsubscribe( Segment )->
-  Self = self(),
-  [ rpc:call(N, ?MODULE, unsubscribe, [ Segment, Self ]) || N <- dlss:get_ready_nodes()],
-  drop_notifications( Segment ),
-  ok.
-
-drop_notifications(Segment)->
-  receive
-    {subscription, Segment, _Action}->
-      drop_notifications(Segment)
-  after
-    100->
-      % Ok, we tried
-      ok
   end.
 
 unsubscribe( Segment, PID )->

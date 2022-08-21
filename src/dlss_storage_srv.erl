@@ -232,39 +232,24 @@ sync_segment_copies( Segment, Trace)->
 add_segment_copy(Segment) ->
   ?LOGINFO("~p add local copy, lock...",[ Segment ]),
 
-  % We do add the copy in the locked mode to be sure that the segment is not transformed
-  % during the copying
-  case dlss_storage:segment_transaction(Segment, write, fun()->
-    ?LOGINFO("~p locked for transformations",[ Segment ]),
-    Master = master_node( Segment ),
-    case dlss_segment:add_copy( Segment ) of
-      ok->
-        #{copies := Copies} = dlss_storage:segment_params(Segment),
-        #{Master := Dump} = Copies,
-        {ok,Dump};
-      Error -> Error
-    end
-  end) of
-    {ok,Dump} ->
-
+  Master = master_node( Segment ),
+  case dlss_segment:add_copy( Segment ) of
+    ok->
+      #{copies := Copies} = dlss_storage:segment_params(Segment),
+      #{Master := Dump} = Copies,
       % The segment is copied successfully, set the version the same as the master has
       ?LOGINFO("~p successfully copied, version ~p",[ Segment, dump_version(Dump) ]),
       ok = dlss_storage:set_segment_version( Segment, node(), Dump );
     {error, Error}->
-      ?LOGERROR("~p unable to add local copy, error ~p",[Segment,Error])
+      ?LOGERROR("~p add local copy error ~p",[Segment,Error])
   end.
 
 drop_segment_copy(Segment)->
   ?LOGWARNING("~p drop local copy",[ Segment ]),
 
-  % We do remove the copy in the locked mode to be sure that the segment is not transformed
-  % during the removing
-  case dlss_storage:segment_transaction(Segment, write, fun()->
-    dlss_segment:remove_copy(Segment)
-  end) of
+  case dlss_segment:remove_copy(Segment) of
     ok->
-      ?LOGINFO("~p successfully removed",[ Segment ]),
-      ok;
+      ?LOGINFO("~p successfully removed",[ Segment ]);
     {error,Error}->
       ?LOGERROR("~p unable to remove local copy, error ~p",[ Segment, Error ])
   end.
@@ -406,17 +391,9 @@ set_read_only_mode(Storage)->
   ok.
 
 set_segment_read_only(Segment)->
-  % If we set read_only while other nodes copy it
-  % mnesia will crash down. So we do it in locked mode
-  case dlss_storage:segment_transaction(Segment, write, fun()->
-    % WARNING! We need the pause to allow mnesia to settle down it's schema
-    timer:sleep(5000),
-    dlss_segment:access_mode(Segment, read_only)
-  end, 5000) of
-    ok->
+  case dlss_segment:access_mode(Segment, read_only) of
+    ok ->
       ?LOGINFO("~p set read_only mode",[ Segment ]);
-    {error, lock_timeout}->
-      ?LOGINFO("~p lock timeout, skip set read_only mode",[Segment]);
     {error,Error}->
       ?LOGERROR("~p unable to set read_only mode, error ~p",[ Segment, Error ])
   end.
@@ -472,37 +449,29 @@ do_transformation(split, Segment )->
 
   InitHash = <<>>,
 
-  ?LOGINFO("~p split lock...",[Parent]),
-  case dlss_storage:segment_transaction(Segment, read, fun()->
+  ?LOGINFO("~p splitting: init size ~s, child ~p init size ~s",[
+    Parent, ?PRETTY_SIZE(dlss_segment:get_size(Parent)), Segment, ?PRETTY_SIZE(dlss_segment:get_size(Segment))
+  ]),
 
-    ?LOGINFO("~p splitting: init size ~s, child ~p init size ~s",[
-      Parent, ?PRETTY_SIZE(dlss_segment:get_size(Parent)), Segment, ?PRETTY_SIZE(dlss_segment:get_size(Segment))
-    ]),
+  {SplitKey,FinalHash} = dlss_segment:split(Parent, Segment, InitHash),
+  ?LOGINFO("~p split finish: split key ~p, final size ~s, child ~p final size ~s, hash ~s, commit...",[
+    Parent,SplitKey,?PRETTY_SIZE(dlss_segment:get_size(Parent)),Segment,?PRETTY_SIZE(dlss_segment:get_size(Segment)), ?PRETTY_HASH(FinalHash)
+  ]),
+  % Update the version of the child segment in the schema
+  dlss_storage:set_segment_version( Segment, Node, #dump{hash = FinalHash, version = ChildVersion }),
 
-    {SplitKey,FinalHash} = dlss_copy:split(Parent, Segment,#{ hash => InitHash }),
-    ?LOGINFO("~p split finish: split key ~p, final size ~s, child ~p final size ~s, hash ~s, commit...",[
-      Parent,SplitKey,?PRETTY_SIZE(dlss_segment:get_size(Parent)),Segment,?PRETTY_SIZE(dlss_segment:get_size(Segment)), ?PRETTY_HASH(FinalHash)
-    ]),
-    % Update the version of the child segment in the schema
-    dlss_storage:set_segment_version( Segment, Node, #dump{hash = FinalHash, version = ChildVersion }),
+  % Update the version of the parent segment in the schema
+  ParentInitHash =
+    case ParentDump of #dump{ hash = Hash0 } -> Hash0;_-> <<>> end,
 
-    % Update the version of the parent segment in the schema
-    ParentInitHash =
-      case ParentDump of #dump{ hash = Hash0 } -> Hash0;_-> <<>> end,
+  ParentHash0 = crypto:hash_update(crypto:hash_init(sha256),ParentInitHash),
+  NewParentHash = crypto:hash_update(ParentHash0, FinalHash),
+  FinalParentHash = crypto:hash_final( NewParentHash ),
 
-    ParentHash0 = crypto:hash_update(crypto:hash_init(sha256),ParentInitHash),
-    NewParentHash = crypto:hash_update(ParentHash0, FinalHash),
-    FinalParentHash = crypto:hash_final( NewParentHash ),
+  dlss_storage:set_segment_version( Parent, Node, #dump{hash = FinalParentHash, version = ParentVersion }),
 
-    dlss_storage:set_segment_version( Parent, Node, #dump{hash = FinalParentHash, version = ParentVersion }),
-
-    % Commit the transformation
-    split_commit(Segment, SplitKey, master_node( Segment ))
-  end) of
-    ok -> ok;
-    {error,Error}->
-      ?LOGERROR("~p split to ~p error ~p",[ Parent, Segment, Error ])
-  end;
+  % Commit the transformation
+  split_commit(Segment, SplitKey, master_node( Segment ));
 
 do_transformation(merge, Segment )->
 
@@ -528,18 +497,13 @@ merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], So
       merge_level( Tail, Source, Params, Node );
     #{ Node := Dump } when Dump=:=undefined; Dump#dump.version < Version->
       % This node hosts the target segment, it must to play its role
-      StartKey =
-        if
-          FromKey =:= '$start_of_table'->undefined;
-          true -> FromKey
-        end,
       EndKey =
         case Tail of
           [{_, #{ key := NextKey }}| _]->
             % Copying is not inclusive to end
             NextKey;
           _->
-            undefined
+            '$end_of_table'
         end,
       InitHash=
         case Dump of
@@ -547,31 +511,31 @@ merge_level([ {S, #{key:=FromKey, version:=Version, copies:=Copies}}| Tail ], So
           _-><<>>
         end,
 
-      % Merge 1 segment at a time
-      ?LOGINFO("~p merge to ~p, lock...",[ Source, S]),
-      case dlss_storage:segment_transaction(S,read,fun()->
-        ?LOGINFO("~p merge to ~p, range ~p : ~p, init size ~s, init hash ~s",[
-          Source, S, FromKey, EndKey, ?PRETTY_SIZE(dlss_segment:get_size(S)), ?PRETTY_HASH(InitHash)
-        ]),
+      ?LOGINFO("~p merge to ~p, range ~p : ~p, init size ~s, init hash ~s",[
+        Source, S, FromKey, EndKey, ?PRETTY_SIZE(dlss_segment:get_size(S)), ?PRETTY_HASH(InitHash)
+      ]),
 
-        FinalHash = dlss_copy:copy(Source,S,#{ hash => InitHash, start_key =>StartKey, end_key => EndKey}),
-        ?LOGINFO("~p merged to ~p, range ~p, to ~p, final size ~s, new version ~p, new hash ~s, commit...",[
-          Source, S, FromKey, EndKey, ?PRETTY_SIZE(dlss_segment:get_size(S)), Version, ?PRETTY_HASH(FinalHash)
-        ]),
-        % Update the version of the segment in the schema
-        dlss_storage:set_segment_version( S, Node, #dump{hash = FinalHash, version = Version }),
+      FinalHash = dlss_copy:merge(Source,S, FromKey, EndKey, InitHash),
 
-        % Commit the transformation
-        merge_commit_child(S, master_node( S ))
+      ?LOGINFO("~p merged to ~p, range ~p, to ~p, final size ~s, new version ~p, new hash ~s, commit...",[
+        Source, S, FromKey, EndKey, ?PRETTY_SIZE(dlss_segment:get_size(S)), Version, ?PRETTY_HASH(FinalHash)
+      ]),
+      % Update the version of the segment in the schema
+      dlss_storage:set_segment_version( S, Node, #dump{hash = FinalHash, version = Version }),
 
-      end) of
-        ok -> merge_level(Tail, Source, Params, Node);
-        {error,{abort,_}}->
+      % Commit the transformation
+      merge_commit_child(S, master_node( S )),
+
+      % Commit the transformation
+      case merge_commit_child(S, master_node( S )) of
+        ok->
+          merge_level(Tail, Source, Params, Node);
+        abort->
           % Segment commit aborted, do not proceed. Let's start the next cycle,
           % do hash verification and copies synchronization and only then proceed.
           % Already committed segments are going to be skipped during the version check
-          ok;
-        Error -> Error
+          ?LOGERROR("~p has different hash with the master, stop merge",[S]),
+          ok
       end;
     _->
       % The Node doesn't hosts the target segment, check the rest of the level
@@ -652,7 +616,8 @@ merge_commit_child(Segment, Master)->
 
   if
     MyDump =:= MasterDump->
-      ?LOGINFO("~p merge commit, version ~p, hash ~s",[ Segment, MyVersion, ?PRETTY_HASH(MyHash) ]);
+      ?LOGINFO("~p merge commit, version ~p, hash ~s",[ Segment, MyVersion, ?PRETTY_HASH(MyHash) ]),
+      ok;
     not is_number(MasterVersion); MyVersion > MasterVersion->
 
       % There are still nodes that are not confirmed the hash yet
@@ -667,7 +632,7 @@ merge_commit_child(Segment, Master)->
         Segment, Master, MasterVersion, ?PRETTY_HASH(MasterHash), MyVersion, ?PRETTY_HASH(MyHash)
       ]),
 
-      throw(abort)
+      abort
   end.
 
 %%------------------------------------------------------------

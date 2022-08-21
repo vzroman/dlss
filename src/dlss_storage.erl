@@ -61,7 +61,7 @@
   remove_all_segments_from/1,
 
   % Perform a transaction over segment in locked mode
-  segment_transaction/3,segment_transaction/4,
+  lock_segment/2,lock_segment/3,
 
   % rebalance the storage schema
   split_segment/1,
@@ -605,7 +605,7 @@ set_segment_version( Segment, Node, Version )->
   % Set a version for a segment in the schema
   case dlss:sync_transaction(fun()->
     % Set a lock on the segment
-    Sgm = #sgm{copies = Copies} = lock_segment(Segment, write),
+    Sgm = #sgm{copies = Copies} = get_segment(Segment, _Lock = write),
 
     % Update the copies
     Copies1 = Copies#{ Node=>Version },
@@ -633,7 +633,7 @@ add_segment_copy( Segment , Node )->
 
   case dlss:sync_transaction(fun()->
     % Set a lock on the segment
-    Sgm = #sgm{copies = Copies} = lock_segment(Segment, write),
+    Sgm = #sgm{copies = Copies} = get_segment(Segment, _Lock = write),
 
     case Copies of
       #{Node:=_}->
@@ -655,7 +655,7 @@ remove_segment_copy( Segment , Node )->
 
   case dlss:sync_transaction(fun()->
     % Set a lock on the segment
-    Sgm = #sgm{copies = Copies} = lock_segment(Segment, write),
+    Sgm = #sgm{copies = Copies} = get_segment(Segment, _Lock = write),
 
     case Copies of
       #{Node:=_}->
@@ -1211,7 +1211,7 @@ segment_by_name(Name)->
     _-> { error, not_found }
   end.
 
-lock_segment( Segment, Lock )->
+get_segment( Segment, Lock )->
   case segment_by_name( Segment ) of
     { ok, Sgm }->
       case dlss_segment:read( dlss_schema, Sgm, Lock ) of
@@ -1220,10 +1220,34 @@ lock_segment( Segment, Lock )->
           % We are here probably because master is changing the segment's config
           % Waiting for master to finish
           timer:sleep(10),
-          lock_segment( Segment, Lock )
+          get_segment( Segment, Lock )
       end;
     Error ->
       ?ERROR(Error)
+  end.
+
+lock_segment(Segment, Lock)->
+  lock_segment(Segment, Lock, infinity).
+lock_segment(Segment, Lock, Timeout)->
+  Owner = self(),
+  Holder = spawn_link(fun()->
+    case dlss:sync_transaction(fun()->lock_segment(Segment, Lock) end) of
+      {ok,_}->
+        Owner ! {locked, self()},
+        receive {unlock, Owner}-> ok end;
+      {error,Error} -> Owner ! {error,self(),Error}
+    end
+  end),
+
+  receive
+    {locked, Holder}->
+      {ok,_Unlock = fun()->Holder ! {unlock,self()} end};
+    {error,Holder,Error} ->
+      {error,Error}
+  after
+    Timeout->
+      exit(Holder,timeout),
+      {error, timeout}
   end.
 
 segment_transaction(Segment, Lock, Fun)->
