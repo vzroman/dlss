@@ -41,18 +41,21 @@ add( Node )->
   case dlss_backend:add_node(Node) of
     true->
       set_status( Node, down ),
+      dlss_segment:add_node( Node ),
       ok;
     _->
       error
   end.
 
 remove( Node )->
+  dlss_storage:remove_node( Node ),
+  dlss_segment:remove_node( Node ),
   dlss_backend:remove_node(Node),
-  dlss_storage:remove_all_segments_from( Node ),
   dlss_segment:dirty_delete(dlss_schema,#node{node=Node}),
   ok.
 
 set_status(Node,Status)->
+  dlss_segment:node_status(Node, Status),
   dlss_segment:dirty_write(dlss_schema, #node{node=Node},Status).
 
 get_status(Node)->

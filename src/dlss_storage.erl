@@ -58,7 +58,7 @@
   % add/remove segment copies
   add_segment_copy/2,
   remove_segment_copy/2,
-  remove_all_segments_from/1,
+  remove_node/1,
 
   % Perform a transaction over segment in locked mode
   lock_segment/2,lock_segment/3,
@@ -673,7 +673,7 @@ remove_segment_copy( Segment , Node )->
     Error -> ?ERROR( Error )
   end.
 
-remove_all_segments_from( Node )->
+remove_node( Node )->
   case dlss:sync_transaction(fun()->
 
     % Set lock on schema

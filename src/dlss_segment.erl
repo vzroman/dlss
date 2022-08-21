@@ -43,7 +43,8 @@
 %%	SEARCH API
 %%=================================================================
 -export([
-  search/2
+  search/2,
+  match/2
 ]).
 
 %%=================================================================
@@ -66,6 +67,7 @@
 %%	STORAGE SERVER API
 %%=================================================================
 -export([
+
   create/2,
   remove/1,
 
@@ -76,6 +78,7 @@
   merge/5,
 
   source_node/1,
+  module/1,
 
   access_mode/2
 ]).
@@ -89,15 +92,38 @@
 ]).
 
 %%=================================================================
+%%	NODES API
+%%=================================================================
+-export([
+
+  node_add/1,
+  node_remove/1,
+  node_status/2,
+
+  create/3,
+  delete/1,
+
+  i_have/1,i_have/2,
+  i_dont_have/2
+]).
+
+%%=================================================================
 %%	ENGINE
 %%=================================================================
 -define(SCHEMA,dlss_segment_schema).
 
--define(LOOKUP(K),
-  case ets:lookup(?SCHEMA,K) of
-    [{_,_@V}]->_@V;
-    _-> ?UNDEFINED
+-define(SCHEMA_READ(K),
+  case dlss_ramdisc:read(?SCHEMA,[K]) of
+    []->?UNDEFINED;
+    [_@V]->_@V
   end).
+
+-define(SCHEMA_WRITE(KV),dlss_ramdisc:write(?SCHEMA,[KV])).
+
+-define(SCHEMA_DELETE(K),dlss_ramdisc:delete(?SCHEMA,[K])).
+
+-define(SCHEMA_MATCH(P),dlss_ramdisc:match(?SCHEMA, P)).
+
 
 -define(START_OF_TABLE,'$start_of_table').
 -define(END_OF_TABLE,'$start_of_table').
@@ -119,27 +145,31 @@
 
 -define(OK(R),
   if
-    ?FUNCTION_NAME=:=dirty_read;?FUNCTION_NAME=:=search;?FUNCTION_NAME=:=read->?RECs2KVs(R);
+    ?FUNCTION_NAME=:=dirty_read;?FUNCTION_NAME=:=search;?FUNCTION_NAME=:=match;?FUNCTION_NAME=:=read->?RECs2KVs(R);
     true->R
   end).
 
 -define(READY,
-  case ?LOOKUP(ready_nodes) of
+  case ?SCHEMA_READ(ready_nodes) of
     ?UNDEFINED->[];
-    _@R->_@R
+    _@RNs->_@RNs
   end).
 
--define(NODES(S), ?LOOKUP({S,nodes})).
+-define(NODES(S),
+  case ?SCHEMA_READ({S,nodes}) of
+    ?UNDEFINED ->[];
+    _@SNs->_@SNs
+  end).
 
 -define(READY(Ns),Ns -- (Ns -- ?READY)).
 
--define(HAVE(S),
-  case ?LOOKUP({S,have}) of
+-define(I_HAVE(S),
+  case ?SCHEMA_READ({S,have}) of
     ?UNDEFINED->false;
     _->true
   end).
 
--define(M(S),?LOOKUP({S,module})).
+-define(M(S),?SCHEMA_READ({S,module})).
 -define(F,
   if
     ?FUNCTION_NAME=:=dirty_read->read;
@@ -176,7 +206,7 @@
 
 %------------entry points------------------------------------------
 -define(read(S),
-  case ?HAVE(S) of
+  case ?I_HAVE(S) of
     true->?LOCAL(?M(S),?F(S));
     _->?RPC(?READY(?NODES(S)),?M(S),?F,fun dlss_rpc:call_one/4)
   end).
@@ -189,6 +219,44 @@
       ?RPC(?READY(?NODES(S)),?M(S),?F,fun dlss_rpc:call_all/4)
   end).
 
+%%=================================================================
+%%	SCHEMA API
+%%=================================================================
+create(Segment,Module,Nodes)->
+  % ----schema------
+  % {S,module} = dlss_disc
+  % {S,have} = true
+  % {S,nodes} = Nodes
+  % ready_nodes = Nodes,
+  ok = ?SCHEMA_WRITE({{Segment, module}, Module} ),
+  ok = ?SCHEMA_WRITE({{Segment, nodes}, Nodes} ),
+  case lists:member( node(), Nodes ) of
+    true->
+      ok = ?SCHEMA_WRITE({{Segment, have}, true} );
+    _->
+      ok
+  end.
+
+delete( Segment )->
+  ?SCHEMA_DELETE( {Segment, have} ),
+  ?SCHEMA_DELETE( {Segment, module} ),
+  ?SCHEMA_DELETE( {Segment, nodes} ).
+
+i_have( Segment )->
+  case dlss_rpc:call_all(?READY, ?MODULE, i_have, [Segment, node()] ) of
+    {ok,_}->
+      % Everybody knows now
+      ?SCHEMA_WRITE({Segment,have});
+    {error,Error}->
+      dlss_rpc:cast_all(?NODES(Segment),?MODULE, i_dont_have,[Segment,node()] ),
+      throw(Error)
+  end.
+
+i_have( Segment, Node )->
+  ok = ?SCHEMA_WRITE({{Segment, nodes}, [Node|?NODES(Segment)--[Node]]} ).
+
+i_dont_have( Segment, Node )->
+  ok = ?SCHEMA_WRITE( {{Segment, nodes}, ?NODES(Segment)--[Node]} ).
 
 %%=================================================================
 %%	READ/WRITE API
@@ -294,6 +362,13 @@ search(Segment,Options0)->
     Records -> ?RECs2KVs( Records )
   end.
 
+match(Segment, Pattern)->
+  case (?read(Segment))( ?KV2REC(Pattern) ) of
+    {error,_} -> ?NOT_AVAILABLE;
+    Records -> ?RECs2KVs( Records )
+  end.
+
+
 match_pattern([{KV,G,R}|Rest])->
   [{?KV2REC(KV),G,R} | match_pattern( Rest )].
 
@@ -304,7 +379,7 @@ get_size( Segment )->
   (?read(Segment))( Segment ).
 
 have( Segment )->
-  ?HAVE( Segment ).
+  ?I_HAVE( Segment ).
 
 nodes( Segment )->
   ?NODES( Segment ).
@@ -320,7 +395,7 @@ get_info(Segment)->
   }.
 
 get_local_segments()->
-  [ S || [S] <- ets:match(?SCHEMA, {'$1',have})].
+  [ S || [S] <- ?SCHEMA_MATCH({'$1',have})].
 
 access_mode( Segment )->
   mnesia:table_info( Segment, access_mode ).
@@ -335,7 +410,7 @@ access_mode( Segment , Mode )->
 %%=================================================================
 %%	STORAGE SERVER (Only)
 %%=================================================================
-create(Segment,#{nodes := Nodes} = Params0)->
+create(Segment,#{nodes := Nodes,type:=Type} = Params)->
 
   % The segment can be created only on ready nodes. The nodes that are
   % not active now will add it later during synchronization
@@ -343,25 +418,60 @@ create(Segment,#{nodes := Nodes} = Params0)->
 
   if
     length(ReadyNodes) > 0 ->
-      Params = Params0#{
-        nodes => Nodes
-      },
+      try
+        mnesia_create( Segment, Params#{ nodes => ReadyNodes } ),
 
-      Attributes = mnesia_attributes(Params),
-      case mnesia:create_table(Segment,[
-        {attributes,record_info(fields,kv)},
-        {record_name,kv},
-        {type,ordered_set}|
-        Attributes
-      ]) of
-        {atomic, ok } -> ok;
-        {aborted, Reason } -> {error, Reason}
+        Module =
+          if
+            Type =:= ram->dlss_ram;
+            Type =:= ramdisc->dlss_ramdisc;
+            Type =:= disc -> dlss_disc
+          end,
+
+        case dlss_rpc:call_all(?READY, ?MODULE, create, [Segment,Module,ReadyNodes] ) of
+          {ok,_}->
+            ok;
+          {error,Error}->
+            throw({dlss_rpc_error,Error})
+        end
+      catch
+        _:E:S->
+          dlss_rpc:cast_all( ReadyNodes, ?MODULE, delete, [Segment] ),
+          mnesia_remove( Segment ),
+          {error,{E,S}}
       end;
     true ->
-      { error, nodes_not_ready }
+      { error, none_is_ready }
   end.
 
+mnesia_create( Segment, Params)->
+
+  Attributes = mnesia_attributes(Params),
+  case mnesia:create_table(Segment,[
+    {attributes,record_info(fields,kv)},
+    {record_name,kv},
+    {type,ordered_set}|
+    Attributes
+  ]) of
+    {atomic, ok } -> ok;
+    {aborted, Reason } -> throw({mnesia_error,Reason})
+  end.
+
+
 remove( Segment )->
+  case dlss_rpc:call_all(?READY, ?MODULE, delete, [Segment] ) of
+    {ok,_}->
+      case mnesia_remove( Segment ) of
+        ok-> ok;
+        {error,MnesiaError}->
+          {error,{mnesia_error,MnesiaError}}
+      end;
+    {error,DlssError}->
+      {error,{dlss_error,DlssError}}
+  end.
+
+mnesia_remove( Segment )->
+
   % Mnesia crashes on deleting read_only tables
   case access_mode( Segment, read_write ) of
     ok ->
@@ -378,18 +488,22 @@ add_copy( Segment )->
   case get_info( Segment ) of
     #{local:=true}-> {error,local_only};
     _->
-      % ATTENTION! Mnesia trick, we do copy ourselves and tell mnesia to add it
-      {ok, Unlock} = dlss_storage:lock_segment( Segment, _Lock=write ),
-      try
-        Hash = dlss_copy:copy(Segment,Segment,?M(Segment)),
-        mnesia_attach( Segment ),
-        i_have( Segment ),
-        Hash
-      catch _:E:S->
-        drop_copy( Segment ),
-        {error,{E,S}}
-      after
-        Unlock()
+      case ?I_HAVE(Segment) of
+        true -> {error, already_have};
+        _->
+          % ATTENTION! Mnesia trick, we do copy ourselves and tell mnesia to add it
+          {ok, Unlock} = dlss_storage:lock_segment( Segment, _Lock=write ),
+          try
+            Hash = dlss_copy:copy(Segment,Segment,?M(Segment)),
+            mnesia_attach( Segment ),
+            i_have( Segment ),
+            Hash
+          catch _:E:S->
+            dlss_copy:rollback_copy( Segment, ?M(Segment) ),
+            {error,{E,S}}
+          after
+            Unlock()
+          end
       end
   end.
 
@@ -410,26 +524,55 @@ mnesia_attach( Segment )->
     access_mode(Segment,Access)
   end.
 
-i_have( Segment )->
-  ok.
+remove_copy( Segment )->
+  case dlss_rpc:call_all(?READY, ?MODULE, i_dont_have, [Segment,node()]) of
+    {ok,_}->
+      case mnesia_remove_copy( Segment ) of
+        ok->ok;
+        {error,MnesiaError}->
+          ?LOGERROR("~p remove copy mnesia error ~p",[ MnesiaError ]),
+          {error,{mnesia_error,MnesiaError}}
+      end;
+    {error,DlssError}->
+      ?LOGERROR("~p remove copy dlss error ~p",[ DlssError ]),
+      {error,{mnesia_error,DlssError}}
+  end.
 
-drop_copy( Segment )->
-  ok.
-
-
-remove_copy(Segment)->
+mnesia_remove_copy( Segment )->
   % mnesia crashes when detaching read_only copies
   Access = access_mode( Segment ),
-
-  try {atomic,ok} = mnesia:del_table_copy(Segment,node())
-  catch
-    _:E:S->{error,{E,S}}
+  try
+    case mnesia:del_table_copy(Segment,node()) of
+      {atomic,ok}->ok;
+      {aborted,Reason}->{error,Reason}
+    end
   after
     access_mode(Segment,Access)
   end.
 
+split(Source, Target, InitHash)->
+  dlss_copy:split(Source, Target, ?M(Source), #{ hash => InitHash }).
+
+merge(Source, Target, FromKey, EndKey, InitHash)->
+  StartKey =
+    case FromKey of
+      ?START_OF_TABLE -> ?UNDEFINED;
+      _-> FromKey
+    end,
+  _EndKey=
+    case EndKey of
+      ?END_OF_TABLE -> ?UNDEFINED;
+      _ -> EndKey
+    end,
+
+  dlss_copy:copy(Source,Target,?M(Source),#{
+    start_key =>StartKey,
+    end_key => _EndKey,
+    hash => InitHash
+  }).
+
 source_node( Segment )->
-  case ?HAVE(Segment) of
+  case ?I_HAVE(Segment) of
     true -> node();
     _->
       case ?READY(?NODES(Segment)) of
@@ -438,37 +581,24 @@ source_node( Segment )->
       end
   end.
 
+module( Segment )->
+  ?M( Segment ).
+
 %%=================================================================
 %%	SUBSCRIPTIONS API
 %%=================================================================
 subscribe( Segment )->
-
-  Self = self(),
   % We need to subscribe to all nodes, every node can do updates
-
   case dlss_rpc:call_all(?READY(?NODES(Segment)), dlss_subscription, subscribe, [ Segment, self() ] ) of
-    error ->
+    {ok,_} -> ok;
+    {error,Error}->
       % All or no one
       unsubscribe( Segment ),
-  end,
-
-  Results =
-    [{N,
-      case rpc:call(N, dlss_subscription, subscribe, [ Segment, Self ]) of
-        {badrpc, Error} -> {error, Error};
-        Result -> Result
-      end} || N <- Nodes ],
-  case [{N,E} || {N,{error,E}} <- Results ] of
-    []-> ok;
-    Errors->
-      % All or no one
-      unsubscribe( Segment ),
-      {error, Errors}
+      {error,Error}
   end.
 
 unsubscribe( Segment )->
-  Self = self(),
-  [ rpc:call(N, dlss_subscription, unsubscribe, [ Segment, Self ]) || N <- dlss:get_ready_nodes()],
+  dlss_rpc:cast_all(?READY(?NODES(Segment)), dlss_subscription, unsubscribe, [Segment, self()] ),
   drop_notifications( Segment ),
   ok.
 

@@ -68,7 +68,7 @@ call_any(Ns,M,F,As)->
   end.
 
 call_all([],_M,_F,_As)->
-  error;
+  {error,none_is_available};
 call_all(Ns,M,F,As)->
   Results =
     [case rpc:call(N, M, F, As) of
@@ -87,13 +87,13 @@ call_all(Ns,M,F,As)->
 
 %-------------CAST------------------------------------------
 cast_one([],_M,_F,_As)->
-  error;
+  {error,none_is_available};
 cast_one(Ns,M,F,As)->
   rpc:cast(?RAND(Ns), M, F, As),
   ok.
 
 cast_any([],_M,_F,_As)->
-  error;
+  {error,none_is_available};
 cast_any(Ns,M,F,As)->
   [ rpc:cast(N, M, F, As) || N <- Ns ],
   ok.

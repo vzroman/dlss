@@ -51,7 +51,8 @@
 %%	SEARCH API
 %%=================================================================
 -export([
-  search/2
+  search/2,
+  match/2
 ]).
 
 %%=================================================================
@@ -68,18 +69,23 @@
   init_source/2,
   init_target/2,
   init_copy/2,
+
   dump_source/1,
   dump_target/1,
-  drop_target/1,
+  rollback_copy/1,
+
   fold/3,
-  action/1,
-  live_action/1,
-  write_batch/2,
-  drop_batch/2,
   init_reverse/2,
   reverse/2,
+
+  write_batch/2,
+  drop_batch/2,
+
   get_key/1,
-  decode_key/1
+  decode_key/1,
+
+  action/1,
+  live_action/1
 ]).
 
 %%=================================================================
@@ -117,6 +123,9 @@ search(Segment,#{
   stop := Stop,
   ms := MS
 })->
+  ok.
+
+match( Segment, Pattern )->
   ok.
 
 %----------------------DISC SCAN ALL TABLE, NO LIMIT-----------------------------------------
@@ -253,7 +262,7 @@ dump_source( _SourceRef )->
 dump_target( _TargetRef )->
   ok.
 
-drop_target( Target )->
+rollback_copy( Target )->
   mnesia_eleveldb:delete_table(mnesia_eleveldb:default_alias(), Target).
 
 fold(#source{ref = Ref, start = Start}, Iterator, Acc0)->

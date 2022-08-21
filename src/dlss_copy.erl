@@ -25,9 +25,9 @@
 %%	API
 %%=================================================================
 -export([
-  copy/2,copy/3,
-  split/2, split/3,
-  get_size/1
+  copy/3, copy/4,
+  split/3, split/4,
+  rollback_copy/2
 ]).
 
 %%=================================================================
@@ -77,7 +77,7 @@ init_target(Target, Source, Module, Options)->
           {rollback,Me}->ok;
           {'EXIT',Me,Reason}->
             ?LOGERROR("~p receiver died, reason ~p",[?LOG_LOCAL(Source,Target),Reason]),
-            Module:drop_target( Target )
+            Module:rollback_copy( Target )
         end
       end),
 
@@ -93,7 +93,7 @@ commit_target(#target{module = Module, guard = Guard } = T)->
 
 
 rollback_target(#target{trick = true, module = Module,name = Target, guard = Guard} )->
-  Module:drop_target( Target ),
+  Module:rollback_copy( Target ),
   Guard ! {rollback,self()};
 rollback_target(_T)->
   ok.
@@ -175,12 +175,12 @@ iterator({K,V},#acc{
 %%=================================================================
 %%	API
 %%=================================================================
-copy(Source, Target )->
-  copy(Source, Target, #{}).
-copy( Source, Target, Options0 )->
+copy(Source, Target, Module )->
+  copy(Source, Target, Module, #{}).
+copy( Source, Target, Module, Options0 )->
 
   Options = ?OPTIONS(Options0),
-  {Module,ReadNode} = dlss_segment:module_node( Source ),
+  ReadNode = dlss_segment:source_node( Source ),
 
   if
     ReadNode =:= node() ->
@@ -235,7 +235,7 @@ local_copy( Source, Target, Module, #{
 
 remote_copy(Source, Target, Module, #{attempts:=Attempts} = Options )->
   remote_copy(#r_copy{
-    send_node = dlss_segment:read_node( Source ),
+    send_node = dlss_segment:source_node( Source ),
     source = Source,
     target = Target,
     module = Module,
@@ -425,7 +425,7 @@ remote_copy_request(#{
   Unlock = set_lock( Source, Log, Receiver ),
 
   ?LOGINFO("~p source locked, start copying",[Log]),
-  {Module,_} = dlss_segment:module_node( Source ),
+  Module = dlss_segment:module( Source ),
 
   SourceRef = init_source( Source, Module, Options ),
   InitHash = crypto:hash_update(crypto:hash_init(sha256),InitHash0),
@@ -536,7 +536,7 @@ prepare_live_copy( Source, Log )->
     AccessMode =:= read_write->
       ?LOGINFO("--------------------~s LIVE COPY----------------------------",[string:uppercase(Log)]),
       ?LOGINFO("~p subscribe....",[Source]),
-      case dlss_subscription:subscribe( Source ) of
+      case dlss_segment:subscribe( Source ) of
         ok->
           % Success
           ?LOGINFO("subscribed on ~p",[Source]),
@@ -559,7 +559,7 @@ finish_live_copy( Live, TargetRef, Log)->
 drop_live_copy(_Source, false =_Live)->
   ok;
 drop_live_copy(Source, Live)->
-  dlss_subscription:unsubscribe( Source ),
+  dlss_segment:unsubscribe( Source ),
   ets:delete( Live ).
 
 roll_live_updates(#r_acc{ live = false })->
@@ -627,7 +627,7 @@ give_away_live_updates(Live, #target{ name = Target } = TargetRef, Log)->
   Giver = self(),
   Taker =
     spawn_link(fun()->
-      ok = dlss_subscription:subscribe( Target ),
+      ok = dlss_segment:subscribe( Target ),
       Giver ! {ready, self() },
 
       ?LOGINFO("~p live updates has taken ~p",[Log,self()]),
@@ -641,7 +641,7 @@ give_away_live_updates(Live, #target{ name = Target } = TargetRef, Log)->
 
   % From now the Taker receives updates I can unsubscribe, and wait
   % for my tail updates
-  dlss_subscription:unsubscribe( Target ),
+  dlss_segment:unsubscribe( Target ),
 
   ?LOGINFO("~p: roll over tail live updates",[Log]),
   roll_tail_updates( Live, TargetRef, Log).
@@ -670,7 +670,7 @@ roll_tail_updates( Live, #target{ module = Module, name = Target } = TargetRef, 
 wait_ready(#target{name = Target, module = Module} = TargetRef, Log, true) ->
   ?LOGINFO("~p copy attached to the schema, flush tail subscriptions",[Log]),
 
-  dlss_subscription:unsubscribe( Target ),
+  dlss_segment:unsubscribe( Target ),
 
   Updates = flush_subscriptions( Target, ?FLUSH_TAIL_TIMEOUT ),
 
@@ -707,12 +707,11 @@ wait_ready(#target{name = Target, module = Module} = TargetRef, Log, false)->
 -record(split_l,{module, key, hash, total_size}).
 -record(split_r,{i, module, size, key}).
 
-split( Source, Target )->
-  split( Source, Target, #{}).
-split( Source, Target, Options0 )->
+split( Source, Target, Module )->
+  split( Source, Target, Module, #{}).
+split( Source, Target, Module, Options0 )->
 
   Options = ?OPTIONS( Options0 ),
-  Module = get_module( Source ),
 
   SourceRef = init_source( Source, Module, Options ),
   TargetRef = init_target(Target, Source, Module, Options),
@@ -821,20 +820,8 @@ reverse_loop(Owner, #split_r{key = Key} = Acc)->
       ok
   end.
 
-get_size( Segment )->
-
-  Module = get_module( Segment ),
-  ReadNode = dlss_segment:where_to_read(Segment),
-  if
-    ReadNode =:= node()->
-      Module:get_size( Segment );
-
-    true->
-      case rpc:call(ReadNode, Module, get_size, [ Segment ]) of
-        {badrpc, _Error} -> -1;
-        Result -> Result
-      end
-  end.
+rollback_copy( Copy, Module )->
+  Module:rollback_copy( Copy ).
 
 debug(Storage, Count)->
   spawn(fun()->fill(Storage, Count) end).
