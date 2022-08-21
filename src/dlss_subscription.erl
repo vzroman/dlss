@@ -111,7 +111,7 @@ wait_loop(Sup, Subs)->
     {subscribe, Segment, ReplyTo, PID}->
       case do_subscribe( Segment, PID ) of
         ok ->
-          ?LOGINFO("DEBUG: ~p subscribed on ~p",[PID,Segment]),
+          ?LOGINFO("~p subscribed on ~p",[PID,Segment]),
           ReplyTo ! {ok, self()},
           case Subs of
             #{ PID := Segments }->
@@ -126,7 +126,7 @@ wait_loop(Sup, Subs)->
           wait_loop(Sup, Subs)
       end;
     {unsubscribe, Segment, PID}->
-      ?LOGINFO("DEBUG: ~p unsubscribed from ~p",[PID,Segment]),
+      ?LOGINFO("~p unsubscribed from ~p",[PID,Segment]),
       do_unsubscribe( Segment, PID ),
       case Subs of
         #{ PID := Segments }->
@@ -141,7 +141,7 @@ wait_loop(Sup, Subs)->
     {'EXIT',PID, Reason} when PID =/= Sup->
       case Subs of
         #{ PID := Segments }->
-          ?LOGINFO("DEBUG: ~p subcriber died, reason ~p, remove subscriptions ~p",[ PID, Reason, Segments ]),
+          ?LOGWARNING("~p subcriber died, reason ~p, remove subscriptions ~p",[ PID, Reason, Segments ]),
           [ do_unsubscribe(S, PID) || S <- Segments ],
           wait_loop(Sup, maps:remove( PID, Subs ));
         _->

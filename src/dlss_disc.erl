@@ -119,6 +119,58 @@ search(Segment,#{
 })->
   ok.
 
+%----------------------DISC SCAN ALL TABLE, NO LIMIT-----------------------------------------
+disc_scan(Segment,'$start_of_table','$end_of_table',Limit)
+  when not is_number(Limit)->
+  ?LOGDEBUG("------------DISC SCAN ALL TABLE, NO LIMIT-------------"),
+  fold(Segment,fun(I)-> do_fold(?MOVE(I,?DATA_START),I) end);
+
+%----------------------DISC SCAN ALL TABLE, WITH LIMIT-----------------------------------------
+disc_scan(Segment,'$start_of_table','$end_of_table',Limit)->
+  ?LOGDEBUG("------------DISC SCAN ALL TABLE, LIMIT ~p-------------",[Limit]),
+  fold(Segment,fun(I)-> do_fold(?MOVE(I,?DATA_START),I,Limit) end);
+
+%----------------------DISC SCAN FROM START TO KEY, NO LIMIT-----------------------------------------
+disc_scan(Segment,'$start_of_table',To,Limit)
+  when not is_number(Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM START TO KEY ~p, NO LIMIT-------------",[To]),
+  fold(Segment,fun(I)-> do_fold_to(?MOVE(I,?DATA_START),I,?ENCODE_KEY(To)) end);
+
+%----------------------DISC SCAN FROM START TO KEY, WITH LIMIT-----------------------------------------
+disc_scan(Segment,'$start_of_table',To,Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM START TO KEY ~p, WITH LIMIT ~p-------------",[To,Limit]),
+  fold(Segment,fun(I)-> do_fold_to(?MOVE(I,?DATA_START),I,?ENCODE_KEY(To),Limit) end);
+
+%----------------------DISC SCAN FROM KEY TO END, NO LIMIT-----------------------------------------
+disc_scan(Segment,From,'$end_of_table',Limit)
+  when not is_number(Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM ~p TO END, NO LIMIT-------------",[From]),
+  fold(Segment,fun(I)-> do_fold(?MOVE(I,?ENCODE_KEY(From)),I) end);
+
+%----------------------DISC SCAN FROM KEY TO END, WITH LIMIT-----------------------------------------
+disc_scan(Segment,From,'$end_of_table',Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM ~p TO END, WITH LIMIT ~p-------------",[From,Limit]),
+  fold(Segment,fun(I)-> do_fold(?MOVE(I,?ENCODE_KEY(From)),I,Limit) end);
+
+%----------------------DISC SCAN FROM KEY TO KEY, NO LIMIT-----------------------------------------
+disc_scan(Segment,From,To,Limit)
+  when not is_number(Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM ~p TO ~p, NO LIMIT-------------",[From,To]),
+  fold(Segment,fun(I)-> do_fold_to(?MOVE(I,?ENCODE_KEY(From)),I,?ENCODE_KEY(To)) end);
+
+%----------------------DISC SCAN FROM KEY TO KEY, WITH LIMIT-----------------------------------------
+disc_scan(Segment,From,To,Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM ~p TO ~p, WITH LIMIT ~p-------------",[From,To,Limit]),
+  fold(Segment,fun(I)-> do_fold_to(?MOVE(I,?ENCODE_KEY(From)),I,?ENCODE_KEY(To),Limit) end).
+
+fold(Segment,Fold) ->
+  Ref = ?REF(Segment),
+  {ok, Itr} = eleveldb:iterator(Ref, []),
+  try Fold(Itr)
+  after
+    catch eleveldb:iterator_close(Itr)
+  end.
+
 %%=================================================================
 %%	INFO
 %%=================================================================

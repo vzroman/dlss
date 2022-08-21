@@ -30,11 +30,6 @@
   1 => 4096
 }). % MB
 
--define(DEFAULT_SPLIT_MEDIAN, 0.55).
-
--define(DEFAULT_DENSITY_CHECK_INTERVAL, 3600).  % 1 hour
--define(DEFAULT_DENSITY_LIMIT, 0.8).            % 80 percent
-
 
 -record(kv,{key,value}).
 
@@ -49,6 +44,13 @@
     end
   end)()
 ).
+
+-define(UNDEFINED,undefined).
+-define(RAND(List),
+  begin
+    _@I = erlang:phash2(make_ref(),length(List)),
+    lists:nth(_@I+1, List)
+  end).
 
 -define(A2B(Atom),unicode:characters_to_binary(atom_to_list(Atom))).
 

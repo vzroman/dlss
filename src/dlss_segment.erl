@@ -50,31 +50,42 @@
 %%	INFO API
 %%=================================================================
 -export([
+  get_size/1,
+
+  have/1,
+  nodes/1,
+  ready_nodes/1,
+
   get_info/1,
   get_local_segments/0,
 
-  get_size/1,
-  access_mode/1,access_mode/2,
-
-  read_node/1,
-  ready_nodes/1
+  access_mode/1
 ]).
 
 %%=================================================================
-%%	SERVICE API
+%%	STORAGE SERVER API
 %%=================================================================
 -export([
-
   create/2,
   remove/1,
 
   add_copy/1,
   remove_copy/1,
 
-  subscribe/1,
-
   split/3,
-  merge/5
+  merge/5,
+
+  source_node/1,
+
+  access_mode/2
+]).
+
+%%=================================================================
+%%	SUBSCRIPTIONS API
+%%=================================================================
+-export([
+  subscribe/1,
+  unsubscribe/1
 ]).
 
 %%=================================================================
@@ -82,7 +93,6 @@
 %%=================================================================
 -define(SCHEMA,dlss_segment_schema).
 
--define(UNDEFINED,undefined).
 -define(LOOKUP(K),
   case ets:lookup(?SCHEMA,K) of
     [{_,_@V}]->_@V;
@@ -101,13 +111,25 @@
     true->[]
   end).
 
+-define(REC2KV(R),{R#kv.key,R#kv.value}).
+-define(KV2REC(KV),#kv{key = element(1,KV),value = element(2,KV)}).
+
+-define(RECs2KVs(Rs),[?REC2KV(R) || R<-Rs]).
+-define(KVs2RECs(KVs),[?KV2REC(KV) || KV<-KVs]).
+
+-define(OK(R),
+  if
+    ?FUNCTION_NAME=:=dirty_read;?FUNCTION_NAME=:=search;?FUNCTION_NAME=:=read->?RECs2KVs(R);
+    true->R
+  end).
+
 -define(READY,
   case ?LOOKUP(ready_nodes) of
     ?UNDEFINED->[];
     _@R->_@R
   end).
 
--define(NODES(S), ?READY(?LOOKUP({S,nodes}))).
+-define(NODES(S), ?LOOKUP({S,nodes})).
 
 -define(READY(Ns),Ns -- (Ns -- ?READY)).
 
@@ -134,7 +156,7 @@
     true->?FUNCTION_ARITY
   end).
 
--define(LOCAL(M,F), fun(K)->M:F/?FUNCTION_ARITY).
+-define(LOCAL(M,F), fun(K)->M:F/?A).
 
 -define(RPC(N,M,F,T),
   if
@@ -143,19 +165,20 @@
     ?A=:=2->fun(A1,A2)->T(N,M,F,[A1,A2]) end
   end).
 
--define(RAND(Ns),
-  case Ns -- (Ns -- ?READY) of
-    [] -> undefined;
-    _@RNs->
-      _@N = erlang:phash2(make_ref(),length(_@RNs)),
-      lists:nth(_@N+1, _@RNs)
-  end).
+-define(TYPE(S),
+  _@M = ?M(S),
+  if
+    _@M =:= dlss_ram->ram;
+    _@M =:= dlss_ramdisc->ramdisc;
+    _@M =:= dlss_disc -> disc
+  end
+).
 
 %------------entry points------------------------------------------
 -define(read(S),
   case ?HAVE(S) of
     true->?LOCAL(?M(S),?F(S));
-    _->?RPC(?READY(?NODES(S)),?M(S),?F,fun rpc_read/4)
+    _->?RPC(?READY(?NODES(S)),?M(S),?F,fun dlss_rpc:call_one/4)
   end).
 
 -define(write(S),
@@ -165,29 +188,49 @@
     _@Ns when length(_@Ns) > 1->
       if
         ?FUNCTION_NAME=:=dirty_write->
-          ?RPC(_@Ns,?M(S),?F,fun rpc_any/4);
+          ?RPC(_@Ns,?M(S),?F,fun dlss_rpc:cast_any/4);
         true->
-          ?RPC(_@Ns,?M(S),?F,fun rpc_all/4)
+          ?RPC(_@Ns,?M(S),?F,fun dlss_rpc:call_all/4)
       end
   end).
+
+-define(args(As),
+  if
+    ?FUNCTION_NAME=:=dirty_write;?FUNCTION_NAME=:=write->?KVs2RECs(As);
+    true->As
+  end).
+
+-define(res(R),
+  case R of
+    {error,_}->?NOT_AVAILABLE;
+    _->?OK(R)
+  end).
+
+
 
 %%=================================================================
 %%	READ/WRITE API
 %%=================================================================
-dirty_read( Segment, Keys )->
-  [{K,V} ||#kv{key = K, value = V} <- (?read(Segment))(Keys) ].
-read( Segment, [K|Rest], Lock)->
+dirty_read( Segment, Ks )->
+  ?res( (?read(Segment))( ?args(Ks)) ).
+
+read( Segment, Ks, Lock)->
   % Transactions are still on mnesia
+  ?res(mnesia_read(?args(Ks), Segment, Lock)).
+mnesia_read([K|Rest], Segment, Lock)->
   case mnesia:read(Segment,K,Lock) of
-    []->read(Segment,Rest,Lock);
-    [#kv{key = K, value = V}]->[{K,V}|read(Segment,Rest,Lock)]
+    []->mnesia_read(Segment,Rest,Lock);
+    [Rec]->[Rec|read(Segment,Rest,Lock)]
   end.
 
-dirty_write(Segment,Keys)->
-  (?write(Segment))(Keys).
-write(Segment,Records,Lock)->
+dirty_write(Segment,KVs)->
+  ?res( (?write(Segment))( ?args(KVs)) ).
+
+write(Segment,KVs,Lock)->
   % Transactions are still on mnesia
-  [mnesia:write(Segment,#kv{key = K,value = V}, Lock) || {K,V} <- Records],
+  ?res( mnesia_write(?args(KVs),Segment,Lock) ).
+mnesia_write(Records,Segment,Lock)->
+  [mnesia:write(Segment,Rec, Lock) || Rec <- Records],
   % Mnesia terminates on the transaction on write error,
   % Batch either in or we won't be here
   dlss_backend:on_commit(fun()->
@@ -197,7 +240,8 @@ write(Segment,Records,Lock)->
   ok.
 
 dirty_delete(Segment,Keys)->
-  (?write(Segment))(Keys).
+  ?res( (?write(Segment))(Keys) ).
+
 delete(Segment,Keys,Lock)->
   [ mnesia:delete(Segment,K,Lock) || K <- Keys],
   dlss_backend:on_commit(fun()->
@@ -210,16 +254,16 @@ delete(Segment,Keys,Lock)->
 %%	ITERATOR
 %%=================================================================
 first(Segment)->
-  (?read(Segment))().
+  ?res( (?read(Segment))() ).
 
 last(Segment)->
-  (?read(Segment))().
+  ?res( (?read(Segment))() ).
 
 next(Segment,Key)->
-  (?read(Segment))(Key).
+  ?res( (?read(Segment))( ?args(Key) )).
 
 prev(Segment,Key)->
-  (?read(Segment))(Key).
+  ?res( (?read(Segment))( ?args(Key) )).
 
 %%=================================================================
 %%	SEARCH
@@ -238,326 +282,48 @@ search(Segment,Options0)->
     ms := ?UNDEFINED
   }, Options)).
 
-%-------------INTERVAL SCAN----------------------------------------------
-dirty_scan(Segment,From,To)->
-  dirty_scan(Segment,From,To,infinity).
-dirty_scan(Segment,From,To,Limit)->
-  Node = where_to_read( Segment ),
-  if
-    Node =:= unavailable ->[];
-    Node =:= node()->
-      do_dirty_scan(Segment,From,To,Limit);
-    true->
-      case rpc:call(Node, ?MODULE, do_dirty_scan, [ Segment,From,To,Limit ]) of
-        {badrpc, _Error} ->[];
-        Result -> Result
-      end
+%%=================================================================
+%%	INFO
+%%=================================================================
+get_size( Segment )->
+  (?read(Segment))( Segment ).
+
+have( Segment )->
+  ?HAVE( Segment ).
+
+nodes( Segment )->
+  ?NODES( Segment ).
+
+ready_nodes( Segment )->
+  ?READY(?NODES(Segment)).
+
+get_info(Segment)->
+  #{
+    type => ?TYPE(Segment),
+    nodes => ?NODES(Segment),
+    local => mnesia:table_info(Segment,local_content)
+  }.
+
+get_local_segments()->
+  [ S || [S] <- ets:match(?SCHEMA, {'$1',have})].
+
+access_mode( Segment )->
+  mnesia:table_info( Segment, access_mode ).
+
+access_mode( Segment , Mode )->
+  case mnesia:change_table_access_mode(Segment, Mode) of
+    {atomic,ok} -> ok;
+    {aborted,{already_exists,Segment,Mode}}->ok;
+    {aborted,Reason}->{error,Reason}
   end.
-
-do_dirty_scan(Segment,From,To,Limit)->
-
-  % Find out the type of the storage
-  Type=mnesia_lib:storage_type_at_node(node(),Segment),
-  ?LOGDEBUG("type ~p",[Type]),
-
-  % Choose an algorithm
-  if
-    Type =:= {ext,leveldb_copies,mnesia_eleveldb}->
-      disc_scan(Segment,From,To,Limit);
-    To =:= '$end_of_table'->
-      dirty_select(Segment, Type, From, To, Limit );
-    is_number(Limit)->
-      ?LOGDEBUG("------------SAFE SCAN: from ~p, to ~p, limit ~p-------------",[From,To,Limit]),
-      safe_scan(Segment,From,To,Limit);
-    true->
-      ?LOGDEBUG("------------SAFE SCAN NO LIMIT: ~p, from ~p, to ~p-------------",[Segment,From,To]),
-      safe_scan(Segment,From,To)
-  end.
-
-%----------------------DISC SCAN ALL TABLE, NO LIMIT-----------------------------------------
-disc_scan(Segment,'$start_of_table','$end_of_table',Limit)
-  when not is_number(Limit)->
-  ?LOGDEBUG("------------DISC SCAN ALL TABLE, NO LIMIT-------------"),
-  fold(Segment,fun(I)-> do_fold(?MOVE(I,?DATA_START),I) end);
-
-%----------------------DISC SCAN ALL TABLE, WITH LIMIT-----------------------------------------
-disc_scan(Segment,'$start_of_table','$end_of_table',Limit)->
-  ?LOGDEBUG("------------DISC SCAN ALL TABLE, LIMIT ~p-------------",[Limit]),
-  fold(Segment,fun(I)-> do_fold(?MOVE(I,?DATA_START),I,Limit) end);
-
-%----------------------DISC SCAN FROM START TO KEY, NO LIMIT-----------------------------------------
-disc_scan(Segment,'$start_of_table',To,Limit)
-  when not is_number(Limit)->
-  ?LOGDEBUG("------------DISC SCAN FROM START TO KEY ~p, NO LIMIT-------------",[To]),
-  fold(Segment,fun(I)-> do_fold_to(?MOVE(I,?DATA_START),I,?ENCODE_KEY(To)) end);
-
-%----------------------DISC SCAN FROM START TO KEY, WITH LIMIT-----------------------------------------
-disc_scan(Segment,'$start_of_table',To,Limit)->
-  ?LOGDEBUG("------------DISC SCAN FROM START TO KEY ~p, WITH LIMIT ~p-------------",[To,Limit]),
-  fold(Segment,fun(I)-> do_fold_to(?MOVE(I,?DATA_START),I,?ENCODE_KEY(To),Limit) end);
-
-%----------------------DISC SCAN FROM KEY TO END, NO LIMIT-----------------------------------------
-disc_scan(Segment,From,'$end_of_table',Limit)
-  when not is_number(Limit)->
-  ?LOGDEBUG("------------DISC SCAN FROM ~p TO END, NO LIMIT-------------",[From]),
-  fold(Segment,fun(I)-> do_fold(?MOVE(I,?ENCODE_KEY(From)),I) end);
-
-%----------------------DISC SCAN FROM KEY TO END, WITH LIMIT-----------------------------------------
-disc_scan(Segment,From,'$end_of_table',Limit)->
-  ?LOGDEBUG("------------DISC SCAN FROM ~p TO END, WITH LIMIT ~p-------------",[From,Limit]),
-  fold(Segment,fun(I)-> do_fold(?MOVE(I,?ENCODE_KEY(From)),I,Limit) end);
-
-%----------------------DISC SCAN FROM KEY TO KEY, NO LIMIT-----------------------------------------
-disc_scan(Segment,From,To,Limit)
-  when not is_number(Limit)->
-  ?LOGDEBUG("------------DISC SCAN FROM ~p TO ~p, NO LIMIT-------------",[From,To]),
-  fold(Segment,fun(I)-> do_fold_to(?MOVE(I,?ENCODE_KEY(From)),I,?ENCODE_KEY(To)) end);
-
-%----------------------DISC SCAN FROM KEY TO KEY, WITH LIMIT-----------------------------------------
-disc_scan(Segment,From,To,Limit)->
-  ?LOGDEBUG("------------DISC SCAN FROM ~p TO ~p, WITH LIMIT ~p-------------",[From,To,Limit]),
-  fold(Segment,fun(I)-> do_fold_to(?MOVE(I,?ENCODE_KEY(From)),I,?ENCODE_KEY(To),Limit) end).
-
-fold(Segment,Fold) ->
-  Ref = ?REF(Segment),
-  {ok, Itr} = eleveldb:iterator(Ref, []),
-  try Fold(Itr)
-  after
-    catch eleveldb:iterator_close(Itr)
-  end.
-
-%-------------NO LIMIT, NO STOP KEY----------------------------
-do_fold({ok,K,V},I)->
-  [{?DECODE_KEY(K),?DECODE_VALUE(V)}|do_fold(?NEXT(I),I)];
-do_fold(_,_I)->
-  [].
-
-%-------------WITH LIMIT, NO STOP KEY----------------------------
-do_fold({ok,K,V},I,Limit) when Limit>0 ->
-  [{?DECODE_KEY(K),?DECODE_VALUE(V)}|do_fold(?NEXT(I),I,Limit-1)];
-do_fold(_,_I,_Limit)->
-  [].
-
-%-------------NO LIMIT, WITH STOP KEY----------------------------
-do_fold_to({ok,K,V},I,Stop) when K=<Stop->
-  [{?DECODE_KEY(K),?DECODE_VALUE(V)}|do_fold_to(?NEXT(I),I,Stop)];
-do_fold_to(_,_I,_S)->
-  [].
-
-%-------------WITH LIMIT, WITH STOP KEY----------------------------
-do_fold_to({ok,K,V},I,Stop,Limit) when K=<Stop, Limit>0->
-  [{?DECODE_KEY(K),?DECODE_VALUE(V)}|do_fold_to(?NEXT(I),I,Stop,Limit-1)];
-do_fold_to(_,_I,_S,_L)->
-  [].
-
-%----------------------SAFE SCAN NO LIMIT-----------------------------------------
-safe_scan(Segment,'$start_of_table',To)->
-  do_safe_scan(mnesia:dirty_first(Segment), Segment, To );
-safe_scan(Segment,From,To)->
-  do_safe_scan(From, Segment, To ).
-
-do_safe_scan(Key, Segment, To) when Key =/= '$end_of_table', Key =< To->
-  case mnesia:dirty_read(Segment,Key) of
-    [#kv{value = Value}]->[{Key,Value} | do_safe_scan( mnesia:dirty_next(Segment,Key), Segment, To)];
-    _->do_safe_scan( mnesia:dirty_next(Segment,Key), Segment, To )
-  end;
-do_safe_scan(_,_,_)->
-  [].
-
-%----------------------SAFE SCAN WITH LIMIT-----------------------------------------
-safe_scan(Segment,'$start_of_table',To,Limit)->
-  do_safe_scan(mnesia:dirty_first(Segment), Segment, To, Limit );
-safe_scan(Segment,From,To, Limit)->
-  do_safe_scan(From, Segment, To, Limit ).
-
-do_safe_scan(Key, Segment, To, Limit) when Limit > 0, Key =/= '$end_of_table', Key =< To->
-  case mnesia:dirty_read(Segment,Key) of
-    [#kv{value = Value}]->[{Key,Value} | do_safe_scan( mnesia:dirty_next(Segment,Key), Segment, To, Limit - 1 )];
-    _->do_safe_scan( mnesia:dirty_next(Segment,Key), Segment, To, Limit )
-  end;
-do_safe_scan(_,_,_,_)->
-  [].
-
-%---------------------------DIRTY SELECT ALL TABLE, NO LIMIT---------------------------
-dirty_select(Segment, _Type, '$start_of_table', '$end_of_table', Limit)
-  when not is_number(Limit)->
-
-  ?LOGDEBUG("------------DIRTY SELECT ALL TABLE, NO LIMIT-------------"),
-  MS=
-    [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
-  mnesia:dirty_select(Segment, MS);
-%---------------------------DIRTY SELECT ALL TABLE, WITH LIMIT---------------------------
-dirty_select(Segment, Type, '$start_of_table', '$end_of_table', Limit) ->
-
-  ?LOGDEBUG("------------DIRTY SELECT ALL TABLE, LIMIT ~p-------------",[Limit]),
-  MS=
-    [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
-  case mnesia_lib:db_select_init(Type,Segment,MS,Limit) of
-    {Result, _Cont}->
-      Result;
-    '$end_of_table'->
-      []
-  end;
-
-%---------------------------DIRTY SELECT FROM START TO KEY, NO LIMIT---------------------------
-dirty_select(Segment, _Type, '$start_of_table', To, Limit)
-  when not is_number(Limit)->
-
-  ?LOGDEBUG("------------DIRTY SELECT FROM START TO KEY ~p, NO LIMIT-------------",[To]),
-  MS=
-    [{#kv{key='$1',value='$2'},[{'=<','$1',{const,To}}],[{{'$1','$2'}}]}],
-  mnesia:dirty_select(Segment, MS);
-
-%---------------------------DIRTY SELECT FROM START TO KEY WITH LIMIT---------------------------
-dirty_select(Segment, Type, '$start_of_table', To, Limit) ->
-
-  ?LOGDEBUG("------------DIRTY SELECT FROM START TO KEY ~p WITH LIMIT ~p-------------",[To,Limit]),
-  MS=
-    [{#kv{key='$1',value='$2'},[{'=<','$1',{const,To}}],[{{'$1','$2'}}]}],
-
-  case mnesia_lib:db_select_init(Type,Segment,MS,Limit) of
-    {Result, _Cont}->
-      Result;
-    '$end_of_table'->
-      []
-  end;
-
-%---------------------------DIRTY SELECT FROM KEY TO END, NO LIMIT---------------------------
-dirty_select(Segment, Type, From, '$end_of_table', Limit)
-  when not is_number(Limit)->
-
-  ?LOGDEBUG("------------DIRTY SELECT FROM KEY ~p to END, NO LIMIT-------------",[From]),
-
-  MS=
-    [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
-
-  case init_continuation( Segment, Type, From, MS, ?MAX_SIZE(Type) ) of
-    {Head, '$end_of_table'}->
-      [Head];
-    {Head, Cont}->
-      [Head | eval_continuation(Type,Cont,MS)];
-    '$end_of_table' ->
-      [];
-    Cont->
-      eval_continuation(Type,Cont,MS)
-  end;
-%---------------------------DIRTY SELECT FROM KEY TO END WITH LIMIT---------------------------
-dirty_select(Segment, Type, From, '$end_of_table', Limit) ->
-
-  ?LOGDEBUG("------------DIRTY SELECT FROM KEY ~p TO END WITH LIMIT ~p-------------",[From,Limit]),
-
-  MS=
-    [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
-
-  case init_continuation( Segment, Type, From, MS, Limit) of
-    {Head, '$end_of_table'}->
-      [Head];
-    {Head, Cont}->
-      [Head | eval_continuation(Type,Cont,MS)];
-    '$end_of_table' ->
-      [];
-    Cont->
-      eval_continuation(Type,Cont,MS)
-  end;
-%---------------------------DIRTY SELECT FROM KEY TO KEY, NO LIMIT---------------------------
-dirty_select(Segment, Type, From, To, Limit)
-  when not is_number(Limit)->
-
-  MS=
-    [{#kv{key='$1',value='$2'},[{'=<','$1',{const,To}}],[{{'$1','$2'}}]}],
-
-  ?LOGDEBUG("------------DIRTY SELECT FROM KEY ~p to KEY ~p, NO LIMIT-------------",[From,To]),
-  case init_continuation( Segment, Type, From, MS, ?MAX_SIZE(Type)) of
-    {Head, '$end_of_table'}->
-      [Head];
-    {Head, Cont}->
-      [Head | eval_continuation(Type,Cont,MS)];
-    '$end_of_table' ->
-      [];
-    Cont->
-      eval_continuation(Type,Cont,MS)
-  end;
-%---------------------------DIRTY SELECT FROM KEY TO KEY, WITH LIMIT---------------------------
-dirty_select(Segment, Type, From, To, Limit) ->
-
-  MS=
-    [{#kv{key='$1',value='$2'},[{'=<','$1',{const,To}}],[{{'$1','$2'}}]}],
-
-  ?LOGDEBUG("------------DIRTY SELECT FROM KEY ~p to KEY ~p, LIMIT ~p-------------",[From,To,Limit]),
-  case init_continuation( Segment, Type, From, MS, Limit) of
-    {Head, '$end_of_table'}->
-      [Head];
-    {Head, Cont}->
-      [Head | eval_continuation(Type,Cont,MS)];
-    '$end_of_table' ->
-      [];
-    Cont->
-      eval_continuation(Type,Cont,MS)
-  end.
-
-init_continuation( Segment, Type, From, MS, Limit )->
-  case mnesia_lib:db_select_init(Type,Segment,MS,1) of
-    {[{Key,_} = Head], Cont} when Key >= From->
-      % The first key is greater than or equals the From key, take it
-      {Head, decrement(Cont, -Limit)};
-    {[_First],Cont0}->
-      % The first key is less than the From key. This the point for the trick.
-      % Replace the key with the From key in the continuation
-
-      % Check if the from key exists
-      case mnesia:dirty_read(Segment,From) of
-        [#kv{value = Value}]->
-          {{From,Value}, trick_continuation( Cont0, From, Limit - 1) };
-        _->
-          % No value for the From key
-          trick_continuation( Cont0, From, Limit)
-      end;
-    '$end_of_table'->
-      '$end_of_table';
-    {[],'$end_of_table'}->
-      % The segment is empty
-      '$end_of_table'
-  end.
-
-trick_continuation({Segment,_KeyToReplace,Par3,_Limit,Ref,Par6,Par7,Par8}, Key, Limit )->
-  % This is the form of ets ordered_set continuation
-  {Segment,Key,Par3,Limit,Ref,Par6,Par7,Par8}.
-
-decrement({Segment,Key,Par3,Limit,Ref,Par6,Par7,Par8}, Decr )->
-  Rest = Limit - Decr,
-  if
-    Rest > 0 -> {Segment,Key,Par3,Rest,Ref,Par6,Par7,Par8};
-    true -> '$end_of_table'
-  end.
-
-eval_continuation(Type,Cont,MS)->
-  case mnesia_lib:db_select_cont(Type,Cont,MS) of
-    {Result,'$end_of_table'} ->
-      Result;
-    {Result,NextCont0}->
-      case decrement(NextCont0,length(Result)) of
-        '$end_of_table'-> Result;
-        NextCont-> Result ++ eval_continuation( Type, NextCont, MS )
-      end;
-    '$end_of_table' ->
-      [];
-    Result->
-      Result
-  end.
-
-%-------------SELECT----------------------------------------------
-select(Segment,MS)->
-  mnesia:select(Segment,MS).
-dirty_select(Segment,MS)->
-  mnesia:dirty_select(Segment,MS).
-
 
 %%=================================================================
-%%	Service API
+%%	STORAGE SERVER (Only)
 %%=================================================================
-create(Name,#{nodes := Nodes} = Params0)->
+create(Segment,#{nodes := Nodes} = Params0)->
+
   % The segment can be created only on ready nodes. The nodes that are
-  % not active now will add it later by storage supervisor
+  % not active now will add it later during synchronization
   ReadyNodes = ?READY( Nodes ),
 
   if
@@ -567,7 +333,7 @@ create(Name,#{nodes := Nodes} = Params0)->
       },
 
       Attributes = mnesia_attributes(Params),
-      case mnesia:create_table(Name,[
+      case mnesia:create_table(Segment,[
         {attributes,record_info(fields,kv)},
         {record_name,kv},
         {type,ordered_set}|
@@ -580,10 +346,11 @@ create(Name,#{nodes := Nodes} = Params0)->
       { error, nodes_not_ready }
   end.
 
-remove(Name)->
-  case access_mode( Name, read_write ) of
+remove( Segment )->
+  % Mnesia crashes on deleting read_only tables
+  case access_mode( Segment, read_write ) of
     ok ->
-      case mnesia:delete_table(Name) of
+      case mnesia:delete_table(Segment) of
         {atomic,ok}->ok;
         {aborted,Reason}-> {error, Reason }
       end;
@@ -591,6 +358,74 @@ remove(Name)->
       SetModeError
   end.
 
+
+add_copy( Segment )->
+  case get_info( Segment ) of
+    #{local:=true}-> {error,local_only};
+    _->
+      % ATTENTION! Mnesia trick, we do copy ourselves and tell mnesia to add it
+      {ok, Unlock} = dlss_storage:lock_segment( Segment, _Lock=write ),
+      try
+        Hash = dlss_copy:copy(Segment,Segment,?M(Segment)),
+        mnesia_attach( Segment ),
+        i_have( Segment ),
+        Hash
+      catch _:E:S->
+        drop_copy( Segment ),
+        {error,{E,S}}
+      after
+        Unlock()
+      end
+  end.
+
+mnesia_attach( Segment )->
+  % mnesia crashes when attaching read_only copies
+  Access = access_mode( Segment ),
+
+  Type = ?TYPE(Segment),
+
+  MnesiaType =
+    if
+      Type =:= ram      -> ram_copies;
+      Type =:= ramdisc  -> disc_copies;
+      Type =:= disc     -> leveldb_copies
+    end,
+  try {atomic,ok} = mnesia:add_table_copy(Segment, node(), MnesiaType)
+  after
+    access_mode(Segment,Access)
+  end.
+
+i_have( Segment )->
+  ok.
+
+drop_copy( Segment )->
+  ok.
+
+
+remove_copy(Segment)->
+  % mnesia crashes when detaching read_only copies
+  Access = access_mode( Segment ),
+
+  try {atomic,ok} = mnesia:del_table_copy(Segment,node())
+  catch
+    _:E:S->{error,{E,S}}
+  after
+    access_mode(Segment,Access)
+  end.
+
+source_node( Segment )->
+  case ?HAVE(Segment) of
+    true -> node();
+    _->
+      case ?READY(?NODES(Segment)) of
+        []->?UNDEFINED;
+        Nodes -> ?RAND( Nodes )
+      end
+  end.
+
+%%=================================================================
+%%	SUBSCRIPTIONS API
+%%=================================================================
 subscribe( Segment )->
 
   Self = self(),
@@ -626,116 +461,6 @@ drop_notifications(Segment)->
       % Ok, we tried
       ok
   end.
-
-add_copy( Segment )->
-
-  case get_info(Segment) of
-    #{local:=true}-> throw(local_only);
-    _-> ok
-  end,
-
-  % ATTENTION! Mnesia trick, we do copy ourselves and tell mnesia to add it
-  if
-    Node =:= node()->
-      case try dlss_copy:copy(Segment,Segment)
-      catch _:E:S->{error,{E,S}} end of
-        Hash when is_binary( Hash )->
-          add_node(Segment, Node, mnesia:table_info(Segment, access_mode));
-        Error -> Error
-      end;
-    true->
-      case rpc:call(Node, dlss_copy, copy, [ Segment,Segment ]) of
-        {badrpc, Error} -> {error,Error};
-        _ -> add_node(Segment, Node, mnesia:table_info(Segment, access_mode))
-      end
-  end.
-
-copy_is_ready( Segment )->
-  ok.
-
-add_node(Segment, Node, read_only)->
-  in_read_write_mode(Segment, fun()->
-    add_node(Segment, Node, read_write )
-  end);
-add_node(Segment,Node, _AccessMode)->
-  #{ type:=Type } = get_info(Segment),
-  MnesiaType =
-    if
-      Type =:= ram      -> ram_copies;
-      Type =:= ramdisc  -> disc_copies;
-      Type =:= disc     -> leveldb_copies
-    end,
-  case mnesia:add_table_copy(Segment,Node,MnesiaType) of
-    {atomic,ok} -> ok;
-    {aborted,Reason}->{error,Reason}
-  end.
-
-remove_copy(Segment)->
-  remove_copy(Segment, mnesia:table_info(Segment, access_mode)).
-remove_copy(Segment, read_only)->
-  in_read_write_mode(Segment, fun()->
-    remove_copy(Segment, read_write )
-  end);
-remove_copy(Segment, _AccessMode)->
-  case get_active_nodes( Segment ) of
-    [ _OnlyCopy ]->
-      {error, only_copy};
-    _ ->
-      case mnesia:del_table_copy(Segment,node()) of
-        {atomic,ok}->ok;
-        {aborted,Reason}->{error,Reason}
-      end
-  end.
-
-in_read_write_mode(Segment,Fun)->
-  % There is a bug in mnesia with adding/removing copies of read_only tables.
-  % Mnesia tries to set lock on the table, for that it takes
-  % where_to_wlock nodes but for read_only tables this list is empty
-  % and mnesia throws a error { no_exists, Tab }.
-  case set_access_mode( Segment, read_write ) of
-    ok ->
-      Result = Fun(),
-      set_access_mode( Segment, read_only ),
-      Result;
-    AccessError -> AccessError
-  end.
-%----------Calculate the size (bytes) occupied by the segment-------
-get_size(Segment)->
-  ?CALL(Segment,[]).
-
-access_mode( Segment )->
-  mnesia:table_info( Segment, access_mode ).
-
-access_mode( Segment , Mode )->
-  case mnesia:change_table_access_mode(Segment, Mode) of
-    {atomic,ok} -> ok;
-    {aborted,{already_exists,Segment,Mode}}->ok;
-    {aborted,Reason}->{error,Reason}
-  end.
-
-read_node( Segment )->
-  {_T,Node} = ?MODULE_NODE(Segment),
-  Node.
-
-ready_nodes( Segment )->
-  ok.
-
-get_info(Segment)->
-  Local = mnesia:table_info(Segment,local_content),
-  { Type, Nodes }=get_nodes(Segment),
-  #{
-    type => Type,
-    local => Local,
-    nodes => Nodes
-  }.
-
-get_local_segments()->
-  [T || T <- mnesia:system_info( local_tables ),
-    case atom_to_binary(T, utf8) of
-      <<"dlss_schema">> -> false;
-      <<"dlss_",_/binary>> -> true;
-      _ -> false
-    end].
 
 %%============================================================================
 %%	Internal helpers

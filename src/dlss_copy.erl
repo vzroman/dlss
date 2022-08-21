@@ -368,13 +368,13 @@ receive_loop(#r_acc{
     {lock_timeout, Sender}->
       ?LOGINFO("~p sender is unable to set lock, source is under transformation, wait...."),
       receive_loop( Acc0 );
-    {finish, Sender, {ok,SenderFinalHash} }->
+    {finish, Sender, SenderFinalHash }->
       % Finish
       ?LOGINFO("~p sender finished, final hash ~s",[Log, ?PRETTY_HASH(SenderFinalHash)]),
       case crypto:hash_final(Hash0) of
         SenderFinalHash ->
           % Everything is fine!
-          Acc0;
+          SenderFinalHash;
         LocalFinalHash->
           ?LOGERROR("~p invalid sender final hash ~s, local final hash ~s",[
             Log,
@@ -383,7 +383,7 @@ receive_loop(#r_acc{
           ]),
           throw(invalid_hash)
       end;
-    {finish,Sender,{error,SenderError}}->
+    {error,Sender,SenderError}->
       ?LOGERROR("~p sender error ~p",[Log,SenderError]),
       throw({interrupted,SenderError});
     {'EXIT',Sender,Reason}->
@@ -404,14 +404,13 @@ remote_copy_request(#{
   receiver := Receiver,
   source := Source,
   log := Log,
-  options => #{ hash:= InitHash0}= Options
+  options := #{ hash:= InitHash0}= Options
 })->
-
   ?LOGINFO("~p request options ~p", [
     Log, Options
   ]),
 
-  % set the guard
+  % Monitor
   spawn_link(fun()->
     process_flag(trap_exit,true),
     receive
@@ -440,25 +439,26 @@ remote_copy_request(#{
     batch = []
   },
 
-  TailState = #s_acc{ batch = TailBatch, hash = TailHash }=
-    try fold(SourceRef, fun remote_batch/3, InitState )
-    catch
-      _:Error:Stack->
-        ?LOGERROR("~p error ~p, stack ~p",[Log,Error,Stack]),
-        {error,Error}
-    end,
+  try
+      #s_acc{ batch = TailBatch, hash = TailHash } = TailState =
+        fold(SourceRef, fun remote_batch/3, InitState ),
 
-  % Release the source lock
-  Unlock(),
+      % Send the tail batch if exists
+      case TailBatch of [] -> ok; _->send_batch( TailState ) end,
 
-  % Send the tail batch if exists
-  case TailBatch of [] -> ok; _->send_batch( TailState ) end,
+      FinalHash = crypto:hash_final( TailHash ),
 
-  FinalHash = crypto:hash_final( TailHash ),
-  {ok, FinalHash}
+      ?LOGINFO("~p finished, final hash ~p",[Log, ?PRETTY_HASH]),
+      Receiver ! {finish, self(), FinalHash}
 
-  ?LOGINFO("~p finished, result ~p",[Log,Result]),
-  Receiver ! {finish, self(), Result}.
+  catch
+    _:Error:Stack->
+      ?LOGERROR("~p error ~p, stack ~p",[Log,Error,Stack]),
+      Receiver ! {error, self(), Error}
+  after
+      % Release the source lock
+      Unlock()
+  end.
 
 set_lock(Source, Log, Receiver)->
   case dlss_storage:lock_segment(Source, _Lock = write, 5000) of
@@ -631,7 +631,7 @@ give_away_live_updates(Live, #target{ name = Target } = TargetRef, Log)->
       Giver ! {ready, self() },
 
       ?LOGINFO("~p live updates has taken ~p",[Log,self()]),
-      wait_ready(TargetRef, Log, dlss_segment:read_node( Target ))
+      wait_ready(TargetRef, Log, dlss_segment:have( Target ))
 
     end),
 
@@ -667,8 +667,7 @@ roll_tail_updates( Live, #target{ module = Module, name = Target } = TargetRef, 
 
   Module:write_batch(Tail, TargetRef).
 
-wait_ready(#target{name = Target, module = Module} = TargetRef, Log, Node)
-  when Node=:=node()->
+wait_ready(#target{name = Target, module = Module} = TargetRef, Log, true) ->
   ?LOGINFO("~p copy attached to the schema, flush tail subscriptions",[Log]),
 
   dlss_subscription:unsubscribe( Target ),
@@ -682,7 +681,7 @@ wait_ready(#target{name = Target, module = Module} = TargetRef, Log, Node)
 
   ?LOGINFO("~p live copy is ready",[Log]);
 
-wait_ready(#target{name = Target, module = Module} = TargetRef, Log, _Node)->
+wait_ready(#target{name = Target, module = Module} = TargetRef, Log, false)->
   % The copy is not ready yet
   Updates = flush_subscriptions( Target, _Timeout = 0 ),
 
@@ -699,7 +698,7 @@ wait_ready(#target{name = Target, module = Module} = TargetRef, Log, _Node)->
   ?LOGINFO("~p live copy is not attached yet"),
   timer:sleep(?CHECK_LIVE_READY_TIMER),
 
-  wait_ready(TargetRef, Log, dlss_segment:read_node( Target )).
+  wait_ready(TargetRef, Log, dlss_segment:have( Target )).
 
 %------------------SPLIT---------------------------------------
 % Splits are always local
