@@ -156,7 +156,7 @@
     true->?FUNCTION_ARITY
   end).
 
--define(LOCAL(M,F), fun(K)->M:F/?A).
+-define(LOCAL(M,F), fun M:F/?A).
 
 -define(RPC(N,M,F,T),
   if
@@ -182,68 +182,65 @@
   end).
 
 -define(write(S),
-  case ?READY(?NODES(S)) of
-    [_@N] when _@N=:=node()->
-      ?LOCAL(?M(S),?F(S));
-    _@Ns when length(_@Ns) > 1->
-      if
-        ?FUNCTION_NAME=:=dirty_write->
-          ?RPC(_@Ns,?M(S),?F,fun dlss_rpc:cast_any/4);
-        true->
-          ?RPC(_@Ns,?M(S),?F,fun dlss_rpc:call_all/4)
-      end
-  end).
-
--define(args(As),
   if
-    ?FUNCTION_NAME=:=dirty_write;?FUNCTION_NAME=:=write->?KVs2RECs(As);
-    true->As
+    ?FUNCTION_NAME=:=dirty_write;?F->
+      ?RPC(?READY(?NODES(S)),?M(S),?F,fun dlss_rpc:call_any/4);
+    true->
+      ?RPC(?READY(?NODES(S)),?M(S),?F,fun dlss_rpc:call_all/4)
   end).
-
--define(res(R),
-  case R of
-    {error,_}->?NOT_AVAILABLE;
-    _->?OK(R)
-  end).
-
 
 
 %%=================================================================
 %%	READ/WRITE API
 %%=================================================================
-dirty_read( Segment, Ks )->
-  ?res( (?read(Segment))( ?args(Ks)) ).
+dirty_read( Segment, Keys )->
+  case (?read(Segment))( Keys) of
+    {error,_}->?NOT_AVAILABLE;
+    Recs -> ?RECs2KVs(Recs)
+  end.
 
-read( Segment, Ks, Lock)->
+read( Segment, Keys, Lock)->
   % Transactions are still on mnesia
-  ?res(mnesia_read(?args(Ks), Segment, Lock)).
+  mnesia_read(Keys, Segment, Lock).
 mnesia_read([K|Rest], Segment, Lock)->
   case mnesia:read(Segment,K,Lock) of
     []->mnesia_read(Segment,Rest,Lock);
-    [Rec]->[Rec|read(Segment,Rest,Lock)]
+    [Rec]->[?REC2KV(Rec)|read(Segment,Rest,Lock)]
   end.
 
 dirty_write(Segment,KVs)->
-  ?res( (?write(Segment))( ?args(KVs)) ).
+  case (?write(Segment))( KVs ) of
+    {error,_}->?NOT_AVAILABLE;
+    ok ->
+      [ dlss_subscription:notify(Segment,{write,KV}) || KV <- KVs],
+      ok
+  end.
 
 write(Segment,KVs,Lock)->
+
   % Transactions are still on mnesia
-  ?res( mnesia_write(?args(KVs),Segment,Lock) ).
-mnesia_write(Records,Segment,Lock)->
-  [mnesia:write(Segment,Rec, Lock) || Rec <- Records],
+  mnesia_write(KVs,Segment,Lock),
+
   % Mnesia terminates on the transaction on write error,
   % Batch either in or we won't be here
   dlss_backend:on_commit(fun()->
-    [ dlss_subscription:notify(Segment,{write,{K,V}}) ||{K,V} <- Records],
+    [ dlss_subscription:notify(Segment,{write,KV}) ||KV <- KVs],
     ok
   end),
   ok.
+mnesia_write(KVs,Segment,Lock)->
+  [mnesia:write(Segment, ?KV2REC(KV), Lock) || KV <- KVs].
 
 dirty_delete(Segment,Keys)->
-  ?res( (?write(Segment))(Keys) ).
-
+  case (?write(Segment))(Keys) of
+    {error,_}->?NOT_AVAILABLE;
+    ok->
+      [dlss_subscription:notify(Segment,{delete,K}) || K<-Keys],
+      ok
+  end.
 delete(Segment,Keys,Lock)->
   [ mnesia:delete(Segment,K,Lock) || K <- Keys],
+
   dlss_backend:on_commit(fun()->
     [dlss_subscription:notify(Segment,{delete,K}) || K<-Keys],
     ok
@@ -254,16 +251,28 @@ delete(Segment,Keys,Lock)->
 %%	ITERATOR
 %%=================================================================
 first(Segment)->
-  ?res( (?read(Segment))() ).
+  case (?read(Segment))() of
+    {error,_}->?NOT_AVAILABLE;
+    First->First
+  end.
 
 last(Segment)->
-  ?res( (?read(Segment))() ).
+  case (?read(Segment))() of
+    {error,_}->?NOT_AVAILABLE;
+    Last -> Last
+  end.
 
 next(Segment,Key)->
-  ?res( (?read(Segment))( ?args(Key) )).
+  case (?read(Segment))( Key ) of
+    {error,_} -> ?NOT_AVAILABLE;
+    Next -> Next
+  end.
 
 prev(Segment,Key)->
-  ?res( (?read(Segment))( ?args(Key) )).
+  case (?read(Segment))( Key ) of
+    {error,_}->?NOT_AVAILABLE;
+    Prev -> Prev
+  end.
 
 %%=================================================================
 %%	SEARCH
@@ -273,14 +282,20 @@ search(Segment,Options0)->
     fun
       (_K,?START_OF_TABLE)->?UNDEFINED;
       (_K,?END_OF_TABLE)-> ?UNDEFINED;
-      (ms,MS)-> ets:match_spec_compile(MS)
+      (ms,MS)->ets:match_spec_compile(match_pattern( MS ))
     end, Options0),
 
-  (?read(Segment))(maps:merge(#{
+  case (?read(Segment))(maps:merge(#{
     start = ?UNDEFINED,
     stop := ?UNDEFINED,
     ms := ?UNDEFINED
-  }, Options)).
+  }, Options)) of
+    {error,_} -> ?NOT_AVAILABLE;
+    Records -> ?RECs2KVs( Records )
+  end.
+
+match_pattern([{KV,G,R}|Rest])->
+  [{?KV2REC(KV),G,R} | match_pattern( Rest )].
 
 %%=================================================================
 %%	INFO
@@ -430,7 +445,12 @@ subscribe( Segment )->
 
   Self = self(),
   % We need to subscribe to all nodes, every node can do updates
-  Nodes = dlss:get_ready_nodes(),
+
+  case dlss_rpc:call_all(?READY(?NODES(Segment)), dlss_subscription, subscribe, [ Segment, self() ] ) of
+    error ->
+      % All or no one
+      unsubscribe( Segment ),
+  end,
 
   Results =
     [{N,
