@@ -19,6 +19,7 @@
 -module(dlss_node).
 
 -include("dlss.hrl").
+-include("dlss_schema.hrl").
 
 -record(node,{node}).
 
@@ -40,8 +41,9 @@
 add( Node )->
   case dlss_backend:add_node(Node) of
     true->
-      set_status( Node, down ),
-      dlss_segment:add_node( Node ),
+      set_status( Node, down ), %DEPRECATED
+
+      ?N_ADD( Node ),
       ok;
     _->
       error
@@ -49,33 +51,27 @@ add( Node )->
 
 remove( Node )->
   dlss_storage:remove_node( Node ),
-  dlss_segment:remove_node( Node ),
+  ?N_REMOVE(Node),
+
   dlss_backend:remove_node(Node),
-  dlss_segment:dirty_delete(dlss_schema,#node{node=Node}),
+  dlss_segment:dirty_delete(dlss_schema,#node{node=Node}),  %DEPRECATED
   ok.
 
 set_status(Node,Status)->
-  dlss_segment:node_status(Node, Status),
-  dlss_segment:dirty_write(dlss_schema, #node{node=Node},Status).
+  if
+    Status=:=ready-> ?N_UP( Node );
+    Status=:=down-> ?N_DOWN( Node)
+  end,
+  dlss_segment:dirty_write(dlss_schema, #node{node=Node},Status). %DEPRECATED
 
 get_status(Node)->
-  case dlss_segment:dirty_read(dlss_schema, #node{node=Node}) of
-    not_found->{ error, invalid_node };
-    Status -> Status
+  case lists:member(Node,?READY_NODES ) of
+    true->ready;
+    _-> down
   end.
 
 get_nodes()->
-  MS=[{
-    #kv{key = #node{node = '$1' }, value = '_' },
-    [],
-    ['$1']
-  }],
-  dlss_segment:dirty_select(dlss_schema,MS).
+  ?NODES.
 
 get_ready_nodes()->
-  MS=[{
-    #kv{key = #node{node = '$1' }, value = ready },
-    [],
-    ['$1']
-  }],
-  dlss_segment:dirty_select(dlss_schema,MS).
+  ?READY_NODES.

@@ -19,6 +19,7 @@
 -module(dlss_rpc).
 
 -include("dlss.hrl").
+-include("dlss_schema.hrl").
 
 %%=================================================================
 %% API

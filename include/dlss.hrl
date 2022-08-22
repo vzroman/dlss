@@ -45,13 +45,6 @@
   end)()
 ).
 
--define(UNDEFINED,undefined).
--define(RAND(List),
-  begin
-    _@I = erlang:phash2(make_ref(),length(List)),
-    lists:nth(_@I+1, List)
-  end).
-
 -define(A2B(Atom),unicode:characters_to_binary(atom_to_list(Atom))).
 
 -define(PRETTY_SIZE(S),dlss_util:pretty_size(S)).
