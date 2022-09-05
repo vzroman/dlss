@@ -27,13 +27,13 @@
 %%=================================================================
 -export([
   init_backend/0,init_backend/1,
+  env/0, env/1,
   add_node/1,
   remove_node/1,
   get_nodes/0,
   get_active_nodes/0,
   transaction/1,sync_transaction/1,
   lock/2,
-  verify_hash/0, verify_hash/1,
   purge_stale_segments/0
 ]).
 
@@ -92,6 +92,7 @@ transaction(Fun)->
   % We use the mnesia engine to deliver the true distributed ACID transactions
   case mnesia:transaction(Fun) of
     {atomic,FunResult}->{ok,FunResult};
+    {aborted,{Reason,_Stack}}->{error,Reason};
     {aborted,Reason}->{error,Reason}
   end.
 
@@ -99,6 +100,7 @@ transaction(Fun)->
 sync_transaction(Fun)->
   case mnesia:sync_transaction(Fun) of
     {atomic,FunResult}->{ok,FunResult};
+    {aborted,{Reason,_Stack}}->{error,Reason};
     {aborted,Reason}->{error,Reason}
   end.
 
@@ -117,8 +119,6 @@ init([])->
   init_backend(),
 
   Logger!finish,
-
-  dlss_node:set_status(node(),ready),
 
   Cycle=?ENV(master_node_cycle,?DEFAULT_MASTER_CYCLE),
 
@@ -153,6 +153,12 @@ handle_info({mnesia_system_event,Event},State) ->
 handle_info(on_cycle, #state{cycle = Cycle, to_delete = ToDelete} = State)->
   timer:send_after( Cycle, on_cycle ),
 
+  % If some other node reset my status
+  case dlss_node:get_status( node() ) of
+    ready -> ok;
+    _ -> dlss_node:set_status(node(),ready)
+  end,
+
   % Do the operations in the safe mode
   ToDelete1 =
     try
@@ -163,7 +169,6 @@ handle_info(on_cycle, #state{cycle = Cycle, to_delete = ToDelete} = State)->
       Running = mnesia:system_info(running_db_nodes),
 
       [ dlss_node:set_status(N,down) ||  N <- Ready -- Running ],
-      [ dlss_node:set_status(N,ready) ||  N <- Running -- Ready ],
 
       _ToDelete1
     catch
@@ -208,7 +213,7 @@ init_backend(#{
         ?ERROR(Error)
     end,
 
-  % Recover restore form backups interrupted rebalance transactions
+  % Recover restore from backups interrupted rebalance transactions
   dlss_rebalance:on_init(),
 
   %% Next steps need the mnesia started
@@ -238,55 +243,44 @@ init_backend(#{
           add_local_only_segments(),
 
           ?LOGINFO("waiting for segemnts availability..."),
-          wait_segments(StartTimeout);
+          wait_segments(StartTimeout),
+
+          dlss_node:set_status(node(),ready);
         true ->
           ok=mnesia:start(),
           % Register leveldb backend. !!! Many thanks to Google, Basho and Klarna developers
           mnesia_eleveldb:register(),
           ?LOGINFO("node is starting as master"),
-          create_schema()
+          create_schema(),
+
+          dlss_node:set_status(node(),ready)
       end;
     true ->
+
+      ?LOGINFO("mark read_write segments to skip network loading"),
+      mark_read_write_segments(),
+
       if
         IsForced ->
           ?LOGWARNING("starting in FORCED mode"),
           set_forced_mode( true ),
 
-          ?LOGWARNING("restarting mnesia"),
-          mnesia:stop(),
+          ?LOGWARNING("starting mnesia..."),
           ok=mnesia:start(),
 
-          ?LOGINFO("waiting for schema availability..."),
-          ok = mnesia:wait_for_tables([schema,dlss_schema],?ENV(schema_start_timeout, ?WAIT_SCHEMA_TIMEOUT)),
+          ?LOGINFO("load data..."),
+          load_data(StartTimeout),
 
-          ?LOGINFO("verify hash values for hosted storages"),
-          ok = verify_hash( node() ),
-
-          ?LOGINFO("run data synchronization"),
-          ok = sync_data(),
-
-          ?LOGINFO("waiting for segemnts availability..."),
-          wait_segments(StartTimeout),
-
-          set_forced_mode( false );
+          ?LOGWARNING("trigger hash verification on other nodes"),
+          [ dlss:verify_hash( N ) || N <- dlss:get_ready_nodes() -- [node()]],
+          ok;
         true ->
           ?LOGINFO("node is starting in normal mode"),
+
           ok=mnesia:start(),
 
-          ?LOGINFO("waiting for schema availability..."),
-          ok = mnesia:wait_for_tables([schema,dlss_schema],?ENV(schema_start_timeout, ?WAIT_SCHEMA_TIMEOUT)),
-
-          ?LOGINFO("add local only segments"),
-          add_local_only_segments(),
-
-          ?LOGINFO("verify hash values for hosted storages"),
-          ok = verify_hash( node() ),
-
-          ?LOGINFO("run data synchronization"),
-          ok = sync_data(),
-
-          ?LOGINFO("waiting for segemnts availability..."),
-          wait_segments(StartTimeout)
+          ?LOGINFO("load data..."),
+          load_data(StartTimeout)
       end
   end,
 
@@ -307,6 +301,39 @@ init_backend(Params)->
 
   init_backend(Params1).
 
+load_data(StartTimeout)->
+  ?LOGINFO("waiting for schema availability..."),
+  ok = wait_for_tables([schema,dlss_schema],StartTimeout),
+
+  dlss_node:set_status(node(),down),
+
+  ?LOGINFO("add local only segments"),
+  add_local_only_segments(),
+
+  ?LOGINFO("waiting for segemnts availability..."),
+  wait_segments(StartTimeout),
+
+  set_forced_mode( false ),
+
+  ?LOGINFO("segments synchronization...."),
+  synchronize_segments(),
+
+  ?LOGINFO("purge stale segments...."),
+  purge_stale_segments(),
+
+  dlss_node:set_status(node(),ready),
+
+  ok.
+
+env()->
+  maps:from_list([{E,mnesia_monitor:get_env(E)} || E <- mnesia_monitor:env() ]).
+
+env( Settings ) when is_map( Settings )->
+  env( maps:to_list(Settings) );
+env( Settings ) when is_list( Settings )->
+  ?LOGINFO( "set dlss backend env ~p",[ Settings ]),
+  [mnesia_monitor:set_env(E,V) || {E,V} <- Settings],
+  ok.
 
 
 create_schema()->
@@ -326,50 +353,148 @@ stop()->
     mnesia:stop()
   end).
 
-verify_hash()->
-  [begin
-     ?LOGINFO("verify hash values for node ~p",[N]),
-     verify_hash( N )
-   end || N <- dlss_node:get_ready_nodes() ].
-verify_hash( Node )->
+mark_read_write_segments()->
+  % We need to mark local read_write segment to load from disc
+  % as they are going to be reloaded during hash verification
 
-  [begin
-     ?LOGINFO("verify hash values for ~p",[Storage]),
-     [begin
-        ?LOGINFO("verify hash for ~p",[Segment]),
-        dlss_storage_supervisor:verify_segment_hash( Segment, Node )
-      end|| Segment <- dlss_storage:get_segments( Storage ) ]
-   end || Storage <- dlss_storage:get_storages() ],
+  [ case atom_to_binary(T,utf8) of
+      <<"dlss_schema">> ->
+        ignore;
+      <<"dlss_",_/binary>> when Access =/= read_only ->
+        ?LOGWARNING("~p is marked to skip network loading",[T]),
+        set_master_nodes(T,[node()]);
+      _->
+        ignore
+    end ||  {T,Access,_} <- get_regesterd_tables()],
 
   ok.
 
-sync_data()->
-  Node = node(),
+synchronize_segments()->
 
-  [begin
-     ?LOGINFO("sync data for ~p",[S]),
-     dlss_storage_supervisor:sync_copies(S,Node)
-   end || S <- dlss:get_storages() ],
+  ?LOGINFO("verify hash values for hosted storages"),
+  dlss_storage_supervisor:verify_hash(_Force = true),
+
+  ?LOGINFO("run data synchronization"),
+  dlss_storage_supervisor:sync_copies(),
 
   ok.
 
 wait_segments(Timeout)->
-  Segments=dlss:get_segments(),
+  Segments=dlss:get_local_segments(),
   ?LOGINFO("~p wait for segments ~p",[Timeout,Segments]),
-  ok = mnesia:wait_for_tables(Segments,Timeout).
+  ok = wait_for_tables(Segments,Timeout).
 
-set_forced_mode( Value )->
-  Nodes =
-    if
-      Value -> [node()];
-      true -> []
-    end,
-  case mnesia:set_master_nodes(Nodes) of
+set_forced_mode( true )->
+  case get_regesterd_tables() of
+    {error,Error} ->
+      ?LOGERROR("unable to parse schema ~p",[Error]),
+      ?ERROR(Error);
+    Tables->
+      Nodes = get_registered_nodes( Tables ),
+      ?LOGINFO("registered nodes: ~p",[Nodes]),
+
+      ActiveNodes = confirm_active_nodes( Nodes --[node()], [] ),
+      ?LOGINFO("active nodes: ~p, inactive: ~p",[ActiveNodes, (Nodes--[node()]) -- ActiveNodes]),
+
+      if
+        length(ActiveNodes) =:= 0 ->
+          ?LOGINFO("all tables are going to be loaded from disc"),
+          set_master_nodes();
+        true ->
+          [ case ordsets:intersection(ActiveNodes,Copies) of
+              []->
+                ?LOGWARNING("~p doesn't have active nodes and will be loaded from disc",[T]),
+                set_master_nodes(T,[node()]);
+              Masters->
+                ?LOGINFO("~p is going to be loaded from ~p",[T,Masters]),
+                set_master_nodes(T,Masters)
+          end|| {T,_AccessMode,Copies} <- Tables]
+      end
+  end,
+
+  ok;
+
+set_forced_mode( false )->
+  case mnesia:set_master_nodes([]) of
     ok->ok;
     {error,Error}->
-      ?LOGERROR("error set master node ~p, error ~p",[node(),Error]),
+      ?LOGERROR("error reset master nodes, error ~p",[Error]),
       ?ERROR(Error)
   end.
+
+wait_for_tables(Tables, Timeout)->
+  case mnesia:wait_for_tables(Tables,Timeout) of
+    ok -> ok;
+    {timeout,Tables1}->
+      ?LOGWARNING("timeout on waiting for tables ~p",[Tables1]),
+      Text = "if some nodes that have copies of tables were alive when the node stopped"
+        ++"\r\n they might have more actual data. If they are not available now you can"
+        ++"\r\n try to load in FORCED then that data will be lost."
+        ++"\r\n to start in FORED mode set the environment variable:"
+        ++"\r\n\t env FORCE=true <start command>",
+      ?LOGINFO(Text),
+      ?LOGINFO("retry..."),
+      wait_for_tables(Tables1, Timeout);
+    {error, Error}->
+      ?LOGERROR("error on waiting for tables ~p",[Error]),
+      ?ERROR(Error)
+  end.
+
+get_regesterd_tables()->
+  mnesia_lib:lock_table(schema),
+
+  Result =
+    case mnesia_schema:read_cstructs_from_disc() of
+      {ok, Cstructs} ->
+        lists:foldl(fun(Cs,Acc)->
+          Copies = mnesia_lib:copy_holders(Cs),
+          case lists:member(node(),Copies) of
+            true -> [{
+              _Name = element(2,Cs),
+              _AcessMode = element(8,Cs),
+              ordsets:from_list(Copies)
+            } | Acc];
+            _ -> Acc
+          end
+        end,[], Cstructs );
+      Error->
+        Error
+    end,
+
+  mnesia_lib:unlock_table(schema),
+
+  Result.
+
+get_registered_nodes(Tables)->
+  lists:foldl(fun({Table,_AccessMode,Copies},Acc)->
+    ?LOGINFO("~p has copies ~p",[Table, Copies]),
+    ordsets:union(Acc,Copies)
+  end,ordsets:new(),Tables).
+
+confirm_active_nodes([Node|Rest], Acc)->
+  case net_adm:ping(Node) of
+    pong-> confirm_active_nodes(Rest,[Node|Acc]);
+    _-> confirm_active_nodes(Rest,Acc)
+  end;
+confirm_active_nodes([], Acc)->
+  lists:reverse(Acc).
+
+set_master_nodes()->
+  case mnesia:set_master_nodes([node()]) of
+    ok->ok;
+    {error, Error}->
+      ?LOGERROR("error set master nodes, error ~p",[Error]),
+      ?ERROR(Error)
+  end.
+
+set_master_nodes(Table, Nodes)->
+  case mnesia:set_master_nodes(Table,Nodes) of
+    ok->ok;
+    {error, Error}->
+      ?LOGERROR("~p unable to set master nodes, error ~p",[Table,Error]),
+      ?ERROR(Error)
+  end.
+
 
 wait_for_schema()->
   % Wait master node to attach this node to the schema

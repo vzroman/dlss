@@ -52,7 +52,7 @@ Let's write some data to storage with transaction
 Let's read some data from storage with dirty operation and transaction
 
     V1 = dlss:transaction(fun()-> dlss:read(storage1,{x,20}) end ), %%{ok, {y, 20}}
-    V2 = dlss:dirty_read(storage1), {x,40}), %% {y, 40}
+    V2 = dlss:dirty_read(storage1, {x,40}), %% {y, 40}
 Iteration
 Find the first key (the least)
 

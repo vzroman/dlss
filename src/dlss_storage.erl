@@ -22,8 +22,6 @@
 
 -record(sgm,{str,key,lvl,ver,copies}).
 
--define(BATCH_SIZE,100000).
-
 %%=================================================================
 %%	STORAGE SERVICE API
 %%=================================================================
@@ -32,7 +30,7 @@
   is_storage/1,
   get_storages/0,
   get_segments/0,get_segments/1,
-  get_node_segments/1,
+  get_node_segments/1,get_node_segments/2,
 
   root_segment/1,
   segment_params/1,
@@ -52,10 +50,17 @@
   add/2,add/3,
   remove/1,
 
+  % get/set storage limits
+  default_limits/0, default_limits/1,
+  storage_limits/1, storage_limits/2,
+
   % add/remove segment copies
   add_segment_copy/2,
   remove_segment_copy/2,
   remove_all_segments_from/1,
+
+  % Perform a transaction over segment in locked mode
+  segment_transaction/3,segment_transaction/4,
 
   % rebalance the storage schema
   split_segment/1,
@@ -143,6 +148,15 @@ get_node_segments(Node)->
   AllSegments = dlss_segment:dirty_select(dlss_schema,MS),
   [ S || [S, #{Node := _}] <- AllSegments].
 
+get_node_segments(Node, Storage)->
+  MS=[{
+    #kv{key = #sgm{str = Storage,key = '_',lvl = '_',ver = '_',copies = '$2'}, value = '$1'},
+    [],
+    [['$1','$2']]
+  }],
+  StorageSegments = dlss_segment:dirty_select(dlss_schema,MS),
+  [ S || [S, #{Node := _}] <- StorageSegments].
+
 root_segment(Storage)->
   case dlss_segment:dirty_next(dlss_schema,#sgm{str=Storage,key = '_',lvl = -1 }) of
     #sgm{ str = Storage } = Sgm->
@@ -186,7 +200,7 @@ add(Name,Type,Options)->
   end,
 
   % Default options
-  Params=maps:merge(#{
+  Params =maps:merge(#{
     type=>Type,
     nodes=>[node()],
     local=>false
@@ -201,7 +215,14 @@ add(Name,Type,Options)->
     Root,
     Params
   ]),
-  case dlss_segment:create(Root,Params) of
+
+  {Limits, SegmentParams} =
+    case maps:take(limits, Params) of
+      error -> { undefined ,Params};
+      {_Limits,_Params} -> {_Limits,_Params}
+    end,
+
+  case dlss_segment:create(Root,SegmentParams) of
     ok -> ok;
     { error , Error }->
       ?LOGERROR("unable to create a root segment ~p of type ~p with params ~p for storage ~p, error ~p",[
@@ -212,6 +233,12 @@ add(Name,Type,Options)->
         Error
       ]),
       ?ERROR(Error)
+  end,
+
+  % Set storage limits
+  if
+    is_map(Limits) -> storage_limits( Name, Limits );
+    true -> ignore
   end,
 
   Copies = maps:from_list([ {N,undefined} ||N<-maps:get(nodes,Params)]),
@@ -247,6 +274,46 @@ remove(Storage,#sgm{str=Storage}=Sgm)->
 remove(_Storage,_Sgm)->
   % '$end_of_table'
   ok.
+
+% Get default limits
+default_limits()->
+  Limits =
+    case ?ENV(segment_level_limit,#{}) of
+      _C when is_map(_C)->_C;
+      _C when is_list(_C)->maps:from_list(_C);
+      _->#{}
+    end,
+  maps:merge( ?DEFAULT_SEGMENT_LIMIT, Limits ).
+
+% set default limits
+default_limits( Limits ) when is_list(Limits)->
+  default_limits( maps:from_list(Limits) );
+default_limits( Limits ) when is_map(Limits)->
+  ?LOGINFO( "set dlss default limits ~p",[ Limits ]),
+  application:set_env(dlss,segment_level_limit, Limits);
+default_limits( _Limits )->
+  ?ERROR(invalid_arguments).
+
+% get storage limits
+storage_limits( Name )->
+  StorageLimits =
+    case ?ENV({Name,limits},#{}) of
+      _S when is_map(_S)->_S;
+      _S when is_list(_S)->maps:from_list(_S);
+      _ -> #{}
+    end,
+  DefaultLimits = default_limits(),
+  maps:merge( DefaultLimits, StorageLimits ).
+
+% set storage limits
+storage_limits( Name, Limits ) when is_list(Limits)->
+  storage_limits( Name, maps:from_list(Limits) );
+storage_limits( Name, Limits ) when is_map(Limits)->
+  ?LOGINFO( "set storage ~p default limits ~p",[Name, Limits]),
+
+  application:set_env(dlss,{Name,limits}, Limits);
+storage_limits( _Name, _Limits )->
+  ?ERROR(invalid_arguments).
 
 %%--------------------------------------------------------------------------------
 %%  Split procedure
@@ -566,7 +633,7 @@ set_segment_version( Segment, Node, Version )->
   % Set a version for a segment in the schema
   case dlss:transaction(fun()->
     % Set a lock on the segment
-    Sgm = #sgm{copies = Copies} = lock_segment(Segment),
+    Sgm = #sgm{copies = Copies} = lock_segment(Segment, write),
 
     % Update the copies
     Copies1 = Copies#{ Node=>Version },
@@ -594,14 +661,7 @@ add_segment_copy( Segment , Node )->
 
   case dlss:transaction(fun()->
     % Set a lock on the segment
-    Sgm = #sgm{copies = Copies, lvl = Lvl} = lock_segment(Segment),
-
-    if
-      Lvl =/= round( Lvl )->
-        exit( under_transformation );
-      true ->
-        ok
-    end,
+    Sgm = #sgm{copies = Copies} = lock_segment(Segment, write),
 
     case Copies of
       #{Node:=_}->
@@ -623,14 +683,7 @@ remove_segment_copy( Segment , Node )->
 
   case dlss:transaction(fun()->
     % Set a lock on the segment
-    Sgm = #sgm{copies = Copies, lvl = Lvl} = lock_segment(Segment),
-
-    if
-      Lvl =/= round( Lvl )->
-        exit( under_transformation );
-      true ->
-        ok
-    end,
+    Sgm = #sgm{copies = Copies} = lock_segment(Segment, write),
 
     case Copies of
       #{Node:=_}->
@@ -818,6 +871,17 @@ dirty_delete(Storage, Key)->
 %%=================================================================
 %%	Iterate
 %%=================================================================
+dirty_iterator( Iterator, Segment, Key )->
+  case dlss_segment:Iterator(Segment,Key) of
+    '$end_of_table' -> '$end_of_table';
+    Next -> Next
+  end.
+dirty_iterator( Iterator, Segment )->
+  case dlss_segment:Iterator(Segment) of
+    '$end_of_table' -> '$end_of_table';
+    Next -> Next
+  end.
+
 safe_iterator( Iterator, Segment, Storage, Key )->
   case dlss_segment:Iterator(Segment,Key) of
     '$end_of_table' -> '$end_of_table';
@@ -888,7 +952,7 @@ last(Storage)->
 
 dirty_last(Storage)->
   % Dirty iterator
-  Iter = fun(Segment)->safe_iterator(dirty_last, Segment,Storage) end,
+  Iter = fun(Segment)->dirty_iterator(dirty_last, Segment) end,
   % The scanning starts at the lowest level
   Highest = #sgm{ str = Storage, key = [], lvl = '_' },
   Segments = key_segments( parent_segment(Highest),[]),
@@ -912,7 +976,7 @@ next( Storage, Key )->
 
 dirty_next(Storage,Key)->
   % The iterator
-  Iter = fun(Segment)->safe_iterator(dirty_next,Segment,Storage,Key) end,
+  Iter = fun(Segment)->dirty_iterator(dirty_next,Segment,Key) end,
   % Starting point
   Lowest = #sgm{ str = Storage, key = { Key }, lvl = '_' },
   next( parent_segment(Lowest), Iter, '$end_of_table' ).
@@ -973,7 +1037,7 @@ prev( Storage, Key )->
 
 dirty_prev(Storage,Key)->
   % The iterator
-  Iter = fun(Segment)->safe_iterator(dirty_prev, Segment,Storage,Key) end,
+  Iter = fun(Segment)->dirty_iterator(dirty_prev, Segment,Key) end,
   % Starting point
   Lowest = #sgm{ str = Storage, key = { Key }, lvl = '_' },
   prev( parent_segment(Lowest), Iter, '$end_of_table' ).
@@ -1028,6 +1092,7 @@ dirty_range_select(Storage, StartKey, EndKey ) ->
   dirty_range_select(Storage, StartKey, EndKey, infinity).
 dirty_range_select(Storage, StartKey, EndKey, Limit) ->
 
+
   % Filter the segment that contain keys bigger
   % than the EndKey
   HeadSegments = find_head_segments( Storage, EndKey ),
@@ -1044,17 +1109,9 @@ dirty_range_select(Storage, StartKey, EndKey, Limit) ->
   % Order the segments by level and then by start key
   OrderedSegments = lists:usort( Segments ),
 
-  % The segments can contain a lot of @deleted@ records, therefore we try
-  % to embrace a longer range for each segment scanning iteration to cut down
-  % the number of iterations
-  ScanLimit =
-    if
-      is_number(Limit), Limit < 1024 -> 1024;
-      true -> Limit
-    end,
   % scan each segment
   Results =
-    [ { L, scan_segment( S, StartKey, EndKey, ScanLimit) } || [L,_Key, S] <- OrderedSegments ],
+    [ { L, scan_segment( S, StartKey, EndKey, Limit) } || [L,_Key, S] <- OrderedSegments ],
 
   % Merge by segments results
   Merged = merge_results( Results ),
@@ -1082,9 +1139,8 @@ dirty_range_select(Storage, StartKey, EndKey, Limit) ->
       Filtered;
     length( Filtered ) =:= 0->
       % There are only deleted entries found, keep searching from the next valid key
-      % and also increase the range
       {NextKey, _} = lists:last( Merged ),
-      lists:sublist( dirty_range_select( Storage, NextKey, EndKey, Limit * 2 ), Limit );
+      lists:sublist( dirty_range_select( Storage, NextKey, EndKey, Limit ), Limit );
     true ->
       % If we are here then there were deleted records in the result that prevented us
       % from getting the full result, we need to keep searching.
@@ -1092,7 +1148,6 @@ dirty_range_select(Storage, StartKey, EndKey, Limit) ->
 
       { Head, [ { LastKey,_} ]} = lists:split( length( Filtered )-1, Filtered ),
       Head ++ lists:sublist( dirty_range_select( Storage, LastKey, EndKey, Limit ), Limit - length(Head) )
-
   end.
 
 find_head_segments( Storage, Key )->
@@ -1184,20 +1239,49 @@ segment_by_name(Name)->
     _-> { error, not_found }
   end.
 
-lock_segment( Segment )->
+lock_segment( Segment, Lock )->
   case segment_by_name( Segment ) of
     { ok, Sgm }->
-      case dlss_segment:read( dlss_schema, Sgm, write ) of
+      case dlss_segment:read( dlss_schema, Sgm, Lock ) of
         Segment -> Sgm;
         _->
           % We are here probably because master is changing the segment's config
           % Waiting for master to finish
           timer:sleep(10),
-          lock_segment( Segment )
+          lock_segment( Segment, Lock )
       end;
     Error ->
       ?ERROR(Error)
   end.
+
+segment_transaction(Segment, Lock, Fun)->
+  segment_transaction(Segment, Lock, Fun, infinity).
+segment_transaction(Segment, Lock, Fun, Timeout)->
+  Owner = self(),
+  Holder = spawn_link(fun()->
+    case dlss:sync_transaction(fun()->lock_segment(Segment, Lock) end) of
+      {ok,_}->
+        Owner ! {locked, self()},
+        receive
+          {unlock, Owner}->
+            unlink(Owner),
+            ok
+        end;
+      {error,Error} -> Owner ! {error,self(),Error}
+    end
+  end),
+
+  receive
+    {locked, Holder}->
+      Result =
+        try Fun() catch _:Error -> {error,Error} end,
+      Holder ! {unlock,self()},
+      Result;
+    {error,Holder,Error} -> {error,Error}
+  after
+    Timeout->{error, lock_timeout}
+  end.
+
 
 %----------------------MasterKey API---------------------------
 set_master_key(Segment, Key) ->

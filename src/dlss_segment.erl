@@ -39,7 +39,8 @@
   prev/2,dirty_prev/2,
   %----OPTIMIZED SCANNING------------------
   select/2,dirty_select/2,
-  dirty_scan/3, dirty_scan/4
+  dirty_scan/3,dirty_scan/4,
+  do_dirty_scan/4
 ]).
 
 %%=================================================================
@@ -60,8 +61,20 @@
   in_read_write_mode/2
 ]).
 
--define(MAX_SCAN_INTERVAL_BATCH,1000).
+-define(MAX_SIZE(Type),
+  if
+    Type=:=leveldb_copies -> 1 bsl 128;
+    true-> (1 bsl 59) - 1 % Experimentally set that it's the max continuation limit for ets
+  end).
 
+-define(REF(T),mnesia_eleveldb:get_ref(T)).
+-define(DECODE_KEY(K),mnesia_eleveldb:decode_key(K)).
+-define(ENCODE_KEY(K),mnesia_eleveldb:encode_key(K)).
+-define(DECODE_VALUE(V),element(3,mnesia_eleveldb:decode_val(V))).
+-define(DATA_START, <<2>>).
+
+-define(MOVE(I,K),eleveldb:iterator_move(I,K)).
+-define(NEXT(I),eleveldb:iterator_move(I,next)).
 
 %%=================================================================
 %%	STORAGE SEGMENT API
@@ -91,128 +104,307 @@ dirty_prev(Segment,Key)->
 dirty_scan(Segment,From,To)->
   dirty_scan(Segment,From,To,infinity).
 dirty_scan(Segment,From,To,Limit)->
-
-  % Find out the type of the storage
-  StorageType=mnesia_lib:storage_type_at_node(node(),Segment),
-
-  % Define where to stop
-  StopGuard=
-    if
-      To=:='$end_of_table' ->[];  % Nowhere
-      true -> [{'=<','$1',{const,To}}]    % Stop at the To key
-    end,
-
-  MS=[{#kv{key='$1',value='$2'},StopGuard,[{{'$1','$2'}}]}],
-
-  % TODO. There is a significant issue with ets based storage type
-  % As the ets:select doesn't stop when the Key is
-  % bigger than the To it leads to scanning the whole table until it meets the
-  % Limit demand. It might lead ta scanning the table to its end
-  % even if there are no more keys within the range. It
-  % can dramatically decrease the performance. But the 'select' in a major
-  % set of cases is still more efficient than the 'dirty_next' iterator
-  % especially if the table is located on the other node.
-
-  % Initialize the continuation
-  case mnesia_lib:db_select_init(StorageType,Segment,MS,1) of
-    {[],'$end_of_table'}->[]; % The segment is empty
-    {[],_Cont}->[];           % there are no keys less than To
-    '$end_of_table'->[]; % this format is returned by the ets backend
-
-    {[{FirstKey,FirstValue}],Cont}->
-
-      % Define the from which to start
-      {StartKey,Head}=
-        if
-          From=:='$start_of_table';From=:=FirstKey ->{FirstKey,[{FirstKey,FirstValue}]} ;
-          true ->
-            case mnesia:dirty_read(Segment,From) of
-              [#kv{value = FromValue}]->
-                { From, [{From,FromValue}] };
-              _->
-                {From,[]}
-            end
-        end,
-      if
-        Limit =:=1,length(Head)=:=1 -> Head ;
-        true ->
-          Limit1=
-            if
-              is_integer(Limit) -> Limit - length(Head) ;
-              true -> Limit
-            end,
-
-          % Initialize the continuation with the key to start from
-          Cont1=init_continuation(Cont,StartKey,Limit1),
-
-          BatchSize =
-            if
-              is_integer(Limit1) -> Limit1 ;
-              true -> ?MAX_SCAN_INTERVAL_BATCH
-            end,
-          % Run the search
-          Head++run_continuation(Cont1,StorageType,MS,Limit1,BatchSize,[])
+  Node = mnesia:table_info( Segment, where_to_read ),
+  if
+    Node =:= nowhere ->[];
+    Node =:= node()->
+      do_dirty_scan(Segment,From,To,Limit);
+    true->
+      case rpc:call(Node, ?MODULE, do_dirty_scan, [ Segment,From,To,Limit ]) of
+        {badrpc, _Error} ->[];
+        Result -> Result
       end
   end.
 
-init_continuation('$end_of_table',_StartKey,_Limit)->
-  '$end_of_table';
-init_continuation({Segment,_LastKey,Par3,_Limit,Ref,Par6,Par7,Par8},StartKey,Limit)->
-  % This is the form of ets ordered_set continuation
-  Limit1 =
-    if
-      Limit=:=infinity -> ?MAX_SCAN_INTERVAL_BATCH;
-      true -> Limit
-    end,
-  {Segment,StartKey,Par3,Limit1,Ref,Par6,Par7,Par8};
-init_continuation({_LastKey,_Limit,Fun},StartKey,Limit)->
-  Limit1 =
-    if
-      Limit=:=infinity -> ?MAX_SCAN_INTERVAL_BATCH;
-      true -> Limit
-    end,
-  % This is the form of mnesia_leveldb continuation
-  {StartKey,Limit1,Fun}.
+do_dirty_scan(Segment,From,To,Limit)->
 
-run_continuation('$end_of_table',_StorageType,_MS,_Limit,_BatchSize,Acc)->
-  % The end of table is reached
-  lists:append(lists:reverse(Acc));
-run_continuation(_Cont,_StorageType,_MS,Limit,_BatchSize,Acc) when Limit=:=0->
-  % The limit is reached
-  lists:append(lists:reverse(Acc));
-run_continuation(_Cont,_StorageType,_MS,Limit,_BatchSize,Acc) when Limit<0->
-  % The limit is passed over, we need to cut off the excessive records
-  Result = lists:append(lists:reverse(Acc)),
-  { Head, _} = lists:split( length(Result) + Limit , Result ),
-  Head;
-run_continuation(Cont,StorageType,MS,Limit,BatchSize,Acc)->
-  % Run the search
-  {Result,Cont1}=
-    case mnesia_lib:db_select_cont(StorageType,Cont,MS) of
-      {R,C} -> {R,C};
-      '$end_of_table'->{[],'$end_of_table'}
-    end,
-  % Update the acc
-  Acc1=
-    case Result of
-      []->Acc;
-      _->[Result|Acc]
-    end,
-  % If the result is less than the limit the its the last batch
+  % Find out the type of the storage
+  Type=mnesia_lib:storage_type_at_node(node(),Segment),
+  ?LOGDEBUG("type ~p",[Type]),
+
+  % Choose an algorithm
   if
-    length(Result)<BatchSize->
-      % The last scanned records are out of range already. There is no sense
-      % to keep scanning
-      lists:append(lists:reverse(Acc1));
+    Type =:= {ext,leveldb_copies,mnesia_eleveldb}->
+      disc_scan(Segment,From,To,Limit);
+    To =:= '$end_of_table'->
+      dirty_select(Segment, Type, From, To, Limit );
+    is_number(Limit)->
+      ?LOGDEBUG("------------SAFE SCAN: from ~p, to ~p, limit ~p-------------",[From,To,Limit]),
+      safe_scan(Segment,From,To,Limit);
     true->
-      % The result is full, there might be more records
-      % Update the limit
-      Limit1=
-        if
-          is_integer(Limit)-> Limit-length(Result);
-          true -> Limit
-        end,
-      run_continuation(Cont1,StorageType,MS,Limit1,BatchSize,Acc1)
+      ?LOGDEBUG("------------SAFE SCAN NO LIMIT: ~p, from ~p, to ~p-------------",[Segment,From,To]),
+      safe_scan(Segment,From,To)
+  end.
+
+%----------------------DISC SCAN ALL TABLE, NO LIMIT-----------------------------------------
+disc_scan(Segment,'$start_of_table','$end_of_table',Limit)
+  when not is_number(Limit)->
+  ?LOGDEBUG("------------DISC SCAN ALL TABLE, NO LIMIT-------------"),
+  fold(Segment,fun(I)-> do_fold(?MOVE(I,?DATA_START),I) end);
+
+%----------------------DISC SCAN ALL TABLE, WITH LIMIT-----------------------------------------
+disc_scan(Segment,'$start_of_table','$end_of_table',Limit)->
+  ?LOGDEBUG("------------DISC SCAN ALL TABLE, LIMIT ~p-------------",[Limit]),
+  fold(Segment,fun(I)-> do_fold(?MOVE(I,?DATA_START),I,Limit) end);
+
+%----------------------DISC SCAN FROM START TO KEY, NO LIMIT-----------------------------------------
+disc_scan(Segment,'$start_of_table',To,Limit)
+  when not is_number(Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM START TO KEY ~p, NO LIMIT-------------",[To]),
+  fold(Segment,fun(I)-> do_fold_to(?MOVE(I,?DATA_START),I,?ENCODE_KEY(To)) end);
+
+%----------------------DISC SCAN FROM START TO KEY, WITH LIMIT-----------------------------------------
+disc_scan(Segment,'$start_of_table',To,Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM START TO KEY ~p, WITH LIMIT ~p-------------",[To,Limit]),
+  fold(Segment,fun(I)-> do_fold_to(?MOVE(I,?DATA_START),I,?ENCODE_KEY(To),Limit) end);
+
+%----------------------DISC SCAN FROM KEY TO END, NO LIMIT-----------------------------------------
+disc_scan(Segment,From,'$end_of_table',Limit)
+  when not is_number(Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM ~p TO END, NO LIMIT-------------",[From]),
+  fold(Segment,fun(I)-> do_fold(?MOVE(I,?ENCODE_KEY(From)),I) end);
+
+%----------------------DISC SCAN FROM KEY TO END, WITH LIMIT-----------------------------------------
+disc_scan(Segment,From,'$end_of_table',Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM ~p TO END, WITH LIMIT ~p-------------",[From,Limit]),
+  fold(Segment,fun(I)-> do_fold(?MOVE(I,?ENCODE_KEY(From)),I,Limit) end);
+
+%----------------------DISC SCAN FROM KEY TO KEY, NO LIMIT-----------------------------------------
+disc_scan(Segment,From,To,Limit)
+  when not is_number(Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM ~p TO ~p, NO LIMIT-------------",[From,To]),
+  fold(Segment,fun(I)-> do_fold_to(?MOVE(I,?ENCODE_KEY(From)),I,?ENCODE_KEY(To)) end);
+
+%----------------------DISC SCAN FROM KEY TO KEY, WITH LIMIT-----------------------------------------
+disc_scan(Segment,From,To,Limit)->
+  ?LOGDEBUG("------------DISC SCAN FROM ~p TO ~p, WITH LIMIT ~p-------------",[From,To,Limit]),
+  fold(Segment,fun(I)-> do_fold_to(?MOVE(I,?ENCODE_KEY(From)),I,?ENCODE_KEY(To),Limit) end).
+
+fold(Segment,Fold) ->
+  Ref = ?REF(Segment),
+  {ok, Itr} = eleveldb:iterator(Ref, []),
+  try Fold(Itr)
+  after
+    catch eleveldb:iterator_close(Itr)
+  end.
+
+%-------------NO LIMIT, NO STOP KEY----------------------------
+do_fold({ok,K,V},I)->
+  [{?DECODE_KEY(K),?DECODE_VALUE(V)}|do_fold(?NEXT(I),I)];
+do_fold(_,_I)->
+  [].
+
+%-------------WITH LIMIT, NO STOP KEY----------------------------
+do_fold({ok,K,V},I,Limit) when Limit>0 ->
+  [{?DECODE_KEY(K),?DECODE_VALUE(V)}|do_fold(?NEXT(I),I,Limit-1)];
+do_fold(_,_I,_Limit)->
+  [].
+
+%-------------NO LIMIT, WITH STOP KEY----------------------------
+do_fold_to({ok,K,V},I,Stop) when K=<Stop->
+  [{?DECODE_KEY(K),?DECODE_VALUE(V)}|do_fold_to(?NEXT(I),I,Stop)];
+do_fold_to(_,_I,_S)->
+  [].
+
+%-------------WITH LIMIT, WITH STOP KEY----------------------------
+do_fold_to({ok,K,V},I,Stop,Limit) when K=<Stop, Limit>0->
+  [{?DECODE_KEY(K),?DECODE_VALUE(V)}|do_fold_to(?NEXT(I),I,Stop,Limit-1)];
+do_fold_to(_,_I,_S,_L)->
+  [].
+
+%----------------------SAFE SCAN NO LIMIT-----------------------------------------
+safe_scan(Segment,'$start_of_table',To)->
+  do_safe_scan(mnesia:dirty_first(Segment), Segment, To );
+safe_scan(Segment,From,To)->
+  do_safe_scan(From, Segment, To ).
+
+do_safe_scan(Key, Segment, To) when Key =/= '$end_of_table', Key =< To->
+  case mnesia:dirty_read(Segment,Key) of
+    [#kv{value = Value}]->[{Key,Value} | do_safe_scan( mnesia:dirty_next(Segment,Key), Segment, To)];
+    _->do_safe_scan( mnesia:dirty_next(Segment,Key), Segment, To )
+  end;
+do_safe_scan(_,_,_)->
+  [].
+
+%----------------------SAFE SCAN WITH LIMIT-----------------------------------------
+safe_scan(Segment,'$start_of_table',To,Limit)->
+  do_safe_scan(mnesia:dirty_first(Segment), Segment, To, Limit );
+safe_scan(Segment,From,To, Limit)->
+  do_safe_scan(From, Segment, To, Limit ).
+
+do_safe_scan(Key, Segment, To, Limit) when Limit > 0, Key =/= '$end_of_table', Key =< To->
+  case mnesia:dirty_read(Segment,Key) of
+    [#kv{value = Value}]->[{Key,Value} | do_safe_scan( mnesia:dirty_next(Segment,Key), Segment, To, Limit - 1 )];
+    _->do_safe_scan( mnesia:dirty_next(Segment,Key), Segment, To, Limit )
+  end;
+do_safe_scan(_,_,_,_)->
+  [].
+
+%---------------------------DIRTY SELECT ALL TABLE, NO LIMIT---------------------------
+dirty_select(Segment, _Type, '$start_of_table', '$end_of_table', Limit)
+  when not is_number(Limit)->
+
+  ?LOGDEBUG("------------DIRTY SELECT ALL TABLE, NO LIMIT-------------"),
+  MS=
+    [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
+  mnesia:dirty_select(Segment, MS);
+%---------------------------DIRTY SELECT ALL TABLE, WITH LIMIT---------------------------
+dirty_select(Segment, Type, '$start_of_table', '$end_of_table', Limit) ->
+
+  ?LOGDEBUG("------------DIRTY SELECT ALL TABLE, LIMIT ~p-------------",[Limit]),
+  MS=
+    [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
+  case mnesia_lib:db_select_init(Type,Segment,MS,Limit) of
+    {Result, _Cont}->
+      Result;
+    '$end_of_table'->
+      []
+  end;
+
+%---------------------------DIRTY SELECT FROM START TO KEY, NO LIMIT---------------------------
+dirty_select(Segment, _Type, '$start_of_table', To, Limit)
+  when not is_number(Limit)->
+
+  ?LOGDEBUG("------------DIRTY SELECT FROM START TO KEY ~p, NO LIMIT-------------",[To]),
+  MS=
+    [{#kv{key='$1',value='$2'},[{'=<','$1',{const,To}}],[{{'$1','$2'}}]}],
+  mnesia:dirty_select(Segment, MS);
+
+%---------------------------DIRTY SELECT FROM START TO KEY WITH LIMIT---------------------------
+dirty_select(Segment, Type, '$start_of_table', To, Limit) ->
+
+  ?LOGDEBUG("------------DIRTY SELECT FROM START TO KEY ~p WITH LIMIT ~p-------------",[To,Limit]),
+  MS=
+    [{#kv{key='$1',value='$2'},[{'=<','$1',{const,To}}],[{{'$1','$2'}}]}],
+
+  case mnesia_lib:db_select_init(Type,Segment,MS,Limit) of
+    {Result, _Cont}->
+      Result;
+    '$end_of_table'->
+      []
+  end;
+
+%---------------------------DIRTY SELECT FROM KEY TO END, NO LIMIT---------------------------
+dirty_select(Segment, Type, From, '$end_of_table', Limit)
+  when not is_number(Limit)->
+
+  ?LOGDEBUG("------------DIRTY SELECT FROM KEY ~p to END, NO LIMIT-------------",[From]),
+
+  MS=
+    [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
+
+  case init_continuation( Segment, Type, From, MS, ?MAX_SIZE(Type) ) of
+    {Head, '$end_of_table'}->
+      [Head];
+    {Head, Cont}->
+      [Head | eval_continuation(Type,Cont,MS)];
+    '$end_of_table' ->
+      [];
+    Cont->
+      eval_continuation(Type,Cont,MS)
+  end;
+%---------------------------DIRTY SELECT FROM KEY TO END WITH LIMIT---------------------------
+dirty_select(Segment, Type, From, '$end_of_table', Limit) ->
+
+  ?LOGDEBUG("------------DIRTY SELECT FROM KEY ~p TO END WITH LIMIT ~p-------------",[From,Limit]),
+
+  MS=
+    [{#kv{key='$1',value='$2'},[],[{{'$1','$2'}}]}],
+
+  case init_continuation( Segment, Type, From, MS, Limit) of
+    {Head, '$end_of_table'}->
+      [Head];
+    {Head, Cont}->
+      [Head | eval_continuation(Type,Cont,MS)];
+    '$end_of_table' ->
+      [];
+    Cont->
+      eval_continuation(Type,Cont,MS)
+  end;
+%---------------------------DIRTY SELECT FROM KEY TO KEY, NO LIMIT---------------------------
+dirty_select(Segment, Type, From, To, Limit)
+  when not is_number(Limit)->
+
+  MS=
+    [{#kv{key='$1',value='$2'},[{'=<','$1',{const,To}}],[{{'$1','$2'}}]}],
+
+  ?LOGDEBUG("------------DIRTY SELECT FROM KEY ~p to KEY ~p, NO LIMIT-------------",[From,To]),
+  case init_continuation( Segment, Type, From, MS, ?MAX_SIZE(Type)) of
+    {Head, '$end_of_table'}->
+      [Head];
+    {Head, Cont}->
+      [Head | eval_continuation(Type,Cont,MS)];
+    '$end_of_table' ->
+      [];
+    Cont->
+      eval_continuation(Type,Cont,MS)
+  end;
+%---------------------------DIRTY SELECT FROM KEY TO KEY, WITH LIMIT---------------------------
+dirty_select(Segment, Type, From, To, Limit) ->
+
+  MS=
+    [{#kv{key='$1',value='$2'},[{'=<','$1',{const,To}}],[{{'$1','$2'}}]}],
+
+  ?LOGDEBUG("------------DIRTY SELECT FROM KEY ~p to KEY ~p, LIMIT ~p-------------",[From,To,Limit]),
+  case init_continuation( Segment, Type, From, MS, Limit) of
+    {Head, '$end_of_table'}->
+      [Head];
+    {Head, Cont}->
+      [Head | eval_continuation(Type,Cont,MS)];
+    '$end_of_table' ->
+      [];
+    Cont->
+      eval_continuation(Type,Cont,MS)
+  end.
+
+init_continuation( Segment, Type, From, MS, Limit )->
+  case mnesia_lib:db_select_init(Type,Segment,MS,1) of
+    {[{Key,_} = Head], Cont} when Key >= From->
+      % The first key is greater than or equals the From key, take it
+      {Head, decrement(Cont, -Limit)};
+    {[_First],Cont0}->
+      % The first key is less than the From key. This the point for the trick.
+      % Replace the key with the From key in the continuation
+
+      % Check if the from key exists
+      case mnesia:dirty_read(Segment,From) of
+        [#kv{value = Value}]->
+          {{From,Value}, trick_continuation( Cont0, From, Limit - 1) };
+        _->
+          % No value for the From key
+          trick_continuation( Cont0, From, Limit)
+      end;
+    '$end_of_table'->
+      '$end_of_table';
+    {[],'$end_of_table'}->
+      % The segment is empty
+      '$end_of_table'
+  end.
+
+trick_continuation({Segment,_KeyToReplace,Par3,_Limit,Ref,Par6,Par7,Par8}, Key, Limit )->
+  % This is the form of ets ordered_set continuation
+  {Segment,Key,Par3,Limit,Ref,Par6,Par7,Par8}.
+
+decrement({Segment,Key,Par3,Limit,Ref,Par6,Par7,Par8}, Decr )->
+  Rest = Limit - Decr,
+  if
+    Rest > 0 -> {Segment,Key,Par3,Rest,Ref,Par6,Par7,Par8};
+    true -> '$end_of_table'
+  end.
+
+eval_continuation(Type,Cont,MS)->
+  case mnesia_lib:db_select_cont(Type,Cont,MS) of
+    {Result,'$end_of_table'} ->
+      Result;
+    {Result,NextCont0}->
+      case decrement(NextCont0,length(Result)) of
+        '$end_of_table'-> Result;
+        NextCont-> Result ++ eval_continuation( Type, NextCont, MS )
+      end;
+    '$end_of_table' ->
+      [];
+    Result->
+      Result
   end.
 
 %-------------SELECT----------------------------------------------

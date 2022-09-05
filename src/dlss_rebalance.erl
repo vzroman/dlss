@@ -51,6 +51,7 @@
 -define(DATA(N),mnesia_lib:tab2dcd(N)).
 
 -define(BATCH_SIZE, 1024 ).
+-define(DUMP_RETRY_TIMER, 1000 ). % 1 sec
 
 %%=================================================================
 %%	COPY
@@ -89,10 +90,7 @@ copy( Source, Target, Copy, FromKey0, OnBatch, Acc0 )->
 
   Acc = Acc1#{ hash => crypto:hash_final( maps:get(hash,Acc1) ) },
 
-  if
-    Type =/=disc -> dump_segment( Target );
-    true -> ok
-  end,
+  ok = dump_segment( Target ),
 
   { ok, Acc }.
 
@@ -260,6 +258,13 @@ ets_bulk_write( Segment, Records )->
 %%=================================================================
 dump_segment( Segment )->
 
+  case dlss_segment:get_info( Segment ) of
+    #{ type:= ramdisc } -> do_dump_segment( Segment );
+    _ -> ok
+  end.
+
+do_dump_segment( Segment)->
+
   ?LOGDEBUG("~p dump",[Segment]),
   Temp = ?TEMP( Segment ),
   Backup = ?BACKUP( Segment ),
@@ -273,10 +278,12 @@ dump_segment( Segment )->
          file:delete( Backup )
       catch
           _:Error->
+            ?LOGERROR("~p dump segment error ~p, retry ...",[Segment, Error]),
             file:delete( Temp ),
             file:delete( Data ),
             ok = file:rename( Backup, Data ),
-            ?ERROR( { dump_segment_error, Error } )
+            timer:sleep(?DUMP_RETRY_TIMER),
+            dump_segment( Segment )
       end;
     _->
       ?ERROR({ no_data_file, Segment })
