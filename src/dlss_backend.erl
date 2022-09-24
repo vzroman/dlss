@@ -114,11 +114,11 @@ init([])->
 
   ?LOGINFO("starting backend ~p",[self()]),
 
-  Logger = spawn_link(fun log_init/0),
+  %Logger = spawn_link(fun log_init/0),
 
   init_backend(),
 
-  Logger!finish,
+  %Logger!finish,
 
   Cycle=?ENV(master_node_cycle,?DEFAULT_MASTER_CYCLE),
 
@@ -721,40 +721,40 @@ module_exists(Module)->
   end.
 
 
-log_init()->
-
-  % We want to see in the console what's happening
-  mnesia:set_debug_level(debug),
-
-  log_init_subscribe(),
-
-  log_init_loop().
-
-log_init_subscribe()->
-  case mnesia:subscribe( system ) of
-    {ok,_}->
-      ok;
-    _->
-      timer:sleep(1),
-      log_init_subscribe()
-  end.
-
-log_init_loop()->
-  receive
-    {mnesia_system_event,Event} ->
-      case Event of
-        {Type,Text,Args}->
-          ?LOGINFO("~p:"++Text,[Type|Args]);
-        _->
-          ?LOGINFO("init: report system event ~p",[Event])
-      end,
-      log_init_loop();
-    finish->
-      mnesia:set_debug_level(none),
-      ok;
-    _->
-      log_init_loop()
-  end.
+%%log_init()->
+%%
+%%  % We want to see in the console what's happening
+%%  mnesia:set_debug_level(debug),
+%%
+%%  log_init_subscribe(),
+%%
+%%  log_init_loop().
+%%
+%%log_init_subscribe()->
+%%  case mnesia:subscribe( system ) of
+%%    {ok,_}->
+%%      ok;
+%%    _->
+%%      timer:sleep(1),
+%%      log_init_subscribe()
+%%  end.
+%%
+%%log_init_loop()->
+%%  receive
+%%    {mnesia_system_event,Event} ->
+%%      case Event of
+%%        {Type,Text,Args}->
+%%          ?LOGINFO("~p:"++Text,[Type|Args]);
+%%        _->
+%%          ?LOGINFO("init: report system event ~p",[Event])
+%%      end,
+%%      log_init_loop();
+%%    finish->
+%%      mnesia:set_debug_level(none),
+%%      ok;
+%%    _->
+%%      log_init_loop()
+%%  end.
 
 get_segment_nodes( Segment )->
   try
