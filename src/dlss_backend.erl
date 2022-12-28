@@ -92,7 +92,7 @@ transaction(Fun)->
   % We use the mnesia engine to deliver the true distributed ACID transactions
   case mnesia:transaction(Fun) of
     {atomic,FunResult}->{ok,FunResult};
-    {aborted,{Reason,_Stack}}->{error,Reason};
+    {aborted,{Reason,Stack}} when is_list(Stack)->{error,Reason};
     {aborted,Reason}->{error,Reason}
   end.
 
@@ -100,7 +100,7 @@ transaction(Fun)->
 sync_transaction(Fun)->
   case mnesia:sync_transaction(Fun) of
     {atomic,FunResult}->{ok,FunResult};
-    {aborted,{Reason,_Stack}}->{error,Reason};
+    {aborted,{Reason,Stack}} when is_list(Stack)->{error,Reason};
     {aborted,Reason}->{error,Reason}
   end.
 
